@@ -1,0 +1,30 @@
+image:
+  repository: icr.io/ibm-messaging/mq
+  tag: "9.4.0.0-r3"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  qmPort: 1414
+  webPort: 9443
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+storage:
+  size: 5Gi
+  storageClassName: ""
+
+mq:
+  queueManagerName: QM1
+  appPassword: passw0rd
+  adminPassword: admin0pwd
+  queues:
+    - DEV.QUEUE.1
+    - DEV.QUEUE.2

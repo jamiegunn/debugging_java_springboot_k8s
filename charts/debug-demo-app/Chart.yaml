@@ -1,0 +1,6 @@
+apiVersion: v2
+name: debug-demo-app
+description: Spring Boot CRUD service with Oracle + IBM MQ
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

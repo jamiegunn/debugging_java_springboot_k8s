@@ -1,0 +1,6 @@
+apiVersion: v2
+name: artifactory
+description: JFrog Artifactory OSS (Docker + Helm registry for the local CI loop)
+type: application
+version: 0.1.0
+appVersion: "7.90.10"

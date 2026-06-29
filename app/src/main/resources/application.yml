@@ -1,0 +1,118 @@
+spring:
+  application:
+    name: debug-demo-app
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  data:
+    redis:
+      cluster:
+        nodes: ${VALKEY_NODES:localhost:6379}
+        max-redirects: 5
+      password: ${VALKEY_PASSWORD:}
+      lettuce:
+        cluster:
+          refresh:
+            adaptive: true
+            period: 30s
+  datasource:
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none           # Flyway owns the schema; skip Hibernate validation
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    properties:
+      hibernate:
+        jdbc.batch_size: 50
+        order_inserts: true
+        order_updates: true
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0       # so V1 (version 1 > 0) actually runs after baselining
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false   # we trigger jobs via REST, not at startup
+
+server:
+  port: 8080
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,loggers,prometheus,threaddump,heapdump,metrics,env,configprops
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+app:
+  mq:
+    outbound-queue: ${APP_MQ_OUTBOUND_QUEUE:DEV.QUEUE.1}
+    inbound-queue: ${APP_MQ_INBOUND_QUEUE:DEV.QUEUE.2}
+  batch:
+    chunk-size: ${APP_BATCH_CHUNK_SIZE:1000}
+
+logging:
+  level:
+    root: INFO
+    com.example.debugdemo: INFO
+    org.hibernate.SQL: WARN
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:oracle:thin:@localhost:1521/FREEPDB1
+    username: appuser
+    password: appuser
+
+ibm:
+  mq:
+    queue-manager: QM1
+    channel: DEV.APP.SVRCONN
+    conn-name: localhost(1414)
+    user: app
+    password: passw0rd
+
+---
+spring:
+  config:
+    activate:
+      on-profile: k8s
+  datasource:
+    url: ${ORACLE_JDBC_URL}
+    username: ${ORACLE_USER}
+    password: ${ORACLE_PASSWORD}
+
+ibm:
+  mq:
+    queue-manager: ${MQ_QUEUE_MANAGER}
+    channel: ${MQ_CHANNEL:DEV.APP.SVRCONN}
+    conn-name: ${MQ_CONN_NAME}
+    user: ${MQ_USER}
+    password: ${MQ_PASSWORD}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  # Datasource + MQ wired via @DynamicPropertySource in integration tests

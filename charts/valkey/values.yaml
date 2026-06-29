@@ -1,0 +1,56 @@
+image:
+  repository: valkey/valkey
+  tag: "8.0.1-alpine"
+  pullPolicy: IfNotPresent
+
+# 3 primary + 3 secondary nodes total = 6. Both counts must match for the
+# bootstrap Job to pair them one-to-one.
+replicaCount: 3
+
+auth:
+  enabled: true
+  password: valkey-cluster-pwd     # used by both primaries and secondaries
+
+ports:
+  client: 6379
+  bus: 16379
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+storage:
+  size: 1Gi
+  storageClassName: ""
+
+# External access via MetalLB — one LoadBalancer Service per pod, each pinned
+# to a specific IP. Each pod announces its own external IP via
+# cluster-announce-ip so MOVED redirects from CLUSTER SHARDS / CLUSTER NODES
+# point at externally-reachable endpoints (not pod IPs).
+#
+# This matches the production-shape topology: clients hit a VIP/LB → each
+# Valkey node has its own externally-reachable endpoint → cluster gossip and
+# slot redirects all use those endpoints.
+loadBalancer:
+  enabled: true
+  pool: bridge-pool        # MetalLB IPAddressPool name (annotation)
+  # IPs are assigned by ordinal: primaryIPs[0] -> valkey-primary-0, etc.
+  # Lists must be exactly `replicaCount` long.
+  primaryIPs:
+    - "192.168.64.51"
+    - "192.168.64.52"
+    - "192.168.64.53"
+  secondaryIPs:
+    - "192.168.64.54"
+    - "192.168.64.55"
+    - "192.168.64.56"
+
+config:
+  # Extra raw lines appended to valkey.conf. Useful for tuning maxmemory etc.
+  extra: |
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru

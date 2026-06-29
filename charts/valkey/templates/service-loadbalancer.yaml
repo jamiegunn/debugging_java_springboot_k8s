@@ -1,0 +1,54 @@
+{{- if .Values.loadBalancer.enabled }}
+{{- /*
+  Per-service-per-pod LoadBalancer pattern. One Service per Valkey pod, each
+  selecting that single pod by name via the StatefulSet's automatically-injected
+  `statefulset.kubernetes.io/pod-name` label. Each Service pins its
+  `loadBalancerIP` from values so cluster-announce-ip can be deterministic.
+
+  Why not one shared LB Service: clients receive MOVED <slot> <ip>:<port>
+  redirects from any cluster node. For external clients those <ip>:<port>
+  pairs must each resolve to ONE specific pod (the slot owner), which means
+  one externally-reachable endpoint per pod.
+*/}}
+{{- range $i, $ip := .Values.loadBalancer.primaryIPs }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-primary-{{ $i }}-ext
+  labels: {{- include "valkey.labels" $ | nindent 4 }}
+    valkey.role: primary
+  annotations:
+    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
+spec:
+  type: LoadBalancer
+  loadBalancerIP: {{ $ip | quote }}
+  externalTrafficPolicy: Local      # preserve source IP; advertise only from nodes hosting the pod
+  ports:
+    - {name: client, port: {{ $.Values.ports.client }}, targetPort: client}
+    - {name: bus,    port: {{ $.Values.ports.bus }},    targetPort: bus}
+  selector:
+    statefulset.kubernetes.io/pod-name: valkey-primary-{{ $i }}
+{{- end }}
+
+{{- range $i, $ip := .Values.loadBalancer.secondaryIPs }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-secondary-{{ $i }}-ext
+  labels: {{- include "valkey.labels" $ | nindent 4 }}
+    valkey.role: secondary
+  annotations:
+    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
+spec:
+  type: LoadBalancer
+  loadBalancerIP: {{ $ip | quote }}
+  externalTrafficPolicy: Local
+  ports:
+    - {name: client, port: {{ $.Values.ports.client }}, targetPort: client}
+    - {name: bus,    port: {{ $.Values.ports.bus }},    targetPort: bus}
+  selector:
+    statefulset.kubernetes.io/pod-name: valkey-secondary-{{ $i }}
+{{- end }}
+{{- end }}

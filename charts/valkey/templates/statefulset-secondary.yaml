@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-secondary
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+spec:
+  serviceName: valkey-secondary-headless
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {{- include "valkey.secondarySelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "valkey.secondarySelector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: valkey
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
+              {{- if .Values.loadBalancer.enabled }}
+              ANNOUNCE_IP=$(echo "$ANNOUNCE_IPS" | cut -d',' -f$((ORDINAL+1)))
+              {{- else }}
+              ANNOUNCE_IP="$POD_IP"
+              {{- end }}
+              echo "valkey-secondary-${ORDINAL}: cluster-announce-ip=${ANNOUNCE_IP}"
+              exec valkey-server /etc/valkey/valkey.conf \
+                --cluster-announce-ip "$ANNOUNCE_IP"
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- if .Values.loadBalancer.enabled }}
+            - name: ANNOUNCE_IPS
+              value: {{ join "," .Values.loadBalancer.secondaryIPs | quote }}
+            {{- end }}
+          ports:
+            - name: client
+              containerPort: {{ .Values.ports.client }}
+            - name: bus
+              containerPort: {{ .Values.ports.bus }}
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  valkey-cli {{ if .Values.auth.enabled }}-a "$(cat /etc/valkey/password)"{{ end }} ping | grep -q PONG
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: client}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /etc/valkey/valkey.conf, subPath: valkey.conf}
+            {{- if .Values.auth.enabled }}
+            - {name: password, mountPath: /etc/valkey/password, subPath: password}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: valkey
+            items: [{key: valkey.conf, path: valkey.conf}]
+        {{- if .Values.auth.enabled }}
+        - name: password
+          secret:
+            secretName: valkey
+            items: [{key: password, path: password}]
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

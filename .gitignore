@@ -1,0 +1,12 @@
+target/
+*.iml
+.idea/
+.vscode/
+.DS_Store
+dumps/
+*.hprof
+*.class
+*.log
+.env
+.env.local
+scripts/.cache/

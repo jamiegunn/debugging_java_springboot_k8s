@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artifactory.fullname" . }}-init-repos
+  labels: {{- include "artifactory.labels" . | nindent 4 }}
+data:
+  init.sh: |
+    #!/bin/sh
+    set -eu
+    BASE="http://{{ include "artifactory.fullname" . }}:{{ .Values.service.artifactoryPort }}/artifactory/api"
+    AUTH="-u $ADMIN_USER:$ADMIN_PASSWORD"
+
+    echo "Waiting for Artifactory REST API..."
+    # Need a 200 from /system/ping, not just connectivity
+    for i in $(seq 1 90); do
+      CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/system/ping" || echo 000)
+      if [ "$CODE" = "200" ]; then
+        echo "Artifactory is up."
+        break
+      fi
+      sleep 10
+    done
+
+    # OSS/JCR block PUT /api/repositories/{key} ("Pro only"), but PATCH
+    # /api/system/configuration with a YAML descriptor is available.
+    echo "Patching system configuration to add repos..."
+    curl -fsS $AUTH \
+      -X PATCH "$BASE/system/configuration" \
+      -H 'Content-Type: application/yaml' \
+      --data-binary @- <<YAML
+    localRepositories:
+      {{ .Values.repos.docker }}:
+        type: docker
+      {{ .Values.repos.helm }}:
+        type: helm
+    YAML
+    echo
+    echo "Repos now available:"
+    curl -fsS $AUTH "$BASE/repositories" | grep -E '"key"|"packageType"' | head -20
+    echo
+    echo "Docker push URL: http://{{ include "artifactory.fullname" . }}:{{ .Values.service.artifactoryPort }}/{{ .Values.repos.docker }}/"
+    echo "Helm push URL:   http://{{ include "artifactory.fullname" . }}:{{ .Values.service.artifactoryPort }}/artifactory/{{ .Values.repos.helm }}/"

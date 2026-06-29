@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "artifactory.fullname" . }}
+  labels: {{- include "artifactory.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "artifactory.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels: {{- include "artifactory.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "artifactory.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        fsGroup: 1030          # artifactory user gid in the OSS image
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        # Seed bootstrap.creds (consumed once by Access on first boot to
+        # set the admin password). The master key is supplied via env var
+        # below, so no file copy needed for it.
+        - name: seed-bootstrap-creds
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              SEC_DIR=/opt/jfrog/artifactory/var/etc/security
+              mkdir -p "$SEC_DIR"
+              if [ ! -f "$SEC_DIR/.creds-seeded" ]; then
+                cp /seed/bootstrap.creds "$SEC_DIR/bootstrap.creds"
+                touch "$SEC_DIR/.creds-seeded"
+              fi
+              chown -R 1030:1030 /opt/jfrog/artifactory/var
+          volumeMounts:
+            - name: data
+              mountPath: /opt/jfrog/artifactory/var
+            - name: seed
+              mountPath: /seed
+      containers:
+        - name: artifactory
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: JF_SHARED_SECURITY_MASTERKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifactory.fullname" . }}
+                  key: master.key
+            - name: JF_SHARED_SECURITY_JOINKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifactory.fullname" . }}
+                  key: join.key
+            - name: JF_SHARED_DATABASE_TYPE
+              value: postgresql
+            - name: JF_SHARED_DATABASE_DRIVER
+              value: org.postgresql.Driver
+            - name: JF_SHARED_DATABASE_URL
+              value: "jdbc:postgresql://{{ include "artifactory.fullname" . }}-postgres:5432/{{ .Values.postgres.database }}"
+            - name: JF_SHARED_DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifactory.fullname" . }}-postgres
+                  key: POSTGRES_USER
+            - name: JF_SHARED_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifactory.fullname" . }}-postgres
+                  key: POSTGRES_PASSWORD
+          ports:
+            - name: web
+              containerPort: 8082
+            - name: artifactory
+              containerPort: 8081
+          # We probe the Artifactory backend directly on port 8081 instead of
+          # the router on 8082. On emulated arm64 the router's frontend often
+          # fails to come up within its internal 5-min timeout, but the
+          # Artifactory backend itself works fine and serves the Docker + Helm
+          # REST APIs at /artifactory/api/...
+          startupProbe:
+            httpGet:
+              path: /artifactory/api/system/ping
+              port: artifactory
+            periodSeconds: 15
+            failureThreshold: 80     # up to 20 min on slow VMs
+          readinessProbe:
+            httpGet:
+              path: /artifactory/api/system/ping
+              port: artifactory
+            periodSeconds: 15
+            failureThreshold: 4
+          livenessProbe:
+            httpGet:
+              path: /artifactory/api/system/ping
+              port: artifactory
+            periodSeconds: 30
+            failureThreshold: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/jfrog/artifactory/var
+      volumes:
+        - name: seed
+          secret:
+            secretName: {{ include "artifactory.fullname" . }}
+            items:
+              - key: bootstrap.creds
+                path: bootstrap.creds
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

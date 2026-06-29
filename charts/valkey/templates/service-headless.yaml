@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-primary-headless
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true   # so cluster gossip can find peers during bootstrap
+  ports:
+    - {name: client, port: {{ .Values.ports.client }}, targetPort: client}
+    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: bus}
+  selector: {{- include "valkey.primarySelector" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-secondary-headless
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - {name: client, port: {{ .Values.ports.client }}, targetPort: client}
+    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: bus}
+  selector: {{- include "valkey.secondarySelector" . | nindent 4 }}

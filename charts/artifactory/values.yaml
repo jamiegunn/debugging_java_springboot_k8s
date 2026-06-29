@@ -1,0 +1,70 @@
+image:
+  # JFrog Container Registry (artifactory-jcr) — free, purpose-built for
+  # Docker + Helm repos. Artifactory OSS gates Docker/Helm repo creation
+  # behind a Pro license, so JCR is the right pick for this CI use case.
+  repository: releases-docker.jfrog.io/jfrog/artifactory-jcr
+  tag: "7.90.10"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Modern Artifactory (>=7.56) requires PostgreSQL; the embedded Derby DB
+# was removed. We ship a small Postgres alongside the Artifactory pod.
+postgres:
+  image: postgres:16-alpine
+  database: artifactory
+  username: artifactory
+  password: artifactory-pg-pwd
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  storage:
+    size: 5Gi
+    storageClassName: ""
+
+service:
+  webPort: 8082          # UI + REST API (the "platform" port, via router)
+  artifactoryPort: 8081  # legacy Artifactory-only port (works even when router/frontend are still bootstrapping)
+  type: ClusterIP
+
+# Tight requests so it can schedule on a default-sized Rancher Desktop VM.
+# These are well below JFrog's recommended minimum (1 CPU / 2 GiB); on this
+# footprint Artifactory startup takes ~3-5 minutes and the UI is sluggish.
+# Bump the RD VM (Preferences → Virtual Machine → Memory) to 10 GB and raise
+# these for anything beyond local CI loop testing.
+resources:
+  requests:
+    cpu: 1000m
+    memory: 4Gi
+  limits:
+    cpu: 4000m
+    memory: 6Gi
+
+storage:
+  size: 10Gi
+  storageClassName: ""
+
+# Admin credentials. The Artifactory OSS/JCR image defaults to
+# admin/password; we write a bootstrap.creds file but the Access service
+# in this constrained setup doesn't always consume it. So this MUST match
+# whatever password is actually set in Artifactory. After install you can
+# rotate via the UI, then set this value to the new password.
+admin:
+  username: admin
+  password: password
+
+# Encryption master key + cluster join key (hex). Pre-generated so the StatefulSet
+# is reproducible. In a real deployment you'd source these from a Secret manager;
+# for local dev any 32-byte hex strings work.
+masterKey: "8b2b9e2dc43630b5978a07b02cf4110649fdaa6596ef85ffd6d30eab25667ce5"
+joinKey:   "cc8daeefde3d036daa618f3d45c940216c21c0ac5cb89989350b96d61ea52021"
+
+# Repos auto-created via a post-install Job hitting Artifactory's REST API.
+# Defaults match what scripts/local-ci.sh and .github/workflows/ci.yml expect.
+repos:
+  docker: debug-demo-docker
+  helm: debug-demo-helm

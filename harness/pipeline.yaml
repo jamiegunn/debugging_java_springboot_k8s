@@ -1,0 +1,167 @@
+pipeline:
+  name: debug-demo-app-deploy
+  identifier: debug_demo_app_deploy
+  projectIdentifier: debug_demo
+  orgIdentifier: default
+  tags: {}
+  properties:
+    ci: {}
+  variables:
+    - name: imageTag
+      type: String
+      required: true
+      value: <+input>
+    - name: chartVersion
+      type: String
+      required: true
+      value: <+input>
+    - name: targetEnv
+      type: String
+      required: true
+      value: <+input>.allowedValues(dev, staging, prod)
+
+  stages:
+    - stage:
+        name: Deploy Oracle
+        identifier: deploy_oracle
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          service:
+            serviceRef: oracle
+            serviceInputs:
+              serviceDefinition:
+                type: Kubernetes
+                spec:
+                  manifests:
+                    - manifest:
+                        identifier: chart
+                        type: HelmChart
+                        spec:
+                          store:
+                            type: Http
+                            spec:
+                              connectorRef: jfrog_helm
+                          chartName: oracle
+                          chartVersion: <+pipeline.variables.chartVersion>
+                          helmVersion: V3
+          environment:
+            environmentRef: <+pipeline.variables.targetEnv>
+            infrastructureDefinitions:
+              - identifier: <+pipeline.variables.targetEnv>_k8s
+          execution:
+            steps:
+              - step:
+                  name: Rollout
+                  identifier: rollout
+                  type: K8sRollingDeploy
+                  spec:
+                    skipDryRun: false
+                  timeout: 15m
+
+    - stage:
+        name: Deploy IBM MQ
+        identifier: deploy_ibm_mq
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          service:
+            serviceRef: ibm_mq
+            serviceInputs:
+              serviceDefinition:
+                type: Kubernetes
+                spec:
+                  manifests:
+                    - manifest:
+                        identifier: chart
+                        type: HelmChart
+                        spec:
+                          store:
+                            type: Http
+                            spec:
+                              connectorRef: jfrog_helm
+                          chartName: ibm-mq
+                          chartVersion: <+pipeline.variables.chartVersion>
+                          helmVersion: V3
+          environment:
+            environmentRef: <+pipeline.variables.targetEnv>
+            infrastructureDefinitions:
+              - identifier: <+pipeline.variables.targetEnv>_k8s
+          execution:
+            steps:
+              - step:
+                  name: Rollout
+                  identifier: rollout
+                  type: K8sRollingDeploy
+                  spec:
+                    skipDryRun: false
+                  timeout: 15m
+
+    - stage:
+        name: Approve prod
+        identifier: approve_prod
+        type: Approval
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.targetEnv> == "prod"
+        spec:
+          approvalType: HarnessApproval
+          approvers:
+            userGroups: [account.platform_admins]
+            minimumCount: 1
+
+    - stage:
+        name: Deploy app
+        identifier: deploy_app
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          service:
+            serviceRef: debug_demo_app
+            serviceInputs:
+              serviceDefinition:
+                type: Kubernetes
+                spec:
+                  manifests:
+                    - manifest:
+                        identifier: chart
+                        type: HelmChart
+                        spec:
+                          store:
+                            type: Http
+                            spec:
+                              connectorRef: jfrog_helm
+                          chartName: debug-demo-app
+                          chartVersion: <+pipeline.variables.chartVersion>
+                          helmVersion: V3
+                          valuesPaths:
+                            - values-<+pipeline.variables.targetEnv>.yaml
+                  artifacts:
+                    primary:
+                      sources:
+                        - identifier: image
+                          type: DockerRegistry
+                          spec:
+                            connectorRef: jfrog_docker
+                            imagePath: debug-demo/debug-demo-app
+                            tag: <+pipeline.variables.imageTag>
+          environment:
+            environmentRef: <+pipeline.variables.targetEnv>
+            infrastructureDefinitions:
+              - identifier: <+pipeline.variables.targetEnv>_k8s
+          execution:
+            steps:
+              - step:
+                  name: Rollout
+                  identifier: rollout
+                  type: K8sRollingDeploy
+                  spec:
+                    skipDryRun: false
+                  timeout: 10m
+            rollbackSteps:
+              - step:
+                  name: Rollback
+                  identifier: rollback
+                  type: K8sRollingRollback
+                  spec: {}
+                  timeout: 10m

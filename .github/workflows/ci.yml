@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+env:
+  IMAGE_NAME: debug-demo/debug-demo-app
+  HELM_REPO: debug-demo-helm
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tags.outputs.image_tag }}
+      chart_version: ${{ steps.tags.outputs.chart_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Verify (unit + IT)
+        working-directory: app
+        run: mvn -B verify
+
+      - name: Compute tags
+        id: tags
+        run: |
+          SHA="${GITHUB_SHA::12}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            IMAGE_TAG="${GITHUB_REF#refs/tags/v}"
+            CHART_VERSION="${IMAGE_TAG}"
+          else
+            IMAGE_TAG="$SHA"
+            CHART_VERSION="0.1.0-${SHA}"
+          fi
+          echo "image_tag=$IMAGE_TAG"     >> "$GITHUB_OUTPUT"
+          echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to JFrog Docker
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.JFROG_HOST }}
+          username: ${{ secrets.JFROG_USER }}
+          password: ${{ secrets.JFROG_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ secrets.JFROG_HOST }}/${{ secrets.JFROG_DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.image_tag }}
+            ${{ secrets.JFROG_HOST }}/${{ secrets.JFROG_DOCKER_REPO }}/${{ env.IMAGE_NAME }}:latest
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: 'v3.15.0'
+
+      - name: Package & upload Helm charts
+        env:
+          JFROG_HOST: ${{ secrets.JFROG_HOST }}
+          JFROG_USER: ${{ secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+          JFROG_HELM_REPO: ${{ secrets.JFROG_HELM_REPO }}
+          CHART_VERSION: ${{ steps.tags.outputs.chart_version }}
+          APP_VERSION: ${{ steps.tags.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p packaged
+          for chart in debug-demo-app oracle ibm-mq; do
+            helm package "charts/$chart" \
+              --version "$CHART_VERSION" \
+              --app-version "$APP_VERSION" \
+              -d packaged
+          done
+          for tgz in packaged/*.tgz; do
+            echo "Uploading $tgz"
+            curl -fsS -u "$JFROG_USER:$JFROG_TOKEN" \
+              -T "$tgz" \
+              "https://$JFROG_HOST/artifactory/$JFROG_HELM_REPO/$(basename "$tgz")"
+          done
+
+      - name: Notify Harness
+        if: ${{ secrets.HARNESS_WEBHOOK_URL != '' }}
+        run: |
+          curl -fsS -X POST "${{ secrets.HARNESS_WEBHOOK_URL }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "imageTag": "${{ steps.tags.outputs.image_tag }}",
+              "chartVersion": "${{ steps.tags.outputs.chart_version }}",
+              "commit": "${{ github.sha }}"
+            }'

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: valkey
+description: Valkey 8 — 6-node cluster (3 primaries + 3 secondaries) in two StatefulSets
+type: application
+version: 0.1.0
+appVersion: "8.0.1"

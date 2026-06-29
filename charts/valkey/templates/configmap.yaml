@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+data:
+  valkey.conf: |
+    # Network
+    bind 0.0.0.0
+    port {{ .Values.ports.client }}
+    protected-mode no
+
+    # Cluster mode
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf
+    cluster-node-timeout 5000
+    cluster-announce-port {{ .Values.ports.client }}
+    cluster-announce-bus-port {{ .Values.ports.bus }}
+
+    # Persistence — AOF is mandatory for cluster mode if you want durability
+    appendonly yes
+    dir /data
+
+    {{- if .Values.auth.enabled }}
+    requirepass {{ .Values.auth.password | quote }}
+    masterauth {{ .Values.auth.password | quote }}
+    {{- end }}
+
+    {{ .Values.config.extra | nindent 4 }}

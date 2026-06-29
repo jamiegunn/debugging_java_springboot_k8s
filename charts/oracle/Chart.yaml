@@ -1,0 +1,6 @@
+apiVersion: v2
+name: oracle
+description: Oracle Database Free for dev/test
+type: application
+version: 0.1.0
+appVersion: "23.5.0"

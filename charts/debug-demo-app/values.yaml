@@ -1,0 +1,100 @@
+replicaCount: 2
+
+image:
+  repository: artifactory.example.com/debug-demo/debug-demo-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Second Service of type LoadBalancer for external clients (Postman, etc.).
+# Keeps the in-cluster ClusterIP Service above untouched. Pinned IP via
+# MetalLB so the external endpoint is stable across redeploys.
+externalService:
+  enabled: true
+  pool: bridge-pool
+  loadBalancerIP: "192.168.64.50"
+  port: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+springProfile: k8s
+logLevel: INFO
+batchChunkSize: 1000
+
+oracle:
+  host: oracle.oracle.svc.cluster.local
+  port: 1521
+  service: FREEPDB1
+  user: appuser
+  existingSecret: ""           # if set, must contain key ORACLE_PASSWORD
+  password: appuser            # used only when existingSecret is empty (dev)
+
+mq:
+  queueManager: QM1
+  channel: DEV.APP.SVRCONN
+  host: ibm-mq.mq.svc.cluster.local
+  port: 1414
+  user: app
+  existingSecret: ""           # if set, must contain key MQ_PASSWORD
+  password: passw0rd
+
+valkey:
+  # Comma-separated cluster seed nodes (any 1+ is enough for Lettuce to
+  # discover the rest via the cluster topology). Defaults assume the
+  # valkey chart is installed in the `valkey` namespace.
+  nodes: "valkey-primary-0.valkey-primary-headless.valkey.svc.cluster.local:6379,valkey-primary-1.valkey-primary-headless.valkey.svc.cluster.local:6379,valkey-primary-2.valkey-primary-headless.valkey.svc.cluster.local:6379"
+  existingSecret: ""           # if set, must contain key VALKEY_PASSWORD
+  password: valkey-cluster-pwd
+
+ingress:
+  enabled: false
+  className: ""
+  hosts: []
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 10
+  # Low target so even modest traffic scales us up. Pair this with a
+  # small cpu request so the percentage math is meaningful — at 50m
+  # request and 20% target, HPA scales out as soon as a pod is doing
+  # ~10 millicores of work.
+  targetCPUUtilizationPercentage: 20
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30      # decide quickly
+      policies:
+        - type: Pods
+          value: 4                        # may add up to 4 pods per minute
+          periodSeconds: 60
+        - type: Percent
+          value: 100                      # ...or double the current count
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 180     # wait 3 min before scaling in (avoid thrash)
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+probes:
+  liveness:
+    path: /actuator/health/liveness
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readiness:
+    path: /actuator/health/readiness
+    initialDelaySeconds: 10
+    periodSeconds: 5

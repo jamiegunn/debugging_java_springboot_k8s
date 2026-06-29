@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: valkey-cluster-bootstrap
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+  annotations:
+    # Idempotent: skips work if cluster_state is already "ok". Re-runs on every
+    # upgrade so scale-ups or topology changes get picked up.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: {{- include "valkey.allSelector" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          {{- if .Values.auth.enabled }}
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: valkey, key: password}
+          {{- end }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              {{- if .Values.auth.enabled }}
+              AUTH="-a $VALKEY_PASSWORD"
+              {{- else }}
+              AUTH=""
+              {{- end }}
+              PRIMARIES="valkey-primary-0.valkey-primary-headless valkey-primary-1.valkey-primary-headless valkey-primary-2.valkey-primary-headless"
+              SECONDARIES="valkey-secondary-0.valkey-secondary-headless valkey-secondary-1.valkey-secondary-headless valkey-secondary-2.valkey-secondary-headless"
+
+              echo "Waiting for all 6 nodes to PING..."
+              for node in $PRIMARIES $SECONDARIES; do
+                for i in $(seq 1 60); do
+                  if valkey-cli -h "$node" $AUTH ping 2>/dev/null | grep -q PONG; then
+                    echo "  $node OK"
+                    break
+                  fi
+                  sleep 5
+                done
+              done
+
+              STATE="$(valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster info | awk -F: '/cluster_state/ {print $2}' | tr -d '\r\n ')"
+              if [ "$STATE" = "ok" ]; then
+                echo "Cluster already healthy. Nothing to do."
+                exit 0
+              fi
+
+              echo "Creating cluster on primaries (no replicas yet)..."
+              echo yes | valkey-cli $AUTH --cluster create \
+                  valkey-primary-0.valkey-primary-headless:{{ .Values.ports.client }} \
+                  valkey-primary-1.valkey-primary-headless:{{ .Values.ports.client }} \
+                  valkey-primary-2.valkey-primary-headless:{{ .Values.ports.client }} \
+                  --cluster-replicas 0
+
+              # Now attach each secondary to its matching primary by index.
+              for i in 0 1 2; do
+                PRIMARY_ID="$(valkey-cli -h valkey-primary-${i}.valkey-primary-headless $AUTH cluster myid | tr -d '\r\n ')"
+                echo "Attaching valkey-secondary-${i} as replica of valkey-primary-${i} (id=$PRIMARY_ID)..."
+                valkey-cli $AUTH --cluster add-node \
+                    valkey-secondary-${i}.valkey-secondary-headless:{{ .Values.ports.client }} \
+                    valkey-primary-${i}.valkey-primary-headless:{{ .Values.ports.client }} \
+                    --cluster-slave --cluster-master-id "$PRIMARY_ID"
+              done
+
+              echo "Final cluster check:"
+              valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster info
+              valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster nodes

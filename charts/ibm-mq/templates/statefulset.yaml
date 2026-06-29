@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ibm-mq.fullname" . }}
+  labels: {{- include "ibm-mq.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "ibm-mq.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels: {{- include "ibm-mq.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "ibm-mq.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        fsGroup: 0
+      containers:
+        - name: mq
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: qm
+              containerPort: 1414
+            - name: web
+              containerPort: 9443
+          env:
+            - name: LICENSE
+              value: "accept"
+            - name: MQ_QMGR_NAME
+              value: {{ .Values.mq.queueManagerName | quote }}
+            - name: MQ_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ibm-mq.fullname" . }}
+                  key: MQ_APP_PASSWORD
+            - name: MQ_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ibm-mq.fullname" . }}
+                  key: MQ_ADMIN_PASSWORD
+          readinessProbe:
+            tcpSocket:
+              port: 1414
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 1414
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /mnt/mqm
+            - name: mqsc
+              mountPath: /etc/mqm/10-queues.mqsc
+              subPath: 10-queues.mqsc
+      volumes:
+        - name: mqsc
+          configMap:
+            name: {{ include "ibm-mq.fullname" . }}-mqsc
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

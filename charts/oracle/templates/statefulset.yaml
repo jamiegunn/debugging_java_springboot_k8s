@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "oracle.fullname" . }}
+  labels: {{- include "oracle.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "oracle.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels: {{- include "oracle.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "oracle.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # The gvenzl/oracle-free:*-faststart images ship a 3 GB pre-built database
+        # at /opt/oracle/oradata. A Kubernetes PVC mounted there hides that content;
+        # this initContainer seeds the volume on first start so the main container
+        # finds the pre-built DB it expects.
+        - name: seed-oradata
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              if [ -d /target/FREE ] || [ -d /target/FREEPDB1 ]; then
+                echo "Volume already seeded, skipping."
+                exit 0
+              fi
+              echo "Seeding /opt/oracle/oradata into volume..."
+              cp -a /opt/oracle/oradata/. /target/
+              chown -R 54321:54321 /target
+              echo "Done."
+          volumeMounts:
+            - name: data
+              mountPath: /target
+      containers:
+        - name: oracle
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: oracle
+              containerPort: 1521
+          envFrom:
+            - secretRef:
+                name: {{ include "oracle.fullname" . }}
+          env:
+            - name: ORACLE_CHARACTERSET
+              value: {{ .Values.oracle.characterSet | quote }}
+          # Use a startupProbe so initial DB creation (can take 10+ min on emulated arm64)
+          # has time to complete before liveness/readiness probes take over.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "healthcheck.sh"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 80   # 80 * 15s = 20 minutes
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "healthcheck.sh"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "healthcheck.sh"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/oracle/oradata
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

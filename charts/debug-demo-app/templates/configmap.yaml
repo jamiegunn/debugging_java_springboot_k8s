@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "debug-demo-app.fullname" . }}-config
+  labels: {{- include "debug-demo-app.labels" . | nindent 4 }}
+data:
+  SPRING_PROFILES_ACTIVE: {{ .Values.springProfile | quote }}
+  LOGGING_LEVEL_COM_EXAMPLE_DEBUGDEMO: {{ .Values.logLevel | quote }}
+  APP_BATCH_CHUNK_SIZE: {{ .Values.batchChunkSize | quote }}
+  ORACLE_JDBC_URL: "jdbc:oracle:thin:@{{ .Values.oracle.host }}:{{ .Values.oracle.port }}/{{ .Values.oracle.service }}"
+  ORACLE_USER: {{ .Values.oracle.user | quote }}
+  MQ_QUEUE_MANAGER: {{ .Values.mq.queueManager | quote }}
+  MQ_CHANNEL: {{ .Values.mq.channel | quote }}
+  MQ_CONN_NAME: "{{ .Values.mq.host }}({{ .Values.mq.port }})"
+  MQ_USER: {{ .Values.mq.user | quote }}
+  VALKEY_NODES: {{ .Values.valkey.nodes | quote }}
