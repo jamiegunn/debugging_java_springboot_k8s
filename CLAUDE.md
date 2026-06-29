@@ -599,6 +599,216 @@ threads.txt as a "Thread Dump"), or any text editor for the jcmd
 outputs. The recipes in the next section show specific paths through
 this bundle for each failure mode.
 
+## Valkey runbook — investigating the cluster from outside
+
+Prereq: `scripts/host-routes.sh add` is in effect (the 7 LB IPs are
+routable from this Mac), and `valkey-cli` is on PATH
+(`brew install valkey`).
+
+```sh
+PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
+SEED=192.168.64.51        # any of .51 .52 .53 (primaries) — secondaries .54-.56 also work for reads
+```
+
+The cluster-aware `-c` flag makes `valkey-cli` follow MOVED redirects;
+omit it for commands that need to be pinned to a specific node
+(`CLUSTER *`, `INFO`, `LATENCY`, `SLOWLOG`, `CONFIG`, `CLIENT *`).
+
+### One-shot tour (read-only)
+
+```sh
+scripts/valkey-tour.sh                       # everything
+scripts/valkey-tour.sh --section topology    # cluster_state, nodes, shards, role+uptime per node
+scripts/valkey-tour.sh --section strings     # which keys land on which shards; SET/GET with TTL
+scripts/valkey-tour.sh --section hash        # HSET/HINCRBY on customer:stats:{N}; hash-tag pinning demo
+scripts/valkey-tour.sh --section list        # LLEN + LRANGE of orders:recent
+scripts/valkey-tour.sh --section zset        # ZCARD + top-10 ZREVRANGE WITHSCORES
+scripts/valkey-tour.sh --section stream      # XLEN, XINFO STREAM/GROUPS, XRANGE/XREVRANGE
+scripts/valkey-tour.sh --section pubsub      # active channels + subscriber counts; sharded channels
+scripts/valkey-tour.sh --section info        # INFO Server/Clients/Memory/Stats/Replication/Cluster
+scripts/valkey-tour.sh --section latency     # --latency probe, LATENCY LATEST, SLOWLOG GET 5
+```
+
+### Topology + health
+
+```sh
+valkey-cli -h $SEED -p 6379 -a $PASS cluster info             # cluster_state:ok, cluster_size:3
+valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes            # id, role, addr, master_id, slots
+valkey-cli -h $SEED -p 6379 -a $PASS cluster shards           # slot ranges → primary id
+valkey-cli -h $SEED -p 6379 -a $PASS cluster slots            # legacy form
+
+# Per-node role / uptime sweep
+for ip in 192.168.64.51 192.168.64.52 192.168.64.53 192.168.64.54 192.168.64.55 192.168.64.56; do
+  echo "=== $ip ==="
+  valkey-cli -h $ip -p 6379 -a $PASS info replication | grep -E '^role|^connected_slaves|^master_host'
+done
+```
+
+### Demonstrate MOVED redirect routing
+
+```sh
+# Pick a key, see which slot it hashes to and which node owns that slot.
+KEY=foo
+SLOT=$(valkey-cli -h $SEED -p 6379 -a $PASS cluster keyslot $KEY)
+echo "key=$KEY -> slot=$SLOT"
+valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes | awk -v s=$SLOT '
+  /master/ { for(i=9;i<=NF;i++) if(match($i,/([0-9]+)-([0-9]+)/,m) && s>=m[1] && s<=m[2]) print $2 }'
+
+# Now SET that key WITHOUT -c, hitting a node that doesn't own it.
+# You should get back: (error) MOVED <slot> <ip>:<port>
+WRONG_NODE=192.168.64.53        # change if .53 happens to own this slot
+valkey-cli -h $WRONG_NODE -p 6379 -a $PASS set $KEY bar
+
+# With -c, the cli follows the redirect transparently.
+valkey-cli -c -h $WRONG_NODE -p 6379 -a $PASS set $KEY bar    # → OK
+valkey-cli -c -h $WRONG_NODE -p 6379 -a $PASS get $KEY        # → "bar"
+```
+
+### Exercise each op type directly
+
+```sh
+# Strings
+valkey-cli -c -h $SEED -p 6379 -a $PASS set tour:str "hello"  EX 60
+valkey-cli -c -h $SEED -p 6379 -a $PASS get tour:str
+valkey-cli -c -h $SEED -p 6379 -a $PASS ttl tour:str
+
+# Hash (with hash-tag pinning)
+KEY='customer:stats:{99}'
+valkey-cli -c -h $SEED -p 6379 -a $PASS hset $KEY order_count 0 total_spend 0
+valkey-cli -c -h $SEED -p 6379 -a $PASS hincrby $KEY order_count 1
+valkey-cli -c -h $SEED -p 6379 -a $PASS hincrbyfloat $KEY total_spend 19.99
+valkey-cli -c -h $SEED -p 6379 -a $PASS hgetall $KEY
+
+# List (capped — same pattern as orders:recent)
+valkey-cli -c -h $SEED -p 6379 -a $PASS lpush tour:list a b c d e
+valkey-cli -c -h $SEED -p 6379 -a $PASS ltrim tour:list 0 2
+valkey-cli -c -h $SEED -p 6379 -a $PASS lrange tour:list 0 -1
+valkey-cli -c -h $SEED -p 6379 -a $PASS llen  tour:list
+
+# Sorted set
+valkey-cli -c -h $SEED -p 6379 -a $PASS zincrby tour:zset 100  alice
+valkey-cli -c -h $SEED -p 6379 -a $PASS zincrby tour:zset  50  bob
+valkey-cli -c -h $SEED -p 6379 -a $PASS zincrby tour:zset 175  carol
+valkey-cli -c -h $SEED -p 6379 -a $PASS zrevrange tour:zset 0 -1 WITHSCORES
+
+# Stream
+valkey-cli -c -h $SEED -p 6379 -a $PASS xadd  tour:stream '*' event login user 1
+valkey-cli -c -h $SEED -p 6379 -a $PASS xadd  tour:stream '*' event logout user 1
+valkey-cli -c -h $SEED -p 6379 -a $PASS xlen  tour:stream
+valkey-cli -c -h $SEED -p 6379 -a $PASS xrange tour:stream - +
+valkey-cli -c -h $SEED -p 6379 -a $PASS xinfo stream tour:stream
+```
+
+### Pub/sub — live, in two terminals
+
+Classic pub/sub: messages broadcast across all nodes via cluster bus,
+so any seed works as the subscribe endpoint.
+
+```sh
+# Terminal 1 — subscribe
+valkey-cli -h 192.168.64.51 -p 6379 -a $PASS subscribe orders:notifications
+# leave running
+
+# Terminal 2 — publish (either through the app, or directly)
+curl -X POST http://192.168.64.50:8080/api/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"customerId":1,"amount":1.00}'
+# OR direct:
+valkey-cli -h 192.168.64.52 -p 6379 -a $PASS publish orders:notifications "hello from outside"
+```
+
+Sharded pub/sub: messages stay on the shard owning the channel name's
+slot. Pick a sharded channel by computing its slot:
+
+```sh
+CH='{orders}:sharded'
+SLOT=$(valkey-cli -h $SEED -p 6379 -a $PASS cluster keyslot $CH)
+OWNER=$(valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes | awk -v s=$SLOT '
+  /master/ { for(i=9;i<=NF;i++) if(match($i,/([0-9]+)-([0-9]+)/,m) && s>=m[1] && s<=m[2]) print $2 }' | cut -d: -f1 | cut -d@ -f1)
+
+# Terminal 1 — subscribe ON THE OWNING SHARD (else SSUBSCRIBE returns MOVED)
+valkey-cli -h $OWNER -p 6379 -a $PASS ssubscribe "$CH"
+
+# Terminal 2 — publish (any node, command is forwarded to the owner)
+curl -X POST 'http://192.168.64.50:8080/api/valkey/pubsub/spublish?msg=hello-sharded'
+```
+
+### Memory + performance probes
+
+```sh
+# Memory snapshot per node
+for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
+  echo "=== $ip ==="
+  valkey-cli -h $ip -p 6379 -a $PASS info memory | grep -E '^(used_memory_human|used_memory_peak_human|used_memory_rss_human|mem_fragmentation_ratio|maxmemory_human|maxmemory_policy|evicted_keys)'
+done
+
+# Latency monitor (this seed only) — 5 seconds of pings, distribution at the end
+valkey-cli -h $SEED -p 6379 -a $PASS --latency -i 1 &
+sleep 5; kill %1 2>/dev/null; wait 2>/dev/null
+
+# Latency events (commands that exceeded the configured threshold)
+valkey-cli -h $SEED -p 6379 -a $PASS config set latency-monitor-threshold 100   # 100 ms; default is 0=disabled
+valkey-cli -h $SEED -p 6379 -a $PASS latency latest
+valkey-cli -h $SEED -p 6379 -a $PASS latency history event-name
+valkey-cli -h $SEED -p 6379 -a $PASS latency reset
+
+# Slow queries (default threshold 10ms, 128-entry ring)
+valkey-cli -h $SEED -p 6379 -a $PASS slowlog get 10
+valkey-cli -h $SEED -p 6379 -a $PASS slowlog reset
+valkey-cli -h $SEED -p 6379 -a $PASS config get slowlog-log-slower-than
+
+# Find big keys (read-only scan, safe on prod)
+valkey-cli -h $SEED -p 6379 -a $PASS --bigkeys
+valkey-cli -h $SEED -p 6379 -a $PASS --memkeys     # like bigkeys but ranked by memory footprint
+
+# Hot keys (sampling, more invasive)
+valkey-cli -h $SEED -p 6379 -a $PASS --hotkeys
+
+# Per-command stats — what the app is actually calling
+valkey-cli -h $SEED -p 6379 -a $PASS info commandstats | grep -E '^cmdstat_(xadd|hincrby|zincrby|publish|spublish|lpush|get|set)' | sort
+
+# Keyspace overview
+valkey-cli -h $SEED -p 6379 -a $PASS info keyspace
+```
+
+### Failover test (manual — only do this on a non-prod cluster)
+
+Promotes a replica to take over its primary's slots.
+
+```sh
+# Pick a primary
+PRIMARY=valkey-primary-1
+PRIMARY_IP=192.168.64.52
+SECONDARY=valkey-secondary-1     # the replica that backs it (chart pairing is by-index)
+SECONDARY_IP=192.168.64.55
+
+# Before — confirm topology
+valkey-cli -h $PRIMARY_IP -p 6379 -a $PASS info replication
+
+# Take the primary offline (cleanest way: kubectl delete pod — the StatefulSet recreates it)
+kubectl -n valkey delete pod $PRIMARY
+
+# Within a few seconds the secondary should promote itself.
+# Watch from any other primary:
+watch "valkey-cli -h 192.168.64.51 -p 6379 -a $PASS cluster nodes | grep -E 'master|slave'"
+# You should see $SECONDARY_IP flip from 'slave' to 'master'.
+
+# When the StatefulSet recreates the original primary pod, it comes back as a replica.
+# Verify:
+sleep 30
+valkey-cli -h $PRIMARY_IP -p 6379 -a $PASS info replication | grep -E '^role|^master_host'
+```
+
+### When something looks wrong
+
+| Symptom | First check |
+|---|---|
+| `valkey-cli` connects but most commands time out | `cluster info` — if `cluster_state:fail`, a primary lost quorum |
+| `MOVED` to an IP that's `(error) Could not connect` | `host-routes.sh list` — route hop missing or `iface != bridge100`; or that pod is down |
+| `XADD` works but `XREADGROUP` returns nothing | the consumer-group offset is past the new entries OR no consumer is registered yet — `xinfo groups stream:name` |
+| `PUBSUB NUMSUB` shows 0 subscribers but app receives messages | each app replica has its own subscriber connection; `NUMSUB` from a different node may not reflect peers — try the same query against each primary |
+| Lots of `MOVED` traffic in `info commandstats` | client isn't cluster-aware (missing `-c` for cli, or Lettuce topology refresh disabled) |
+
 ## Integration tools — what to install for what
 
 | Failure mode | Charts needed |

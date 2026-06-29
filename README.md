@@ -358,6 +358,11 @@ scripts/host-routes.sh remove                          # tear down
 
 # In-cluster CI loop against the local Artifactory
 scripts/local-ci.sh                                     # build app image, push image + charts
+
+# Comprehensive Valkey investigation from outside the cluster (read-only)
+scripts/valkey-tour.sh                                  # topology, all op types, INFO, latency
+scripts/valkey-tour.sh --section pubsub                 # just one section
+scripts/valkey-tour.sh --seed 192.168.64.53             # use a different seed node
 ```
 
 Why three capture paths exist (actuator, jattach, kubectl-debug+JDK):
