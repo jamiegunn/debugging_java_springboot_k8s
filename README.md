@@ -23,14 +23,38 @@ without restarting the pod.
 
 ## API
 
+### Business endpoints
+
 | Method | Path | Notes |
 |--------|------|-------|
-| GET / POST / PUT / DELETE | `/api/customers[/{id}]` | Standard CRUD |
-| GET / POST / PUT / DELETE | `/api/orders[/{id}]` | POST publishes `OrderCreatedEvent` to MQ |
+| GET / POST / PUT / DELETE | `/api/customers[/{id}]` | Standard CRUD; reads cached in Valkey (`@Cacheable`) |
+| GET / POST / PUT / DELETE | `/api/orders[/{id}]` | POST drives the full integration fan-out: JPA save → MQ publish → Valkey XADD + PUBLISH + HINCRBY + ZINCRBY + LPUSH |
 | POST | `/api/batch/customers/load?file=PATH` | Triggers Spring Batch CSV load |
+
+### Valkey playground (every op type the cluster supports, no Lua)
+
+| Method | Path | Valkey command(s) |
+|--------|------|-------------------|
+| POST | `/api/valkey/kv/{key}?value=...[&ttlSeconds=N]` | `SET` (optionally with `EX`) |
+| GET | `/api/valkey/kv/{key}` | `GET` |
+| POST | `/api/valkey/pubsub/publish?msg=...` | `PUBLISH orders:notifications` (classic, broadcasts cluster-wide via cluster bus) |
+| POST | `/api/valkey/pubsub/spublish?msg=...` | `SPUBLISH {orders}:sharded` (sharded, slot-routed; sent via Lettuce raw dispatch since Spring Data Redis 3.3 has no SSUBSCRIBE binding) |
+| GET | `/api/valkey/pubsub/received` | This replica's classic-subscriber receive counter |
+| GET | `/api/valkey/streams/length` | `XLEN orders:events` |
+| POST | `/api/valkey/streams/append` | `XADD orders:events ...` |
+| GET | `/api/valkey/streams/read?count=N` | `XREAD COUNT N STREAMS orders:events 0` |
+| GET | `/api/valkey/streams/consumed` | This replica's `XREADGROUP` consumer counter (group `order-processors`) |
+| GET | `/api/valkey/stats/{customerId}` | `HGETALL customer:stats:{<id>}` — hash tag pins per-customer keys to one shard |
+| GET | `/api/valkey/leaderboard?n=10` | `ZREVRANGE customers:top 0 N-1 WITHSCORES` |
+| GET | `/api/valkey/recent?n=20` | `LRANGE orders:recent 0 N-1` + `LLEN` |
+
+### Diagnostic / actuator
+
+| Method | Path | Notes |
+|--------|------|-------|
 | GET | `/actuator/health/{liveness,readiness}` | k8s probes |
 | GET/POST | `/actuator/loggers/{name}` | Runtime log-level changes |
-| GET | `/actuator/threaddump`, `/actuator/heapdump`, `/actuator/prometheus` | Diagnostics |
+| GET | `/actuator/threaddump`, `/actuator/heapdump`, `/actuator/prometheus` | Diagnostics (see "Debug tooling" below) |
 
 ## Local dev
 
@@ -73,19 +97,44 @@ its readiness probe (Flyway runs at startup).
 
 All scripts default to namespace `debug-demo` and selector
 `app.kubernetes.io/name=debug-demo-app`. Override with `-n` / `-l`.
+The runtime image is JRE-only (`eclipse-temurin:21-jre-alpine`) — no
+JDK is baked in. **See CLAUDE.md for the three-tier capture story
+(actuator → jattach → JDK ephemeral container).**
 
 ```sh
-scripts/tail-logs.sh                                    # multi-replica log stream
-scripts/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level toggle
-scripts/dump-threads.sh                                 # writes ./dumps/threads/<pod>-thread-*.txt
-scripts/dump-heap.sh --confirm                          # writes ./dumps/heap/<pod>-heap-*.hprof
+# Logs + log-level toggle
+scripts/tail-logs.sh                                    # multi-replica log stream, prefers stern
+scripts/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level via /actuator/loggers
+
+# Memory triage — heap vs everything else, reconciled to container RSS
+scripts/memory-report.sh                                # one-shot table (cgroup + actuator)
+
+# JVM dumps — preferred path is actuator-only, no JDK tools in the pod
+scripts/dump-jattach.sh install                         # one-time install of jattach into the pod
+scripts/dump-jattach.sh threads                         # XREADGROUP/Thread.print via jattach
+scripts/dump-jattach.sh heap --confirm                  # XADD/jmap-equivalent dump
+scripts/dump-jattach.sh jcmd "GC.heap_info"             # any jcmd-style command
+
+# Fallback path — kubectl debug with an ephemeral JDK container (last resort)
+scripts/dump-threads.sh                                 # ./dumps/threads/<pod>-thread-*.txt
+scripts/dump-heap.sh --confirm                          # ./dumps/heap/<pod>-heap-*.hprof
+
+# External access stand-in for the production VIP layer (dev Mac only)
+scripts/host-routes.sh add                              # sudo route add for each MetalLB IP
+scripts/test-external-access.sh                        # curl + valkey-cli end-to-end check
+scripts/host-routes.sh remove                          # tear down
+
+# In-cluster CI loop against the local Artifactory
+scripts/local-ci.sh                                     # build app image, push image + charts
 ```
 
-The dump scripts use `kubectl debug` to attach an ephemeral
-`eclipse-temurin:21-jdk-alpine` container — the runtime image is JRE only,
-so `jstack` / `jmap` aren't present in the app container itself. The
-Deployment sets `shareProcessNamespace: true`, which lets the debug
-container address the JVM as PID 1.
+Why three capture paths exist (actuator, jattach, kubectl-debug+JDK):
+the runtime image deliberately ships no JDK tools, so any "give me a
+thread dump" workflow has to either (a) go through actuator endpoints
+the JRE already serves, (b) install a tiny static binary like jattach
+into the pod on demand, or (c) attach a JDK ephemeral container with
+`shareProcessNamespace: true`. CLAUDE.md walks through when to reach
+for each.
 
 ## Generating a large dataset
 
