@@ -1,6 +1,6 @@
 # debugging_java_springboot_k8s
 
-A Spring Boot 3.3 / Java 21 service designed as the **target** for a
+A Spring Boot 3.3 / Java 25 service designed as the **target** for a
 toolkit that diagnoses memory- and CPU-related issues in JVM pods on
 Kubernetes — heap pressure, GC thrash, thread starvation, leaks, slow
 JDBC/JMS hand-offs. The CRUD API and Helm charts exist mainly to give
@@ -9,7 +9,7 @@ the test tools something realistic to operate on.
 ## Constraint that shapes everything
 
 **No JDK tools to capture or analyze thread/heap dumps.** The runtime
-image is JRE-only (`eclipse-temurin:21-jre-alpine`) and the diagnostic
+image is JRE-only (`eclipse-temurin:25-jre-alpine`) and the diagnostic
 workflow must work in environments where you cannot pull a JDK image,
 attach an ephemeral container with `kubectl debug`, or install
 `jstack`/`jmap`/`jcmd` into the pod. Analysis goes through standalone
@@ -28,7 +28,7 @@ metrics (Micrometer/Prometheus).
    `Compiler.codecache`, …) that actuator doesn't expose. **Must be
    installed into the pod first** — see `scripts/dump-jattach.sh`.
 3. **JDK ephemeral container (last resort).** `kubectl debug --target=app
-   --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/dump-threads.sh`
+  --image=eclipse-temurin:25-jdk-alpine ...` — `scripts/dump-threads.sh`
    and `scripts/dump-heap.sh`. Use when you need tools beyond jattach's
    reach (e.g., `jstack -F` for unresponsive JVMs, `jdb` for live
    debugging) or when policy forbids installing binaries into pods.
@@ -611,7 +611,7 @@ this bundle for each failure mode.
 
 ## Conventions
 
-- **Image:** runtime is `eclipse-temurin:21-jre-alpine`. Do not bake
+- **Image:** runtime is `eclipse-temurin:25-jre-alpine`. Do not bake
   the JDK in. If a tool needs `jstack`/`jmap`, that tool is wrong for
   this project — use actuator (preferred), jattach via
   `scripts/dump-jattach.sh` (when you need jcmd), or `kubectl debug`

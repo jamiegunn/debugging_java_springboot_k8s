@@ -7,7 +7,7 @@
 #   ./dump-threads.sh [-n namespace] [-l selector] [--container name] [pod-name]
 #
 # The app image is JRE-only, so this attaches an ephemeral container with the
-# matching JDK (eclipse-temurin:21-jdk-alpine) via `kubectl debug`. Because the
+# matching JDK (eclipse-temurin:25-jdk-alpine) via `kubectl debug`. Because the
 # app Deployment sets shareProcessNamespace=true, jstack targets PID 1.
 
 set -euo pipefail

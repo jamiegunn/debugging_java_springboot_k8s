@@ -7,7 +7,7 @@ set -euo pipefail
 : "${NAMESPACE:=debug-demo}"
 : "${SELECTOR:=app.kubernetes.io/name=debug-demo-app}"
 : "${APP_CONTAINER:=app}"
-: "${JDK_DEBUG_IMAGE:=eclipse-temurin:21-jdk-alpine}"
+: "${JDK_DEBUG_IMAGE:=eclipse-temurin:25-jdk-alpine}"
 
 err()  { printf 'error: %s\n' "$*" >&2; }
 info() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }

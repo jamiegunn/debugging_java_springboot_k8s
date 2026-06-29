@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-FROM maven:3.9-eclipse-temurin-21 AS builder
+FROM maven:3.9-eclipse-temurin-25 AS builder
 WORKDIR /build
 COPY pom.xml ./
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q -DskipTests package
 
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:25-jre-alpine AS runtime
 RUN apk add --no-cache curl tini && \
     addgroup -S app && adduser -S -G app -u 1000 app && \
     mkdir -p /app /tmp/heapdumps && chown -R app:app /app /tmp/heapdumps

@@ -1,6 +1,6 @@
 # debugging_java_springboot_k8s
 
-A Spring Boot 3.3 / Java 21 service with Oracle + IBM MQ, deployable to
+A Spring Boot 3.3 / Java 25 service with Oracle + IBM MQ, deployable to
 Kubernetes via three independent Helm charts. The primary goal of the
 repo is the **debug tooling layer** in `scripts/` — kubectl-driven tools
 for grabbing thread/heap dumps and toggling Logback levels at runtime
@@ -74,30 +74,262 @@ mvn test       # unit
 mvn verify     # unit + Testcontainers integration
 ```
 
-## Deploying to local Kubernetes
+## Getting Started (from a clean macOS install)
+
+This section assumes **nothing**: no Homebrew, no Rancher Desktop, no
+cluster running. Follow top to bottom. Every command tells you what it
+does and what to expect; verification commands are inline so you catch
+problems as they happen.
+
+Time on a warm machine: ~10 minutes (most of it is image pulls).
+
+### 0. macOS prereqs
 
 ```sh
-minikube start --memory=8192 --cpus=4
-kubectl create namespace debug-demo 2>/dev/null || true
+# Apple's command-line tools (gives you git, make, clang). One-time per machine.
+xcode-select --install   # opens a GUI dialog; click "Install"
 
-helm upgrade --install oracle  ./charts/oracle  -n oracle --create-namespace
-helm upgrade --install ibm-mq  ./charts/ibm-mq  -n mq     --create-namespace
-helm upgrade --install app     ./charts/debug-demo-app -n debug-demo \
-  --set image.repository=artifactory.example.com/debug-demo/debug-demo-app \
-  --set image.tag=<sha>
+# Homebrew — package manager for the rest. One-time per machine.
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-kubectl -n debug-demo port-forward svc/app-debug-demo-app 8080:8080
-curl -s localhost:8080/actuator/health
+# After Homebrew finishes, follow its "Next steps" — typically:
+#   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+#   eval "$(/opt/homebrew/bin/brew shellenv)"
 ```
 
-Install order matters: Oracle must be Ready before the app can pass
-its readiness probe (Flyway runs at startup).
+Verify:
+```sh
+git --version       # any recent version is fine
+brew --version      # 4.x
+```
+
+### 1. Install Rancher Desktop
+
+```sh
+brew install --cask rancher
+```
+
+Then **open Rancher Desktop** (Applications folder or
+`open -a "Rancher Desktop"`). On first launch:
+
+- Accept the licence terms.
+- Choose **"dockerd (moby)"** as the container engine (this repo expects moby; containerd works too but you'll need to adjust `image.pullPolicy=Never` paths).
+- Let it download the VM image and bootstrap (~2-3 min on first run).
+- When the bottom-status row says "Kubernetes is running", proceed.
+
+Add Rancher's bundled tools to your `$PATH` (covers `rdctl`, `kubectl`,
+`helm`, `docker`, `nerdctl`):
+
+```sh
+# Add the line below to ~/.zshrc (or ~/.bash_profile) and reload your shell.
+echo 'export PATH="$HOME/.rd/bin:$PATH"' >> ~/.zshrc
+exec zsh
+```
+
+Verify each tool resolves and the cluster is up:
+
+```sh
+rdctl info             # should print VM state = Running
+kubectl get nodes      # 1 node, STATUS Ready
+helm version --short   # any v3.x
+docker info            # Server.OperatingSystem mentions Alpine Linux (the RD VM)
+```
+
+### 2. Size the Rancher Desktop VM
+
+The default 2 CPU / 6 GB is too small for the full stack. Bump it:
+
+```sh
+rdctl set --virtual-machine.memory-in-gb=16 --virtual-machine.number-cpus=8
+```
+
+This restarts the RD backend automatically (takes ~30s). Wait until
+`kubectl get nodes` shows Ready again before continuing.
+
+### 3. Clone this repo
+
+```sh
+git clone https://github.com/<your-org>/debugging_java_springboot_k8s.git
+cd debugging_java_springboot_k8s
+```
+
+### 4. Bring the stack up
+
+```sh
+scripts/install-stack.sh
+```
+
+What this does (5 phases, all in-cluster, no `sudo`):
+
+1. **Prereq check** — verifies `rdctl`, `kubectl`, `helm`, `docker`, `curl`, `python3` are on PATH; the VM is Running; CPU/memory meet the minimum.
+2. **MetalLB** — applies the upstream manifest, then creates the `bridge-pool` IPAddressPool (`192.168.64.50-60`) and `L2Advertisement`.
+3. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min).
+4. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
+5. **App chart** — installs `debug-demo-app` with the right Valkey/Oracle/MQ wiring, plus the external LoadBalancer Service pinned to `192.168.64.50`.
+
+Faster variants (use during iteration, not on a clean install):
+```sh
+scripts/install-stack.sh --skip-artifactory   # skip ~3-5 min Artifactory bootstrap
+scripts/install-stack.sh --skip-build         # reuse an existing debug-demo-app:dev image
+scripts/install-stack.sh --check              # just print what's installed; install nothing
+```
+
+Expected tail of the output:
+```
+=== done ===
+  external IPs allocated by MetalLB:
+    debug-demo/app-debug-demo-app-ext: 192.168.64.50
+    valkey/valkey-primary-0-ext:       192.168.64.51
+    ... (6 valkey IPs total)
+  next steps:
+    scripts/host-routes.sh add        # one-time sudo; makes the LB IPs reachable from this Mac
+    scripts/smoke-test.sh             # end-to-end verification
+```
+
+### 5. Two manual steps install-stack.sh leaves to you
+
+Both need `sudo` and would be unfriendly to bundle into the unattended
+install. Run them by hand.
+
+#### 5a. Required — install Mac-side static routes (so `192.168.64.x` reaches the cluster)
+
+```sh
+scripts/host-routes.sh add        # prompts for your sudo password once
+```
+
+What this does: adds 7 entries to your macOS routing table that say
+"to reach `192.168.64.50-56`, send via the Rancher Desktop VM
+(`192.168.64.2`)". The VM's kube-proxy iptables then DNATs each
+incoming connection to the right pod. Without this step, MetalLB-assigned
+IPs aren't reachable from your Mac because of how vz-NAT handles ARP.
+
+Verify:
+```sh
+scripts/host-routes.sh list
+# Every line should end with: gw=192.168.64.2  iface=bridge100
+
+curl -fsS http://192.168.64.50:8080/actuator/health
+# {"status":"UP","groups":["liveness","readiness"]}
+```
+
+In a real deployment this step is replaced by a real VIP/LB in front
+of the cluster. The cluster config itself doesn't change.
+
+#### 5b. Optional — Docker `insecure-registries` (only if you'll push images to the in-cluster Artifactory)
+
+Skip this unless you'll use `scripts/local-ci.sh`. If you do:
+
+```sh
+rdctl shell -- sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "min-api-version": "1.41",
+  "features": {"containerd-snapshotter": true},
+  "seccomp-profile": "/etc/rancher-desktop/seccomp.json",
+  "insecure-registries": ["host.docker.internal:8081"]
+}
+EOF
+rdctl shell -- sudo rc-service docker restart
+```
+
+Verify:
+```sh
+docker info | grep -A2 'Insecure Registries'
+# should list: host.docker.internal:8081
+```
+
+### 6. Verify end-to-end
+
+```sh
+scripts/smoke-test.sh --include-external
+```
+
+Expected output: **22 PASS / 0 FAIL**. Each line tells you which subsystem
+it exercised. Non-zero exit code = the count of failures, and each failure
+line shows you exactly which check broke (e.g., "IBM MQ DEV.QUEUE.1
+CURDEPTH grew by 1" → MQ producer broken; "cluster-announce-ip points
+at external LB IPs" → Valkey topology broken).
+
+### 7. Use it
+
+Two equivalent paths once everything is up:
+
+```sh
+# From the Mac (after step 5a)
+BASE=http://192.168.64.50:8080
+curl $BASE/actuator/health
+curl -X POST $BASE/api/customers \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Alice","email":"alice-1@example.com"}'
+
+# From inside the cluster (always works, no routes needed)
+POD=$(kubectl -n debug-demo get pod -l app.kubernetes.io/name=debug-demo-app \
+       -o jsonpath='{.items[?(@.status.containerStatuses[0].ready==true)].metadata.name}' | awk '{print $1}')
+kubectl -n debug-demo exec $POD -- curl -s http://localhost:8080/actuator/health
+```
+
+See **API** (above) for every endpoint, **CLAUDE.md** for the full
+runbook (logs, memory triage, dump capture without JDK tools).
+
+### Optional convenience
+
+```sh
+brew install valkey            # gives you valkey-cli for direct cluster tests
+brew install stern             # prettier multi-pod log tailing for scripts/tail-logs.sh
+```
+
+### Tear down
+
+```sh
+scripts/uninstall-stack.sh                # symmetric — helm uninstall, drop PVCs, drop pools
+scripts/uninstall-stack.sh --keep-pvcs    # retain data for a re-install
+scripts/uninstall-stack.sh --full         # also remove MetalLB controller
+scripts/host-routes.sh remove             # tear down the static routes (matches step 5a)
+```
+
+If you also want to roll back the Docker daemon edit from step 5b:
+```sh
+rdctl shell -- sudo sh -c '
+  cat > /etc/docker/daemon.json <<JSON
+{ "min-api-version": "1.41",
+  "features": {"containerd-snapshotter": true},
+  "seccomp-profile": "/etc/rancher-desktop/seccomp.json" }
+JSON
+'
+rdctl shell -- sudo rc-service docker restart
+```
+
+### Troubleshooting
+
+| Symptom | Likely cause + fix |
+|---|---|
+| `install-stack.sh` says "RD VM is too small" | Run step 2 (`rdctl set --memory-in-gb=16 --number-cpus=8`) and wait for the cluster to come back |
+| `kubectl get nodes` shows nothing or errors | Rancher Desktop isn't running or Kubernetes is disabled — open the app, check the status bar at bottom |
+| Pods stuck in `Pending` with "Insufficient cpu/memory" | RD VM too small — re-run step 2 with larger numbers |
+| `curl http://192.168.64.50:8080` times out | Step 5a not done. Run `scripts/host-routes.sh add` |
+| smoke-test reports "ORA-00001 unique constraint" for customers | A previous run created the same email — smoke-test uses unique timestamps so this shouldn't recur on its own, but `scripts/uninstall-stack.sh && scripts/install-stack.sh` gets you fully clean |
+| `docker push host.docker.internal:8081/...` fails with HTTPS error | Step 5b not done (only relevant if pushing to in-cluster Artifactory) |
+| Oracle pod in CrashLoopBackOff | gvenzl image's pre-baked PVC seeding — the chart's `seed-oradata` initContainer handles this; if you see this, see `~/.claude/projects/.../memory/k8s_gotchas.md` |
+
+## Deploying to a non-Rancher-Desktop cluster
+
+Same charts work on any Kubernetes that has MetalLB (or a real cloud
+LoadBalancer). The Rancher-Desktop-specific bits are:
+
+- `192.168.64.x` IP range — replace with whatever your network gives you
+- `scripts/host-routes.sh` — replace with your real LB pointing at the
+  MetalLB IPs (or use the cloud provider's LoadBalancer impl directly
+  and drop MetalLB)
+- The `image.pullPolicy=Never` override in the app install — change to
+  `IfNotPresent` and point at a real registry once you've pushed there
+  (`scripts/local-ci.sh` or `.github/workflows/ci.yml` push to JFrog)
+
+Otherwise the chart values and the entire smoke-test flow port as-is.
 
 ## Debug tooling
 
 All scripts default to namespace `debug-demo` and selector
 `app.kubernetes.io/name=debug-demo-app`. Override with `-n` / `-l`.
-The runtime image is JRE-only (`eclipse-temurin:21-jre-alpine`) — no
+The runtime image is JRE-only (`eclipse-temurin:25-jre-alpine`) — no
 JDK is baked in. **See CLAUDE.md for the three-tier capture story
 (actuator → jattach → JDK ephemeral container).**
 
