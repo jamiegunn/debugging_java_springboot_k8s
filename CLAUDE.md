@@ -73,63 +73,319 @@ inter-dependencies — install order is whatever fits the user's flow.
 
 ## External access (production-shape topology)
 
-Cluster-side: per-service-per-pod LoadBalancer Services backed by
-MetalLB, pinned to the `192.168.64.50-60` pool. Mac-side: a thin
-static-route hop that stands in for the production VIP/LB.
+**Two distinct entry-points by traffic type**, with two different
+fulfillment models:
+
+- **HTTP → Pattern D (hostNetwork ingress + external LB)**. The
+  ingress-nginx controller pod runs with `hostNetwork: true` and
+  binds directly to port 80 on the k8s node. An external L4 LB
+  (F5 in production; an HAProxy-on-Lima-VM stand-in here) fronts
+  the node IPs. No MetalLB in this path.
+- **Valkey → Layer 4 (MetalLB direct, per-pod LBs)**. Each Valkey
+  pod has its own `LoadBalancer` Service with a pinned IP from
+  MetalLB. No proxy in the middle — the Valkey wire protocol is
+  TCP and stateful (MOVED redirects must resolve to externally-
+  reachable per-shard endpoints).
 
 ```
-   External clients (Postman, valkey-cli, anything off-cluster)
-                         │
-                         │   prod: real VIP / external LB
-                         │   dev:  scripts/host-routes.sh add
-                         │        (sudo route — next-hop = RD VM @ 192.168.64.2)
-                         ▼
-        ─── MetalLB pool 192.168.64.50–60 (bridge subnet) ───
-                         │
-                         ▼
-   192.168.64.50 → app-debug-demo-app-ext   (selector: all app replicas)
-   192.168.64.51 → valkey-primary-0-ext     (selector: just primary-0 by pod-name)
-   192.168.64.52 → valkey-primary-1-ext     (just primary-1)
-   192.168.64.53 → valkey-primary-2-ext     (just primary-2)
-   192.168.64.54 → valkey-secondary-0-ext   (just secondary-0)
-   192.168.64.55 → valkey-secondary-1-ext   (just secondary-1)
-   192.168.64.56 → valkey-secondary-2-ext   (just secondary-2)
+                              External clients
+                                    │
+                       prod: F5 VIP on corporate LAN
+                       dev:  HAProxy on second Lima VM (192.168.105.x)
+                                    │
+            ┌───────────────────────┼─────────────────────────────────┐
+            │ HTTP (L7)             │ TCP (L4)                        │
+            ▼                       ▼                                 │
+   HAProxy VM :80              MetalLB pool 192.168.64.51-56          │
+   backend → RD VM :80         valkey-primary-{0,1,2}-ext             │
+            │                  valkey-secondary-{0,1,2}-ext           │
+            │                  (per-pod LoadBalancer Services)        │
+            ▼                       │                                 │
+   RD VM 192.168.64.2 :80           │                                 │
+   ingress-nginx-controller         │ TCP, no proxy                   │
+   pod (hostNetwork=true,           │ kube-proxy DNATs to one pod     │
+    binds node :80 directly)        ▼                                 │
+            │                  valkey-primary-0  ... -2,              │
+            │ Ingress rules    valkey-secondary-0 ... -2              │
+            │ host: debug-demo.local                                  │
+            ▼                       │                                 │
+   app-debug-demo-app               │ cluster-announce-ip =           │
+   (ClusterIP, port 8080)           │ its own LB IP                   │
+                                    │ (so MOVED redirects point ext.) │
+            ────────────────────────┴─────────────────────────────────┘
 ```
 
-Each Valkey pod announces its **own external IP** via
-`cluster-announce-ip` (derived from pod ordinal at startup, see
-`statefulset-primary.yaml` entrypoint). So `CLUSTER NODES` / `CLUSTER
-SHARDS` return externally-resolvable endpoints, and `MOVED` redirects
-to external clients point at the right shard's per-pod LB.
+The HTTP path now has **three layers**: external LB (F5/HAProxy)
+→ hostNetwork ingress controller → app ClusterIP. This matches
+Pattern D in the "Four patterns" section below — the F5 layer is
+real (a separate VM, not a pod), and the ingress controller binds
+the node's port 80 directly with no Service in front of it.
 
-**Why per-service-per-pod, not one shared LB:** round-robin across all
-6 pods works *only* for stateless GET/SET and classic pub/sub. It breaks
-`MULTI`/`EXEC`, multi-key Lua (which we don't use anyway), `WAIT`, and
-sharded `SSUBSCRIBE`/`SPUBLISH` pinning. We model the production-correct
-shape so the cluster config travels unchanged from POC → real
-deployment; only the VIP layer in front swaps out.
+### Why an ingress controller for HTTP
 
-**Why the dev `sudo route` hop exists:** Rancher Desktop's vz-NAT mode
-only ARP-responds for the VM's own IP (`192.168.64.2`). MetalLB
-advertises additional IPs in the bridge subnet, but those ARP
-responses don't pass through the NAT to the host. The static route
-tells macOS to use the VM as next-hop for each MetalLB IP; the VM's
-kube-proxy iptables then DNATs to the right pod. In a real
-environment, this hop is your real LB.
+- **Host/path-based routing**: lets one VIP serve multiple services
+  (Postman talks to `debug-demo.local`; if you add a second app,
+  it can share the same VIP via a different host).
+- **TLS termination**: drop a TLS Secret in, get HTTPS for free.
+- **HTTP-aware features**: rewrites, headers, rate limiting, auth.
+- **Standard k8s pattern**: `Ingress` + `IngressClass` are the
+  primitives; the controller is the implementation. Swapping
+  nginx-ingress for any other (Traefik, Contour, Envoy) is a
+  controller swap, not an app-config change.
+
+### Why per-pod LB (no proxy) for Valkey
+
+- Valkey cluster mode sends `MOVED <slot> <ip>:<port>` redirects.
+  External clients must be able to dial those addresses directly.
+  A single shared LB IP would round-robin across nodes and break
+  `MULTI`/`EXEC`, `WAIT`, sharded `SSUBSCRIBE`/`SPUBLISH`.
+- Each pod announces its own external IP via `cluster-announce-ip`
+  (derived from pod ordinal at startup — see
+  `statefulset-primary.yaml` entrypoint). `CLUSTER NODES` /
+  `CLUSTER SHARDS` therefore return externally-resolvable
+  endpoints.
+- We modeled this earlier when discussing "MetalLB instead of nginx"
+  for Valkey — that decision still holds. Nginx-ingress is **only**
+  for HTTP traffic.
+
+### Why MetalLB hands out the IPs (and what replaces it elsewhere)
+
+A `Service type=LoadBalancer` is *a request*, not an implementation.
+When you create one, k8s sets `.status.loadBalancer.ingress` to
+whatever IP an external **load-balancer controller** assigns. If
+nothing in the cluster fulfills that request, the Service sits in
+`<pending>` forever.
+
+On cloud k8s (EKS/GKE/AKS) the cloud-controller-manager fills that
+role — it sees the Service, calls the cloud API to provision an
+ELB/NLB/GLB, and writes the IP/hostname back. On bare-metal,
+on-prem, and dev clusters (Rancher Desktop, kind, minikube, k3s) no
+such controller exists by default. **MetalLB is the bare-metal
+implementation of that contract.** Same Service spec, different
+provider behind the scenes.
+
+```
+┌─ Cluster type ─────────┬─ What fulfills type=LoadBalancer ──────────┬─ How your manifests change ─┐
+│ EKS                    │ AWS cloud-controller → ELB/NLB/ALB         │ none — annotations tune it  │
+│ GKE                    │ GCP cloud-controller → Google LB           │ none                        │
+│ AKS                    │ Azure cloud-controller → Azure LB          │ none                        │
+│ OpenShift on-prem      │ Often MetalLB; sometimes F5 BIG-IP CIS,    │ none — controller-agnostic  │
+│                        │ Citrix CPX, AVI / NSX ALB controller       │                             │
+│ Rancher / k3s          │ Klipper LB (built-in) or MetalLB           │ none                        │
+│ kind / minikube        │ MetalLB, or `minikube tunnel`              │ none                        │
+│ "Plain" bare-metal     │ MetalLB (L2 or BGP mode)                   │ none                        │
+│ No LB controller       │ Service stays `<pending>` → use NodePort + │ chart must offer NodePort   │
+│                        │ external device pointed at node IPs        │ option, no LoadBalancer     │
+└────────────────────────┴────────────────────────────────────────────┴─────────────────────────────┘
+```
+
+Crucially, the **Helm charts in this repo don't change** when you
+move from MetalLB to a real cloud LB. The Valkey per-pod Services
+are still `type: LoadBalancer`; whatever controller is installed
+assigns IPs. Only the *IP source* differs. For ingress-nginx, this
+POC uses Pattern D (`hostNetwork=true`, no LoadBalancer Service) —
+see the "Four patterns" section below for A/B/C alternatives.
+
+### Four patterns for how external LB traffic reaches in-cluster ingress-nginx
+
+The previous section answers "who fulfills `type=LoadBalancer`."
+This section answers a different question: when the external LB
+(F5, NetScaler, cloud LB, HAProxy VM, etc.) is in front, what's in
+its backend pool, and what's listening on those addresses? Four
+real-world patterns, all in production use:
+
+```
+Pattern A — External LB → NodePort
+─────────────────────────────────────
+F5 VIP 10.0.0.50  ──pool──> node1:32080, node2:32080, node3:32080 ...
+                            ↑
+                   ingress-nginx Service: type=NodePort, port=80, nodePort=32080
+                            ↓ kube-proxy iptables on the chosen node
+                            ↓
+                   ingress-nginx-controller pod
+```
+- Pool members: **all node IPs on a high port** (e.g. 32080).
+- Simple, works anywhere. Loses client source IP unless
+  `externalTrafficPolicy: Local` is set on the NodePort Service.
+- Exposes a non-standard port on every node — some shops dislike
+  this for security/auditing reasons.
+
+```
+Pattern B — External LB → pod IPs directly  (most common in mature F5+k8s shops)
+────────────────────────────────────────────────────────────────────────────────
+F5 VIP 10.0.0.50  ──pool──> 10.244.1.5:80, 10.244.2.7:80, ...
+                            (these are real ingress-nginx-controller POD IPs)
+                            ↑
+                   ingress-nginx Service: type=ClusterIP (or anything — F5 ignores it)
+                            ↓
+                   ingress-nginx-controller pod  (no kube-proxy hop, no NodePort)
+```
+- Pool members: **pod IPs of the ingress controller**, populated
+  by an in-cluster controller (F5 BIG-IP CIS, Citrix CPX, AVI
+  Kubernetes Operator) that watches Endpoints/EndpointSlices and
+  programs the F5 pool dynamically as pods scale.
+- Requires the F5 (or other appliance) to have **L3 reachability
+  to the pod network**. Typically achieved via BGP peering with
+  the CNI (Calico, Cilium) advertising pod CIDR routes to F5.
+- No kube-proxy hop, real source IPs, real health checks against
+  the actual pod. **The cleanest enterprise pattern.**
+
+```
+Pattern C — External LB → LoadBalancer IP  (two LB layers; usually transitional)
+────────────────────────────────────────────────────────────────────────────────
+F5 VIP 10.0.0.50  ──pool──> 10.10.50.7:80
+                            ↑
+                   ingress-nginx Service: type=LoadBalancer
+                   ↑ IP allocated by something inside cluster (MetalLB / cloud CCM / F5 CIS as LB-class)
+                            ↓
+                   ingress-nginx-controller pod
+```
+- Pool members: **one IP per ingress-nginx Service**, which itself
+  is allocated by some other LB controller in the cluster.
+- Two LB layers stacked. Most often seen during migrations
+  (you were on MetalLB-only, you're rolling F5 in front, you haven't
+  migrated the inner LB yet) rather than as a steady state.
+
+```
+Pattern D — External LB → node IPs on :80, hostNetwork ingress  (← this POC)
+────────────────────────────────────────────────────────────────────────────
+F5 VIP 10.0.0.50  ──pool──> node1:80, node2:80, node3:80 ...
+                            ↑
+                   ingress-nginx pod with hostNetwork=true
+                   (binds directly to the node's :80 — Service is bypassed entirely)
+                            ↓
+                   forwards to app ClusterIP, then to app pod
+```
+- Pool members: **all node IPs on standard 80/443**.
+- ingress-nginx runs as a DaemonSet (or a small Deployment with
+  node anti-affinity) so exactly one pod per node owns the port.
+- Service still exists for cluster-internal access but external
+  traffic bypasses it — the pod's container is bound to the host's
+  port via `hostNetwork: true`.
+- Trade-offs: ingress controller can't share a node with anything
+  else that needs :80; you need namespace-level coordination on
+  what gets the host port. **What this POC implements** because it
+  matches the enterprise we're modeling.
+
+#### How to tell which pattern an existing cluster uses
 
 ```sh
-scripts/host-routes.sh add        # one-time per boot, prompts for sudo
-scripts/test-external-access.sh   # curl app, valkey-cli ping + cluster info + SET/GET
-scripts/host-routes.sh remove     # tear down
+# What type is the ingress controller's Service?
+kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.spec.type}'
+
+# Is the pod hostNetwork?
+kubectl -n ingress-nginx get pod -l app.kubernetes.io/name=ingress-nginx \
+  -o jsonpath='{.items[0].spec.hostNetwork}'
+
+# Is F5 BIG-IP CIS (or another CCM-style controller) running?
+kubectl get pods -A | grep -iE 'f5-bigip|cis|k8s-bigip-ctlr|citrix|avi-controller'
+```
+
+| Service type | hostNetwork | CCM-style controller? | → Pattern |
+|---|---|---|---|
+| `ClusterIP` | `true` | no | **D** (hostNetwork; this POC) |
+| `ClusterIP` | `false` | yes | **B** (CIS → pod IPs) |
+| `NodePort` | `false` | no | **A** (LB → NodePort) |
+| `LoadBalancer` | `false` | maybe | **B** (CIS as LB-class) or **C** (two-layer) |
+
+The Helm charts in this repo don't change between patterns — the
+chart's `controller.hostNetwork` value or `controller.service.type`
+value flips, but everything else stays. The MetalLB-allocated
+Valkey per-pod IPs are unchanged regardless of which HTTP pattern
+you pick, because Valkey's `MOVED` semantics need per-shard
+addressability and no L7 ingress controller is in the path.
+
+#### How this POC models Pattern D (the F5 simulation)
+
+Real Pattern D requires a separate external LB device. In this POC
+we approximate that with a **second Lima VM** running HAProxy:
+
+```
+Mac (host)
+├── Lima VM "haproxy-lb"  192.168.105.x   ← F5 stand-in
+│      HAProxy 2.x, frontend :80
+│      backend = $RD_VM_IP:80 (single node in dev)
+│
+└── Rancher Desktop VM   192.168.64.2     ← the k8s node
+       ingress-nginx-controller pod (hostNetwork=true, binds :80 directly)
+       app pods (ClusterIP, reached by ingress)
+
+Mac IP forwarding enabled (sysctl net.inet.ip.forwarding=1)
+so the HAProxy VM (on its own subnet) can reach the RD VM (on bridge100)
+via the Mac as a router. In production this hop doesn't exist — F5
+and the k8s nodes share the corporate LAN.
+```
+
+In production, swap "Lima VM running HAProxy" for "F5 BIG-IP cluster
+in the network DMZ" and "Mac IP forwarding" for "actual L3 routing
+between F5 and node subnets." The k8s side is identical.
+
+### Why the dev `sudo route` hop exists (still needed for Valkey)
+
+Rancher Desktop's vz-NAT mode only ARP-responds for the VM's own
+IP (`192.168.64.2`). MetalLB advertises the per-pod Valkey IPs
+(192.168.64.51-56) in the bridge subnet via gratuitous ARP, but
+those ARP responses don't pass through the NAT to the host. The
+static routes tell macOS to use the RD VM as next-hop for each
+MetalLB IP; the VM's kube-proxy iptables then DNATs to the right
+pod.
+
+**This hop is no longer needed for HTTP** — the HAProxy VM is on
+its own Lima-managed subnet (`192.168.105.x`) that the Mac talks
+to directly, and HAProxy reaches the RD VM through Mac IP
+forwarding (`sysctl net.inet.ip.forwarding=1`, set by
+install-stack.sh). So:
+
+- HTTP (`http://debug-demo.local`) → goes through HAProxy VM, no
+  host-route needed
+- Valkey (`192.168.64.51-56:6379`) → still goes through host-routes
+
+In production neither hop exists — F5 sits on the corporate LAN,
+clients dial its VIP directly. The "VM next-hop" trick is only
+necessary because Rancher Desktop puts the k8s pod and Service
+network behind NAT.
+
+```sh
+# All three handled automatically by install-stack.sh (Phase 8). Manual:
+scripts/host-routes.sh add        # static routes for Valkey IPs (sudo)
+sudo sysctl -w net.inet.ip.forwarding=1        # so HAProxy VM can reach RD node
+HAPROXY_IP="$(cat dumps/haproxy-vm-ip)"
+sudo sh -c "echo '$HAPROXY_IP debug-demo.local' >> /etc/hosts"    # HTTP entry
 ```
 
 After `add`:
 
 ```sh
-curl http://192.168.64.50:8080/actuator/health
+# L7 (HTTP) — through nginx-ingress
+curl http://debug-demo.local/actuator/health
+curl http://debug-demo.local/api/customers
+open http://debug-demo.local/swagger-ui.html        # interactive API explorer
+
+# L4 (TCP) — directly to Valkey per-pod LBs
 valkey-cli -c -h 192.168.64.51 -p 6379 -a <pwd> cluster info
 valkey-cli -c -h 192.168.64.51 -p 6379 -a <pwd> set hello world   # follows MOVED
 ```
+
+### OpenAPI / Swagger UI
+
+`springdoc-openapi-starter-webmvc-ui` (2.6.0) is on the classpath, no
+codegen. Spec is generated at startup by reflecting on Spring MVC
+mappings + Jackson + Bean Validation. Controllers are grouped by
+`@Tag` (set on each `@RestController`):
+
+| Path | Serves |
+|------|--------|
+| `/v3/api-docs` | OpenAPI 3.1 JSON (used by Swagger UI and any external tool) |
+| `/v3/api-docs.yaml` | Same in YAML |
+| `/swagger-ui.html` | 302 → `/swagger-ui/index.html` |
+| `/swagger-ui/index.html` | Interactive UI; "try-it-out" enabled, request duration shown |
+
+Config lives in `application.yml` under `springdoc:`. Notable
+toggles: `show-actuator: true` adds the actuator endpoints to the
+spec (off by default — actuator is documented separately); add a
+Spring Security rule to gate `/v3/api-docs` + `/swagger-ui/**` in
+prod profiles. Tag descriptions are set in
+`config/OpenApiConfig.java` (one Java file, no logic).
 
 ## Valkey usage — every op type the cluster supports (no Lua, by design)
 
@@ -187,7 +443,7 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 |------|---------|
 | `app/` | Spring Boot service (Maven, single module). The "patient" under test. |
 | `app/.../valkey/` | Valkey ops package — streams, pub/sub, hash, zset, list + `ValkeyPlaygroundController` for direct testing |
-| `charts/debug-demo-app/` | The app, with HPA (1→10 @ 20% CPU), Valkey/Oracle/MQ wiring, **internal ClusterIP + external LoadBalancer Service** (`192.168.64.50`). |
+| `charts/debug-demo-app/` | The app, with HPA (1→10 @ 20% CPU), Valkey/Oracle/MQ wiring. **ClusterIP Service + Ingress** — external traffic arrives via nginx-ingress in hostNetwork mode (Pattern D). |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-service-per-pod LoadBalancer** with `cluster-announce-ip` from pod ordinal. |
@@ -710,7 +966,7 @@ valkey-cli -h 192.168.64.51 -p 6379 -a $PASS subscribe orders:notifications
 # leave running
 
 # Terminal 2 — publish (either through the app, or directly)
-curl -X POST http://192.168.64.50:8080/api/orders \
+curl -X POST http://debug-demo.local/api/orders \
   -H 'Content-Type: application/json' \
   -d '{"customerId":1,"amount":1.00}'
 # OR direct:
@@ -730,7 +986,7 @@ OWNER=$(valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes | awk -v s=$SLOT '
 valkey-cli -h $OWNER -p 6379 -a $PASS ssubscribe "$CH"
 
 # Terminal 2 — publish (any node, command is forwarded to the owner)
-curl -X POST 'http://192.168.64.50:8080/api/valkey/pubsub/spublish?msg=hello-sharded'
+curl -X POST 'http://debug-demo.local/api/valkey/pubsub/spublish?msg=hello-sharded'
 ```
 
 ### Memory + performance probes

@@ -74,6 +74,18 @@ logging:
     com.example.debugdemo: INFO
     org.hibernate.SQL: WARN
 
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+    try-it-out-enabled: true
+    display-request-duration: true
+  show-actuator: false   # set true to also document /actuator/* endpoints
+  packages-to-scan: com.example.debugdemo
+
 ---
 spring:
   config:

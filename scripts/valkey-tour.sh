@@ -171,7 +171,7 @@ section pubsub && {
     echo "To watch the classic channel live (cluster bus broadcasts, so any seed works):"
     echo "  $CLI -h $SEED -p $PORT -a '\$PASS' subscribe orders:notifications"
     echo "Then in another terminal, drive an order to trigger a PUBLISH:"
-    echo "  curl -X POST http://192.168.64.50:8080/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":1,\"amount\":1.00}'"
+    echo "  curl -X POST http://debug-demo.local/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":1,\"amount\":1.00}'"
 }
 
 # ---------------------------------------------------------------------------

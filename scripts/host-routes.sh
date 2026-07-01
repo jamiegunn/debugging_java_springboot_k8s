@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 #
-# host-routes.sh — add or remove macOS static routes that point the cluster's
-# MetalLB LoadBalancer IPs at the Rancher Desktop VM.
+# host-routes.sh — add or remove macOS static routes that point Valkey's
+# MetalLB per-pod LoadBalancer IPs (192.168.64.51-56) at the Rancher Desktop VM.
 #
-# Purpose: stand in for the production VIP/LB layer on the dev Mac. In a real
-# environment, an external LB (F5, AWS NLB, HAProxy, whatever) would route
-# traffic to these IPs. Rancher Desktop's vz-NAT networking doesn't pass L2
-# ARP for non-VM IPs through to the host, so we tell macOS to use the VM
-# (192.168.64.2) as next-hop for each MetalLB IP. The VM's kube-proxy iptables
-# rules then DNAT the traffic to the right pod.
+# Purpose: Rancher Desktop's vz-NAT networking doesn't pass L2 ARP for
+# non-VM IPs through to the host, so we tell macOS to use the VM
+# (192.168.64.2) as next-hop for each MetalLB IP. The VM's kube-proxy
+# iptables rules then DNAT the traffic to the right pod.
 #
-# This is dev-only: in production the cluster config stays exactly as it is;
-# the static routes get replaced by your real LB pointing at the same IPs.
+# Only needed for Valkey L4 traffic. The HTTP path (Pattern D) uses the
+# HAProxy Lima VM on its own subnet (192.168.105.x) which the Mac
+# reaches directly — no static routes required for HTTP.
+#
+# This is dev-only: in production these routes are replaced by whatever
+# real network path exists between clients and the Valkey nodes (usually
+# direct — Valkey clients need per-pod IP addressability for MOVED redirects).
 #
 # Usage:
 #   ./host-routes.sh add        # adds routes (prompts for sudo password)

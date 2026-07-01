@@ -1,0 +1,78 @@
+# Lima VM that plays the role of the external F5/HAProxy LB in front of
+# the Rancher Desktop k8s cluster. In real Pattern D the external LB is a
+# separate appliance (F5/NetScaler) on the corporate LAN; here we model it
+# as a second small VM on Lima's shared subnet (192.168.105.0/24).
+#
+# Network reachability:
+#   Mac <-> HAProxy VM   : direct, via Lima shared network
+#   Mac <-> RD VM         : direct, via bridge100 (RD's vz-NAT)
+#   HAProxy VM <-> RD VM  : through Mac, requires net.inet.ip.forwarding=1
+#                          (install-stack.sh sets this with sudo)
+#
+# Built on Lima's bundled Alpine template (which uses the nocloud cloudinit
+# qcow2 image so SSH bootstraps correctly). We override CPU/memory/disk and
+# add a provision step that installs haproxy with a placeholder config.
+
+base:
+  - template://alpine
+
+vmType: vz
+
+cpus: 1
+memory: 512MiB
+disk: 4GiB
+
+# We don't need to share the user's home directory in this VM.
+mounts: []
+
+networks:
+  - lima: shared
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eux
+      apk update
+      apk add --no-cache haproxy curl
+      mkdir -p /etc/haproxy
+      if [ ! -f /etc/haproxy/haproxy.cfg ] || ! grep -q 'placeholder' /etc/haproxy/haproxy.cfg; then
+        cat > /etc/haproxy/haproxy.cfg <<'EOF'
+      # Placeholder config — install-stack.sh overwrites this with the real backend IP
+      global
+          daemon
+          maxconn 256
+          log stdout local0
+      defaults
+          mode http
+          timeout connect 5s
+          timeout client  60s
+          timeout server  60s
+      frontend http_front
+          bind *:80
+          default_backend boot
+      backend boot
+          server placeholder 127.0.0.1:65535 check
+      EOF
+      fi
+      rc-update add haproxy default || true
+      rc-service haproxy start || rc-service haproxy restart
+
+probes:
+  - script: |
+      #!/bin/sh
+      set -eux
+      for i in $(seq 1 30); do
+        if nc -z 127.0.0.1 80; then exit 0; fi
+        sleep 1
+      done
+      echo "haproxy did not come up on :80 within 30s"
+      exit 1
+    hint: |
+      Check inside the VM:
+        limactl shell debug-demo-haproxy -- rc-status
+        limactl shell debug-demo-haproxy -- tail -50 /var/log/messages

@@ -1,6 +1,7 @@
 package com.example.debugdemo.valkey;
 
 import com.example.debugdemo.order.OrderCreatedEvent;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Min;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,6 +24,7 @@ import java.util.Map;
  *
  * Naming convention: each endpoint mirrors the Valkey command(s) it issues.
  */
+@Tag(name = "valkey")
 @RestController
 @RequestMapping("/api/valkey")
 public class ValkeyPlaygroundController {

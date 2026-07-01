@@ -2,15 +2,20 @@
 #
 # smoke-test.sh — end-to-end verification of the full stack.
 #
-# Runs from the host but does its actual work via `kubectl exec` so it doesn't
-# depend on the dev VIP / host-routes.sh layer. Pass --include-external to also
-# exercise the routed Mac path (requires `scripts/host-routes.sh add` first).
+# Runs both in-cluster checks (via `kubectl exec`) AND external-path checks
+# (from the Mac, through the HAProxy VM for L7 and the MetalLB per-pod LB
+# IPs for L4). External tests always run — if the HAProxy VM isn't up or
+# the Valkey routes aren't installed, those tests fail with clear signal.
+# There is no opt-out flag; the whole point is to verify the whole path.
+#
+# The Valkey L4 section explicitly exercises MOVED redirect semantics for
+# GET/SET, XADD (streams), and SPUBLISH (sharded pub/sub), because that's
+# the specific behavior our per-pod-LB topology exists to make work.
 #
 # Each check prints [PASS]/[FAIL] with detail. Exit code = number of failures.
 #
 # Usage:
-#   ./smoke-test.sh                     # in-cluster only
-#   ./smoke-test.sh --include-external  # also test via 192.168.64.50 etc.
+#   ./smoke-test.sh                     # everything (default)
 #   ./smoke-test.sh --skip-artifactory  # don't expect artifactory Ready
 
 set -uo pipefail
@@ -19,11 +24,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-INCLUDE_EXTERNAL=0
 SKIP_ARTIFACTORY=0
 for a in "$@"; do
     case "$a" in
-        --include-external) INCLUDE_EXTERNAL=1 ;;
         --skip-artifactory) SKIP_ARTIFACTORY=1 ;;
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown arg: $a"; exit 64 ;;
@@ -56,14 +59,23 @@ echo "=== 1. Cluster + pods ============================================="
 check "kubectl can reach the cluster" \
     bash -c 'kubectl get nodes >/dev/null'
 
-check "all expected namespaces have Ready pods" \
+check "each expected namespace has its minimum Ready pod count" \
     bash -c '
-        nss="metallb-system oracle mq valkey debug-demo"
-        '"$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo 'nss="$nss artifactory"' )"'
-        for ns in $nss; do
-            n=$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | wc -l | tr -d " ")
+        # Format: <namespace>:<min-ready>. Debug-demo is 1 (not the full
+        # replica count) because the smoke test triggers HPA scale-up mid-run
+        # and new pods may still be starting — as long as at least one is
+        # Ready, the tests can run. Everything else is a StatefulSet or
+        # DaemonSet with a fixed count.
+        entries="metallb-system:2 ingress-nginx:1 oracle:1 mq:1 valkey:6 debug-demo:1"
+        '"$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo 'entries="$entries artifactory:1"' )"'
+        for entry in $entries; do
+            ns="${entry%%:*}"
+            min="${entry##*:}"
             r=$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | awk "{split(\$2,a,\"/\"); if(a[1]==a[2] && a[1]>0) c++} END{print c+0}")
-            [[ "$r" -gt 0 && "$r" -eq "$n" ]] || { echo "ns=$ns $r/$n Ready"; exit 1; }
+            n=$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | wc -l | tr -d " ")
+            if [[ "$r" -lt "$min" ]]; then
+                echo "ns=$ns $r/$n Ready — need at least $min"; exit 1
+            fi
         done
     '
 
@@ -75,6 +87,11 @@ if [[ -z "$POD" ]]; then
     exit 1
 fi
 EXEC=(kubectl -n debug-demo exec "$POD" --)
+# kx(): same thing, callable from inside `bash -c` (arrays don't propagate, but
+# `export -f` does). Use kx in bash -c checks; use kx elsewhere.
+export POD
+kx() { kubectl -n debug-demo exec "$POD" -- "$@"; }
+export -f kx
 
 # ----------------------------------------------------------------------------
 # Section 2: actuator health (per-subsystem)
@@ -83,7 +100,7 @@ echo
 echo "=== 2. Actuator health ============================================"
 
 check "/actuator/health overall = UP" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/actuator/health | python3 -c "
+    bash -c 'kx curl -fsS http://localhost:8080/actuator/health | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 assert d[\"status\"] == \"UP\", d
@@ -92,9 +109,25 @@ assert d[\"status\"] == \"UP\", d
 # The composite endpoint sets show-details based on auth, but liveness/readiness
 # are always accessible without details.
 check "/actuator/health/liveness = UP" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/actuator/health/liveness | grep -q UP'
+    bash -c 'kx curl -fsS http://localhost:8080/actuator/health/liveness | grep -q UP'
 check "/actuator/health/readiness = UP" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/actuator/health/readiness | grep -q UP'
+    bash -c 'kx curl -fsS http://localhost:8080/actuator/health/readiness | grep -q UP'
+
+# OpenAPI / Swagger UI (springdoc) — verify the spec is generated and the UI is served.
+check "/v3/api-docs returns OpenAPI 3 with the 4 controller tags" \
+    bash -c 'kx curl -fsS http://localhost:8080/v3/api-docs | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+tags = {t[\"name\"] for t in d.get(\"tags\", [])}
+need = {\"customers\", \"orders\", \"batch\", \"valkey\"}
+missing = need - tags
+assert d.get(\"openapi\", \"\").startswith(\"3.\"), \"not OpenAPI 3.x: \" + d.get(\"openapi\", \"?\")
+assert not missing, \"missing tags: \" + str(missing)
+"'
+check "/swagger-ui.html → /swagger-ui/index.html (302)" \
+    bash -c 'kx curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/swagger-ui.html | grep -q 302'
+check "/swagger-ui/index.html serves the UI (200)" \
+    bash -c 'kx curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/swagger-ui/index.html | grep -q 200'
 
 # ----------------------------------------------------------------------------
 # Section 3: CRUD + cache + integration fan-out
@@ -135,7 +168,7 @@ sleep 1
 
 # Verify Oracle persisted
 check "GET /api/customers/<id> returns the row (Oracle read)" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/api/customers/'"$CID"' | grep -q "'"$EMAIL"'"'
+    bash -c 'kx curl -fsS http://localhost:8080/api/customers/'"$CID"' | grep -q "'"$EMAIL"'"'
 
 # Verify cache eviction → fresh read populates again. Hit twice, expect 1 DB-hit log.
 "${EXEC[@]}" curl -fsS http://localhost:8080/api/customers/$CID >/dev/null
@@ -163,7 +196,7 @@ check "Stream XLEN grew by 1 (was ${XLEN_BEFORE}, now ${XLEN_AFTER})" \
     bash -c '[[ "'"$XLEN_AFTER"'" -gt "'"$XLEN_BEFORE"'" ]]'
 
 check "Hash: customer:stats:{${CID}} populated by HINCRBY/HSET" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/api/valkey/stats/'"$CID"' | python3 -c "
+    bash -c 'kx curl -fsS http://localhost:8080/api/valkey/stats/'"$CID"' | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 s = d[\"stats\"]
@@ -173,14 +206,14 @@ assert s[\"last_order_at\"], s
 "'
 
 check "Sorted set: customer ${CID} present in customers:top leaderboard" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/api/valkey/leaderboard?n=50 | python3 -c "
+    bash -c 'kx curl -fsS http://localhost:8080/api/valkey/leaderboard?n=50 | python3 -c "
 import json, sys
 e = json.load(sys.stdin)
 assert any(x[\"customerId\"] == '"$CID"' for x in e), e
 "'
 
 check "List: orders:recent contains order ${OID}" \
-    bash -c '"${EXEC[@]}" curl -fsS http://localhost:8080/api/valkey/recent?n=50 | python3 -c "
+    bash -c 'kx curl -fsS http://localhost:8080/api/valkey/recent?n=50 | python3 -c "
 import json, sys
 e = json.load(sys.stdin)[\"entries\"]
 assert any(x.startswith(\"'"$OID"',\") for x in e), e
@@ -192,12 +225,12 @@ check "Classic pub/sub: subscriber received counter grew (was ${PUBSUB_BEFORE}, 
     bash -c '[[ "'"$PUBSUB_AFTER"'" -gt "'"$PUBSUB_BEFORE"'" ]]'
 
 check "Sharded SPUBLISH returns a subscriber count (0 is fine, just must not 500)" \
-    bash -c '"${EXEC[@]}" curl -fsS -X POST "http://localhost:8080/api/valkey/pubsub/spublish?msg=smoke" | grep -q deliveredTo'
+    bash -c 'kx curl -fsS -X POST "http://localhost:8080/api/valkey/pubsub/spublish?msg=smoke" | grep -q deliveredTo'
 
 check "SET / GET via playground (cluster shard routing)" \
     bash -c '
-        "${EXEC[@]}" curl -fsS -X POST "http://localhost:8080/api/valkey/kv/smoke-key?value=smoke-val&ttlSeconds=60" >/dev/null
-        v=$("${EXEC[@]}" curl -fsS "http://localhost:8080/api/valkey/kv/smoke-key" | python3 -c "import json,sys; print(json.load(sys.stdin)[\"value\"])")
+        kx curl -fsS -X POST "http://localhost:8080/api/valkey/kv/smoke-key?value=smoke-val&ttlSeconds=60" >/dev/null
+        v=$(kx curl -fsS "http://localhost:8080/api/valkey/kv/smoke-key" | python3 -c "import json,sys; print(json.load(sys.stdin)[\"value\"])")
         [[ "$v" == "smoke-val" ]]
     '
 
@@ -232,32 +265,239 @@ check "scripts/memory-report.sh runs cleanly" \
     bash -c '"'"$SCRIPT_DIR"'/memory-report.sh" -n debug-demo > /tmp/smoke.memreport 2>&1 && grep -q "RSS / limit" /tmp/smoke.memreport'
 
 check "/actuator/threaddump returns >100 lines of text" \
-    bash -c '"${EXEC[@]}" curl -fsS -H "Accept: text/plain" http://localhost:8080/actuator/threaddump | wc -l | awk "{exit !(\$1>100)}"'
+    bash -c 'kx curl -fsS -H "Accept: text/plain" http://localhost:8080/actuator/threaddump | wc -l | awk "{exit !(\$1>100)}"'
 
 # ----------------------------------------------------------------------------
-# Section 6: external path (optional)
+# Section 6: external path (always runs — the whole point is proving both work)
 # ----------------------------------------------------------------------------
-if [[ $INCLUDE_EXTERNAL -eq 1 ]]; then
-    echo
-    echo "=== 6. External access (192.168.64.x via host-routes) ============"
+echo
+echo "=== 6. External access ==========================================="
 
-    check "App reachable at http://192.168.64.50:8080/actuator/health" \
-        bash -c 'curl -fsS -m 5 http://192.168.64.50:8080/actuator/health | grep -q UP'
+# Discover the HTTP entry-point IP. With the F5 stand-in installed it's
+# the HAProxy VM IP (cached by install-haproxy-vm.sh). Without it, we
+# fall back to the RD node ExternalIP (hostNetwork pod binds there).
+HAPROXY_VM_IP_FILE="$REPO_ROOT/dumps/haproxy-vm-ip"
+if [[ -f "$HAPROXY_VM_IP_FILE" ]] && curl -fsS -m 3 -o /dev/null "http://$(cat "$HAPROXY_VM_IP_FILE")/healthz" 2>/dev/null; then
+    HTTP_ENTRY_IP="$(cat "$HAPROXY_VM_IP_FILE")"
+    HTTP_ENTRY_VIA="HAProxy VM (F5 stand-in)"
+else
+    HTTP_ENTRY_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null)"
+    HTTP_ENTRY_VIA="RD node ExternalIP (hostNetwork direct — no F5 stand-in)"
+fi
+export HTTP_ENTRY_IP
+echo "    L7 path: http://debug-demo.local  →  ${HTTP_ENTRY_IP} (${HTTP_ENTRY_VIA})  →  ingress-nginx → app"
+echo "    L4 path: 192.168.64.51-56:6379    →  Valkey per-pod LBs (MetalLB)"
 
-    if command -v valkey-cli >/dev/null 2>&1 || command -v redis-cli >/dev/null 2>&1; then
-        CLI=$(command -v valkey-cli || command -v redis-cli)
-        check "Valkey PONG via 192.168.64.51:6379 (seed → MOVED redirect handling)" \
-            bash -c '$CLI -h 192.168.64.51 -p 6379 -a "'"$VK_PASS"'" --no-auth-warning ping 2>&1 | grep -q PONG'
+# Pattern D check — ingress-nginx pod must be hostNetwork=true
+check "Pattern D — ingress-nginx pod runs with hostNetwork=true" \
+    bash -c 'kubectl -n ingress-nginx get pod -l app.kubernetes.io/name=ingress-nginx -o jsonpath="{.items[0].spec.hostNetwork}" | grep -q "^true$"'
 
-        check "Cluster-aware SET/GET via per-pod LBs (-c follows MOVED to externally-reachable IPs)" \
-            bash -c '
-                $CLI -c -h 192.168.64.51 -p 6379 -a "'"$VK_PASS"'" --no-auth-warning set smoke-ext yes 2>&1 | grep -q OK
-                v=$($CLI -c -h 192.168.64.52 -p 6379 -a "'"$VK_PASS"'" --no-auth-warning get smoke-ext 2>&1 | tail -1)
-                [[ "$v" == "yes" ]]
-            '
-    else
-        echo "[SKIP] no valkey-cli/redis-cli on PATH (install with: brew install valkey)"
-    fi
+# If the HAProxy stand-in is in play, confirm the VM is up
+if [[ "$HTTP_ENTRY_VIA" == "HAProxy VM (F5 stand-in)" ]]; then
+    check "HAProxy F5 stand-in VM (Lima 'debug-demo-haproxy') is Running" \
+        bash -c 'limactl list --format=json | python3 -c "
+import json,sys
+for ln in sys.stdin:
+    try: v=json.loads(ln.strip())
+    except: continue
+    if v.get(\"name\")==\"debug-demo-haproxy\" and v.get(\"status\")==\"Running\":
+        sys.exit(0)
+sys.exit(1)
+"'
+    check "HAProxy stats endpoint reachable — http://${HTTP_ENTRY_IP}:8404/" \
+        bash -c 'curl -s -o /dev/null -w "%{http_code}" -m 5 "http://${HTTP_ENTRY_IP}:8404/" | grep -qE "^(200|301|302)$"'
+fi
+
+# L7 — HTTP through HAProxy VM → hostNetwork ingress
+check "App reachable via L7 — http://debug-demo.local/actuator/health" \
+    bash -c 'curl -fsS -m 5 --resolve "debug-demo.local:80:${HTTP_ENTRY_IP}" http://debug-demo.local/actuator/health | grep -q UP'
+
+check "API CRUD reachable via L7 — POST /api/customers" \
+    bash -c '
+        ts=$(date -u +%s)
+        curl -fsS -m 5 --resolve "debug-demo.local:80:${HTTP_ENTRY_IP}" \
+             -X POST http://debug-demo.local/api/customers \
+             -H "Content-Type: application/json" \
+             -d "{\"name\":\"smoke-ext-$ts\",\"email\":\"smoke-ext-$ts@example.com\"}" \
+             | grep -q "\"id\":"
+    '
+
+# Better proof that an L7 ingress controller (not a raw L4 LB) is doing the
+# routing: host-based routing returns 404 for an unknown Host header.
+check "L7 host-based routing — wrong Host returns 404, right Host returns 200" \
+    bash -c '
+        wrong=$(curl -s -o /dev/null -w "%{http_code}" -m 5 --resolve "other.example.com:80:${HTTP_ENTRY_IP}" http://other.example.com/actuator/health)
+        right=$(curl -s -o /dev/null -w "%{http_code}" -m 5 --resolve "debug-demo.local:80:${HTTP_ENTRY_IP}" http://debug-demo.local/actuator/health)
+        [[ "$wrong" == "404" && "$right" == "200" ]] || { echo "wrong=$wrong right=$right"; exit 1; }
+    '
+
+check "Swagger UI reachable via L7 — /swagger-ui/index.html = 200" \
+    bash -c '
+        code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 --resolve "debug-demo.local:80:${HTTP_ENTRY_IP}" http://debug-demo.local/swagger-ui/index.html)
+        [[ "$code" == "200" ]] || { echo "code=$code"; exit 1; }
+    '
+
+check "Ingress resource bound to nginx ingress class" \
+    bash -c 'kubectl -n debug-demo get ingress app-debug-demo-app -o jsonpath="{.spec.ingressClassName}" | grep -q nginx'
+
+# ----------------------------------------------------------------------------
+# Section 7: Valkey MOVED semantics via L4 per-pod LBs
+# ----------------------------------------------------------------------------
+# This is the whole point of the per-pod LoadBalancer topology + cluster-
+# announce-ip — external clients receive MOVED redirects that point at
+# externally-reachable per-shard IPs. We verify explicitly for each op type
+# that gets MOVED (GET/SET, XADD, SPUBLISH), and confirm classic PUBLISH
+# does NOT (it broadcasts on the cluster bus).
+# ----------------------------------------------------------------------------
+echo
+echo "=== 7. Valkey L4 + MOVED semantics ==============================="
+
+if ! command -v valkey-cli >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then
+    echo "[SKIP] no valkey-cli/redis-cli on PATH (install with: brew install valkey)"
+    FAIL_COUNT=$((FAIL_COUNT+1))
+    FAIL_LINES+=("valkey-cli/redis-cli not on PATH — cannot run L4 MOVED tests")
+else
+    CLI=$(command -v valkey-cli || command -v redis-cli)
+    export CLI VK_PASS
+
+    # Basic reachability first — if this fails, all downstream tests will fail
+    # for the same reason (routes missing / MetalLB IP not reachable) and the
+    # signal is more useful up front.
+    check "Valkey PONG via L4 — 192.168.64.51:6379 (MetalLB per-pod LB)" \
+        bash -c '"$CLI" -h 192.168.64.51 -p 6379 -a "$VK_PASS" --no-auth-warning ping 2>&1 | grep -q PONG'
+
+    # cluster-announce-ip check: every primary must announce a 192.168.64.5x IP
+    # (the external MetalLB LB), not its internal pod IP — otherwise MOVED
+    # redirects would point at unreachable addresses.
+    check "Valkey cluster-announce-ip is the external LB IP (not the pod IP) for every primary" \
+        bash -c '
+            ips=$("$CLI" -h 192.168.64.51 -p 6379 -a "$VK_PASS" --no-auth-warning cluster nodes 2>&1 \
+                | awk "/master/ { split(\$2, a, \":\"); print a[1] }")
+            for ip in $ips; do
+                case "$ip" in
+                    192.168.64.5[1-6]) ;;
+                    *) echo "primary announces unexpected IP: $ip"; exit 1 ;;
+                esac
+            done
+        '
+
+    # ------------------------------------------------------------------------
+    # Helper: compute (OWNER_IP, WRONG_IP) for a given key/channel/stream name.
+    # OWNER_IP is the primary that owns the slot; WRONG_IP is any OTHER primary.
+    # Both are exported so `bash -c` subshells see them.
+    # ------------------------------------------------------------------------
+    moved_setup() {
+        local key="$1"
+        local seed="${2:-192.168.64.51}"
+        local slot
+        slot=$("$CLI" -h "$seed" -p 6379 -a "$VK_PASS" --no-auth-warning cluster keyslot "$key")
+        OWNER_IP=$("$CLI" -h "$seed" -p 6379 -a "$VK_PASS" --no-auth-warning cluster nodes 2>/dev/null \
+            | awk -v s="$slot" '
+                /master/ {
+                    for (i=9; i<=NF; i++) {
+                        split($i, r, "-")
+                        if (r[1]+0 <= s+0 && r[2]+0 >= s+0) {
+                            split($2, addr, /[:@]/)
+                            print addr[1]
+                            exit
+                        }
+                    }
+                }')
+        WRONG_IP=""
+        for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
+            if [[ "$ip" != "$OWNER_IP" ]]; then WRONG_IP=$ip; break; fi
+        done
+        export OWNER_IP WRONG_IP
+    }
+
+    # Fixed per-run suffix so every check sees the same key/channel/stream name.
+    # `$$` inside `bash -c` expands to the CHILD bash's pid, which changes on
+    # each invocation — using it as a suffix would give each check a different
+    # key that hashes to a different slot, defeating the whole point.
+    SMOKE_SUFFIX="$$-$(date +%s)"
+    export SMOKE_SUFFIX
+
+    # ---- GET/SET MOVED --------------------------------------------------
+    MOVED_KEY="smoke-moved-getset-${SMOKE_SUFFIX}"
+    moved_setup "$MOVED_KEY"
+    export MOVED_KEY
+    check "MOVED-GET/SET: raw MOVED response when hitting the wrong node (no -c flag)" \
+        bash -c '
+            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" v 2>&1)
+            # Expect: "(error) MOVED <slot> <owner-ip>:<port>"
+            if [[ "$out" != *"MOVED"* ]]; then
+                echo "expected MOVED in response, got: $out"; exit 1
+            fi
+            if [[ "$out" != *"$OWNER_IP"* ]]; then
+                echo "MOVED did not point at expected owner $OWNER_IP: $out"; exit 1
+            fi
+        '
+    check "MOVED-GET/SET: with -c the client follows MOVED to the owner and SET succeeds" \
+        bash -c '
+            "$CLI" -c -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" hello 2>&1 | grep -q OK
+        '
+    check "MOVED-GET/SET: GET from ANOTHER wrong node also -c-follows and returns the value" \
+        bash -c '
+            # Use a different seed to prove the client can chase MOVED from any node
+            SEED=192.168.64.53
+            [[ "$SEED" == "$OWNER_IP" ]] && SEED=192.168.64.52
+            v=$("$CLI" -c -h "$SEED" -p 6379 -a "$VK_PASS" --no-auth-warning get "$MOVED_KEY" 2>&1 | tail -1)
+            [[ "$v" == "hello" ]] || { echo "expected hello, got: $v"; exit 1; }
+        '
+
+    # ---- XADD (stream) MOVED --------------------------------------------
+    MOVED_STREAM="smoke-moved-stream-${SMOKE_SUFFIX}"
+    moved_setup "$MOVED_STREAM"
+    export MOVED_STREAM
+    check "MOVED-XADD: raw MOVED response when adding to a stream from the wrong node" \
+        bash -c '
+            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" k v 2>&1)
+            if [[ "$out" != *"MOVED"* ]]; then
+                echo "expected MOVED, got: $out"; exit 1
+            fi
+            [[ "$out" == *"$OWNER_IP"* ]] || { echo "MOVED did not point at owner $OWNER_IP: $out"; exit 1; }
+        '
+    check "MOVED-XADD: with -c the client follows MOVED, XADD lands, XLEN=1 at owner" \
+        bash -c '
+            "$CLI" -c -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" event smoke 2>&1 | grep -qE "[0-9]+-[0-9]+"
+            n=$("$CLI" -h "$OWNER_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xlen "$MOVED_STREAM" 2>&1 | tail -1)
+            [[ "$n" == "1" ]] || { echo "expected XLEN=1 at owner, got: $n"; exit 1; }
+        '
+
+    # ---- SPUBLISH (sharded pub/sub) MOVED -------------------------------
+    # Sharded channels hash to a slot exactly like keys; SPUBLISH from a
+    # non-owner returns MOVED with the owner's address. This is different
+    # from classic PUBLISH which broadcasts on the cluster bus (below).
+    MOVED_CH="{orders}:sharded-moved-${SMOKE_SUFFIX}"
+    moved_setup "$MOVED_CH"
+    export MOVED_CH
+    check "MOVED-SPUBLISH: raw MOVED response when publishing to a sharded channel from wrong node" \
+        bash -c '
+            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1)
+            if [[ "$out" != *"MOVED"* ]]; then
+                echo "expected MOVED, got: $out"; exit 1
+            fi
+            [[ "$out" == *"$OWNER_IP"* ]] || { echo "MOVED did not point at owner $OWNER_IP: $out"; exit 1; }
+        '
+    check "MOVED-SPUBLISH: publishing directly to the owning shard succeeds (returns subscriber count)" \
+        bash -c '
+            out=$("$CLI" -h "$OWNER_IP" -p 6379 -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1 | tail -1)
+            # SPUBLISH returns the number of receiving subscribers as an integer
+            [[ "$out" =~ ^[0-9]+$ ]] || { echo "expected integer, got: $out"; exit 1; }
+        '
+
+    # ---- PUBLISH (classic pub/sub) does NOT get MOVED -------------------
+    # Control test: classic PUBLISH broadcasts on the cluster bus. Any node
+    # accepts it, no MOVED redirect. This is why classic pub/sub works
+    # without hash-tagged channels — every subscriber on every node sees it.
+    check "Classic PUBLISH: NO MOVED — any node accepts and returns a subscriber count" \
+        bash -c '
+            for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
+                out=$("$CLI" -h "$ip" -p 6379 -a "$VK_PASS" --no-auth-warning publish orders:notifications hi 2>&1 | tail -1)
+                if [[ "$out" == *"MOVED"* ]]; then echo "classic PUBLISH got MOVED on $ip: $out"; exit 1; fi
+                [[ "$out" =~ ^[0-9]+$ ]] || { echo "expected int from PUBLISH on $ip, got: $out"; exit 1; }
+            done
+        '
 fi
 
 # ----------------------------------------------------------------------------

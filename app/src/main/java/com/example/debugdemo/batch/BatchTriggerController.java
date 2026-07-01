@@ -1,5 +1,6 @@
 package com.example.debugdemo.batch;
 
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
+@Tag(name = "batch")
 @RestController
 @RequestMapping("/api/batch")
 public class BatchTriggerController {

@@ -1,5 +1,6 @@
 package com.example.debugdemo.order;
 
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -7,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URI;
 import java.util.List;
 
+@Tag(name = "orders")
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
