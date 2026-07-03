@@ -56,6 +56,35 @@ spec:
                 exit 0
               fi
 
+              # PVCs from a previous install (StatefulSet PVCs are NOT cascade-deleted
+              # by helm uninstall) can leave stale nodes.conf entries — dead pod IPs
+              # of previous incarnations are recorded as "peers" and the new nodes
+              # split-brain. valkey-cli --cluster create refuses to run against a
+              # node with any existing cluster config. Detect that state and hard-
+              # reset every node to a clean slate before creating.
+              STALE=0
+              for node in $PRIMARIES $SECONDARIES; do
+                if valkey-cli -h "$node" $AUTH cluster nodes 2>/dev/null | grep -qE '(disconnected|handshake|noaddr)'; then
+                  STALE=1; break
+                fi
+                # Also stale if this node knows more than just itself (should have 1
+                # entry before --cluster create runs).
+                n_peers=$(valkey-cli -h "$node" $AUTH cluster nodes 2>/dev/null | wc -l)
+                if [ "$n_peers" -gt 1 ]; then STALE=1; break; fi
+              done
+              if [ "$STALE" -eq 1 ]; then
+                echo "Detected stale cluster state (dead peer entries from a previous install)."
+                echo "Hard-resetting every node to a clean pre-cluster state..."
+                for node in $PRIMARIES $SECONDARIES; do
+                  # CLUSTER RESET HARD: clears cluster config + wipes data. Safe here
+                  # because we're about to CLUSTER CREATE from scratch anyway.
+                  valkey-cli -h "$node" $AUTH cluster reset hard 2>/dev/null || true
+                  valkey-cli -h "$node" $AUTH flushall 2>/dev/null || true
+                done
+                # Give nodes a moment to settle after the reset
+                sleep 3
+              fi
+
               echo "Creating cluster on primaries (no replicas yet)..."
               echo yes | valkey-cli $AUTH --cluster create \
                   valkey-primary-0.valkey-primary-headless:{{ .Values.ports.client }} \
