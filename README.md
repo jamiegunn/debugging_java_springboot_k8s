@@ -199,12 +199,14 @@ cd debugging_java_springboot_k8s
 
 ### 3. Bring the stack up
 
-`scripts/k3s.sh` is the single front door. One command builds the air-gap
-bundle, creates the VMs, installs k3s, wires the VIP + DNS, deploys
+`scripts/k3s.sh` is the single front door (or run **`./tui`** from the repo
+root for an interactive menu over everything — bare `./tui` opens the menu,
+`./tui <cmd>` forwards to the same commands below). One command builds the
+air-gap bundle, creates the VMs, installs k3s, wires the VIP + DNS, deploys
 ingress-nginx and every chart, and smoke-tests it:
 
 ```sh
-scripts/k3s.sh install
+./tui install            # or: scripts/k3s.sh install
 ```
 
 What `install` chains (orchestrated by `scripts/k3s-install.sh`):

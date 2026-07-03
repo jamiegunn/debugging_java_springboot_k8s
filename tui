@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#
+# tui — root launcher for the k3s toolkit. Bare `./tui` opens the interactive
+# menu; `./tui <cmd> [args]` forwards to scripts/k3s.sh (install, doctor, smoke,
+# status, chaos, tour, valkey, resolver, bundle, uninstall). `./tui --help`
+# lists every command.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/k3s.sh" "$@"
