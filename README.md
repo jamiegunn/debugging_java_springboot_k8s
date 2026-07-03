@@ -86,8 +86,24 @@ SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
 
 ```sh
 cd app
-mvn test       # unit
-mvn verify     # unit + Testcontainers integration
+# The project targets Java 21; Mockito can't instrument newer JDKs (26+).
+# If your default JDK is newer, pin it for the test run:
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test     # unit (35 tests)
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify   # + Testcontainers integration
+```
+
+Unit coverage worth knowing about: the order-creation **fan-out contract**
+(one POST must hit MQ + 5 Valkey op types), **failure-propagation pinning**
+(a Valkey outage fails order creation *after* DB+MQ succeeded — deliberate,
+demonstrated by `scripts/chaos.sh`), and a **cluster-slot proof** that the
+`{customerId}` hash-tag pinning actually co-locates keys (real CRC16 slot
+math in `ValkeyKeysTest`).
+
+Cluster-protocol tests run against the live stack, not in JUnit:
+
+```sh
+scripts/valkey-cluster-tests.sh   # MOVED, ASK (live slot migration), replica
+                                  # reads, failover via DEBUG SLEEP + failback
 ```
 
 ## Getting Started (from a clean macOS install)
@@ -172,10 +188,13 @@ cd debugging_java_springboot_k8s
 ### 4. Bring the stack up
 
 ```sh
+scripts/stackctl.sh          # ← the guided front door: install, verify,
+                             #   explore, break, tear down — with narration
+# or directly:
 scripts/install-stack.sh
 ```
 
-What this does (10 phases; Phase 9 prompts for `sudo` once):
+What the install does (10 phases; Phase 9 prompts for `sudo` once):
 
 1. **Prereq check** — verifies `rdctl`, `kubectl`, `helm`, `docker`, `curl`, `python3`, `limactl` are on PATH; the VM is Running; CPU/memory meet the minimum.
 2. **Image preload** — `scripts/preload-images.sh` pulls every registry image the stack needs (MetalLB, ingress-nginx, Oracle, MQ, Valkey, Artifactory, Postgres, plus the app's builder/runtime base images) into RD's moby up-front. Exists so **corporate-MITM TLS failures** surface here as one clear error naming the image and registry, instead of as an `ImagePullBackOff` twenty minutes in. Idempotent (skips cached images); fails fast on the first bad pull.

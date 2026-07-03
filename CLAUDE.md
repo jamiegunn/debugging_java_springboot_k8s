@@ -526,7 +526,8 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-service-per-pod LoadBalancer**; default = ONE shared LB IP split by port (client 6379-6384, `allow-shared-ip`), each pod announcing shared-IP:its-port via `cluster-announce-{ip,port,bus-port}` from pod ordinal; legacy `perPodIP` mode = six pinned IPs. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
-| `scripts/` | `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `local-ci.sh`, `host-routes.sh` (dev VIP stand-in), `test-external-access.sh` |
+| `scripts/` | `stackctl.sh` (guided front door: install/verify/explore/chaos), `api-tour.sh` (narrated API walk-through), `chaos.sh` (failure injection + observation probes), `valkey-cluster-tests.sh` (MOVED/ASK/failover semantics), `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `local-ci.sh`, `host-routes.sh` (dev VIP stand-in), `test-external-access.sh` |
+| `docs/` | `valkey-networking-architecture.md` (MetalLB/proxy/DNS/routing design + the k3s question), `routing-end-to-end.md` (hop-by-hop packet walks + debug cheat-sheet) |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
 | `.github/workflows/` | CI: PR validation + main build → Artifactory. |
 | `~/.claude/projects/.../memory/k8s_gotchas.md` | Non-obvious workarounds — read this first when something breaks. |
@@ -1203,9 +1204,18 @@ valkey-cli -h $SEED -p $PRIMARY_PORT -a $PASS info replication | grep -E '^role|
 
 ```sh
 cd app
-mvn test       # unit (Mockito + @WebMvcTest)
-mvn verify     # adds Testcontainers integration tests (needs docker)
+# Java 21 required for tests (Mockito can't instrument JDK 26+):
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test     # unit (Mockito + @WebMvcTest)
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify   # adds Testcontainers ITs (needs docker)
 ```
+
+Cluster-protocol semantics (MOVED, ASK via live slot migration, replica
+reads, failover + failback) are tested against the LIVE stack by
+`scripts/valkey-cluster-tests.sh` — deliberately not in JUnit, because they
+need a real 6-node cluster and real failure detection. The failover section
+freezes a primary with DEBUG SLEEP (enabled for local connections in the
+chart) because `kubectl delete pod` is healed by the StatefulSet faster
+than the 5s cluster-node-timeout — no election would ever happen.
 
 `*IT.java` tests under `src/it/java` use Testcontainers to spin up
 Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.
