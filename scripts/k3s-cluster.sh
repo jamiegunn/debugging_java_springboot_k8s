@@ -50,12 +50,13 @@ create_vm() {
             info "  $name: creating (${cpus} cpu / ${mem} GiB)..."
             limactl create --name="$name" --tty=false \
                 --cpus="$cpus" --memory="$mem" --disk="$K3S_DISK" \
-                "$LIMA_TEMPLATE" >/dev/null 2>&1 || { err "  create $name failed"; return 1; }
+                "$LIMA_TEMPLATE" >/tmp/lima-create-$name.log 2>&1 || { err "  create $name failed: $(tail -1 /tmp/lima-create-$name.log)"; return 1; }
             limactl start "$name" >/dev/null 2>&1 || { err "  start $name failed"; return 1; }
             ;;
     esac
-    # wait for shell
-    local i; for i in $(seq 1 30); do limactl shell "$name" -- true 2>/dev/null && return 0; sleep 2; done
+    # wait for shell — first boot of a cloud-init qcow2 (+ apk provision) can
+    # take a few minutes, so give it up to ~6 min.
+    local i; for i in $(seq 1 90); do limactl shell "$name" -- true 2>/dev/null && return 0; sleep 4; done
     err "  $name not reachable via limactl shell"; return 1
 }
 
@@ -97,13 +98,16 @@ install_server() {
     # tar is in the agent/images dir (k3s auto-loads it — no pull). Alpine uses
     # openrc, so run k3s server as an openrc service directly.
     #   --disable traefik   → we use ingress-nginx
-    #   --disable servicelb → we use keepalived for the VIP
+    #   servicelb (klipper) KEPT → it hostPort-binds each LoadBalancer Service's
+    #     port on every node and forwards to the pod; keepalived floats a VIP
+    #     across the nodes so there's one stable address. klipper + keepalived
+    #     are complementary (port→pod forwarding + floating VIP), not either/or.
     #   --tls-san VIP+host  → apiserver cert valid when reached via VIP/hostname
     vsh "$name" "
         cat > /etc/init.d/k3s <<EOS
 #!/sbin/openrc-run
 command=/usr/local/bin/k3s
-command_args=\"server --disable traefik --disable servicelb --node-ip $ip --advertise-address $ip --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
+command_args=\"server --disable traefik --node-ip $ip --advertise-address $ip --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
 command_background=true
 pidfile=/run/k3s.pid
 output_log=/var/log/k3s.log
@@ -157,8 +161,8 @@ cmd_up() {
     [[ -s "$AIRGAP_DIR/k3s" ]] || { err "no air-gap bundle — run scripts/bundle-images.sh first"; exit 1; }
 
     info "[1/6] provisioning VMs..."
-    create_vm "$K3S_SERVER_VM" "$K3S_SERVER_CPUS" "${K3S_SERVER_MEM}GiB" || exit 1
-    for vm in "${K3S_AGENT_VMS[@]}"; do create_vm "$vm" "$K3S_AGENT_CPUS" "${K3S_AGENT_MEM}GiB" || exit 1; done
+    create_vm "$K3S_SERVER_VM" "$K3S_SERVER_CPUS" "$K3S_SERVER_MEM" || exit 1
+    for vm in "${K3S_AGENT_VMS[@]}"; do create_vm "$vm" "$K3S_AGENT_CPUS" "$K3S_AGENT_MEM" || exit 1; done
 
     info "[2/6] copying air-gap bundle into VMs..."
     for vm in "${K3S_ALL_VMS[@]}"; do copy_bundle "$vm"; done

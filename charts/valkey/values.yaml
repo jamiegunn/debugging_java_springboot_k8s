@@ -27,92 +27,34 @@ storage:
   size: 1Gi
   storageClassName: ""
 
-# External access via MetalLB — one LoadBalancer Service per pod. MOVED
-# redirects from CLUSTER SHARDS / CLUSTER NODES must resolve to externally-
-# reachable per-shard endpoints, so each pod announces its own external
-# address via cluster-announce-{ip,port,bus-port}.
+# External access — one LoadBalancer Service per pod, port-separated, fronted
+# by the keepalived VIP on the k3s cluster. Per-shard addressability is
+# non-negotiable (a MOVED redirect must land on exactly ONE node), and here it
+# comes from the PORT: primary-0 on basePorts.client+0, primary-1 on +1, ...
+# secondary-2 on +5. All six share one address — the VIP, reached by HOSTNAME.
 #
-# Two ways to shape those endpoints:
+# How the pieces fit on k3s:
+#   - klipper (servicelb) fulfills each type:LoadBalancer Service: it
+#     hostPort-binds the Service's port on every node and forwards to the pod.
+#   - keepalived floats ONE VIP across the nodes → a single stable address.
+#   - dnsmasq resolves announceHostname → that VIP (for the Mac AND, via a
+#     CoreDNS stub, for pods).
+#   - Valkey announces the HOSTNAME (cluster-preferred-endpoint-type hostname),
+#     so CLUSTER SHARDS / CLUSTER NODES / MOVED return
+#     valkey.debug-demo.local:<port> — names, never IPs. A client resolves the
+#     name → VIP and dials the port; klipper routes it to the owning pod.
 #
-#   sharedIP-perPort (default) — ONE LoadBalancer IP shared by all 6
-#     Services (MetalLB `allow-shared-ip`); each node is distinguished by
-#     a unique EXTERNAL port: basePorts.client+idx / basePorts.bus+idx,
-#     where idx = ordinal for primaries and ordinal+replicaCount for
-#     secondaries. Matches enterprise "one VIP per app" allocation — the
-#     same shape as an F5 VIP with port-based pool members. Pods still
-#     listen on ports.client/ports.bus internally; only the Service port
-#     and the announce values differ per pod.
-#     NOTE: this mode uses externalTrafficPolicy: Cluster. MetalLB only
-#     lets Local-policy Services share an IP when their pod selectors are
-#     identical, and ours select one pod each — Local + shared IP is
-#     rejected by the controller.
-#
-#   perPodIP (legacy) — one pinned LoadBalancer IP per pod, every node on
-#     the same port. Needs 6 IPs from the pool + 6 host routes in dev.
+# The cluster BUS (gossip) is NOT exposed here: pods announce their pod IP +
+# container bus port and reach each other's bus directly on the CNI network.
+# So there is no gossip hairpin through the VIP and no shim — the thing the old
+# Rancher-Desktop setup needed is simply gone.
 loadBalancer:
   enabled: true
-  pool: bridge-pool        # MetalLB IPAddressPool name (annotation)
-  mode: sharedIP-perPort   # sharedIP-perPort | perPodIP
-  # --- sharedIP-perPort mode ---
-  sharedIP: "192.168.64.51"
-  # announceIP: what the pods ADVERTISE in cluster metadata (CLUSTER NODES /
-  # CLUSTER SHARDS / MOVED redirects) — i.e. the address CLIENTS dial. Leave
-  # empty to announce sharedIP (one-layer: clients dial the MetalLB/CIS IP
-  # directly). Set it when an external LB sits IN FRONT of the Service IP
-  # (two-layer, e.g. an F5 VIP without CIS forwarding to the MetalLB IP):
-  # clients dial the F5 VIP, so that's what must be announced.
-  #
-  # Requirements when announceIP != sharedIP:
-  #   - the external LB must forward ports 1:1 (client basePorts.client+idx,
-  #     bus basePorts.bus+idx) as plain L4 TCP passthrough — no port
-  #     rewriting, no L7 inspection
-  #   - the BUS ports must be forwarded too: Valkey nodes gossip with each
-  #     other via the ANNOUNCED addresses. kube-proxy short-circuits traffic
-  #     to the Service IP, but it knows nothing about the external VIP, so
-  #     node-to-node gossip genuinely hairpins out through the external LB
-  #     and back. If the LB blocks the bus ports, the cluster degrades to
-  #     cluster_state:fail.
-  announceIP: ""
+  # The hostname pods advertise as their client endpoint. Must resolve to the
+  # keepalived VIP from BOTH the Mac (/etc/resolver) and pods (CoreDNS stub).
+  announceHostname: "valkey.debug-demo.local"
   basePorts:
-    client: 6379           # primary-0 ext 6379, primary-1 6380, ... secondary-2 6384
-    bus: 16379             # same +idx offsets as client
-
-# DEV-ONLY shim for two-layer announceIP setups on Rancher Desktop / Lima.
-#
-# When announceIP points at an external VIP (the HAProxy F5 stand-in VM),
-# Valkey nodes must be able to DIAL that VIP — they gossip with each other
-# via the announced addresses. In production this is trivially true: k8s
-# nodes and the F5 share the corporate LAN. On Rancher Desktop it is NOT:
-# Apple's vz NAT will not forward VM-to-VM traffic between the RD subnet
-# (192.168.64.x) and the Lima shared subnet (192.168.105.x), so pods can
-# never reach the HAProxy VM.
-#
-# This shim restores the prod property "nodes can reach the VIP" without
-# touching RD internals: a hostNetwork DaemonSet adds the VIP as a local
-# address on the node's loopback and runs an HAProxy that listens on
-# VIP:clientPorts+busPorts, forwarding to the in-cluster valkey-*-ext
-# Services. From inside the cluster the VIP resolves on-node; from the Mac
-# and anything external, the VIP is still the real HAProxy VM. Gossip
-# functionally hairpins through the shim instead of the real VM — in prod
-# it hairpins through the real F5.
-#
-# Enable ONLY together with announceIP. Harmless leftover: the VIP /32 on
-# the node's lo persists until the RD VM restarts (the shim re-adds it).
-devVipShim:
-  enabled: false
-  image: haproxy:3.0-alpine
-  initImage: busybox:1.36
-  # --- perPodIP mode (legacy) ---
-  # IPs are assigned by ordinal: primaryIPs[0] -> valkey-primary-0, etc.
-  # Lists must be exactly `replicaCount` long.
-  primaryIPs:
-    - "192.168.64.51"
-    - "192.168.64.52"
-    - "192.168.64.53"
-  secondaryIPs:
-    - "192.168.64.54"
-    - "192.168.64.55"
-    - "192.168.64.56"
+    client: 6379           # primary-0 → 6379, primary-1 → 6380, ... secondary-2 → 6384
 
 config:
   # Extra raw lines appended to valkey.conf. Useful for tuning maxmemory etc.

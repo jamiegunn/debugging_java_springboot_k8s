@@ -17,10 +17,14 @@ vmOpts:
       binfmt: true
 
 images:
-  - location: "https://github.com/lima-vm/alpine-lima/releases/download/v1.1.0/alpine-lima-std-3.21.0-aarch64.iso"
+  # Alpine cloud qcow2 with cloud-init (matches Lima's built-in `alpine`
+  # template — a plain ISO has no cloud-init and its provision block won't run).
+  - location: "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-aarch64-uefi-cloudinit-r0.qcow2"
     arch: "aarch64"
-  - location: "https://github.com/lima-vm/alpine-lima/releases/download/v1.1.0/alpine-lima-std-3.21.0-x86_64.iso"
+    digest: "sha512:7a3cdfaefb0cbf3bb6824cd6ae80d6a3e0b0e367609e5fc50c5f714374d31e8d70dd607094a4e9cfe2e6ead7537781782469fe93bcea79611fbce4ddeacc92e1"
+  - location: "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2"
     arch: "x86_64"
+    digest: "sha512:9b61666394dcbeb65d3b3ab0864f5ab6c992c32094622333c5b37b83021fd359cc41eb3fa00abf5cdbe25ee2cef600577a7b23eb6f1a103cc32aff862ef88862"
 
 # cpus / memory / disk are set per-VM via `limactl create --cpus/--memory/--disk`.
 

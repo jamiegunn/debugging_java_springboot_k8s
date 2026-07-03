@@ -10,13 +10,21 @@ data:
     port {{ .Values.ports.client }}
     protected-mode no
 
-    # Cluster mode. cluster-announce-{ip,port,bus-port} are NOT set here —
-    # they're per-pod (sharedIP-perPort mode announces a different port per
-    # ordinal), so the StatefulSet entrypoint computes them and passes them
-    # as valkey-server CLI flags.
+    # Cluster mode. cluster-announce-{ip,port,bus-port} are per-pod and set as
+    # CLI flags by the StatefulSet entrypoint (each pod announces its pod IP for
+    # gossip + its own external client port). The HOSTNAME and endpoint
+    # preference are the SAME for every pod, so they live here:
+    #   - cluster-announce-hostname: the name CLUSTER SHARDS/NODES/MOVED hand to
+    #     clients (resolves to the keepalived VIP via dnsmasq/CoreDNS).
+    #   - cluster-preferred-endpoint-type hostname: make the cluster return that
+    #     hostname (with the announced port) instead of an IP.
     cluster-enabled yes
     cluster-config-file /data/nodes.conf
     cluster-node-timeout 5000
+    {{- if .Values.loadBalancer.enabled }}
+    cluster-announce-hostname {{ .Values.loadBalancer.announceHostname }}
+    cluster-preferred-endpoint-type hostname
+    {{- end }}
 
     # Persistence — AOF is mandatory for cluster mode if you want durability
     appendonly yes

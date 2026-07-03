@@ -27,29 +27,23 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
-              # Shared external IP; per-shard addressability comes from the
-              # port. This pod's external port pair is base+idx, where idx
-              # counts primaries first (offset 0) then secondaries.
-              # ANNOUNCE_IP is what clients dial — the Service IP itself, or
-              # the external VIP fronting it when announceIP is set in values.
-              IDX=$((ORDINAL + ORDINAL_OFFSET))
-              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
-              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
-              {{- else if .Values.loadBalancer.enabled }}
-              # perPodIP: announce the LB IP assigned to this pod's dedicated
-              # Service so MOVED redirects point at externally-reachable
-              # endpoints. Ports are the same on every node.
-              ANNOUNCE_IP=$(echo "$ANNOUNCE_IPS" | cut -d',' -f$((ORDINAL+1)))
-              ANNOUNCE_PORT={{ .Values.ports.client }}
-              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
-              {{- else }}
-              # In-cluster only: announce the pod IP.
+              # TWO planes, deliberately split:
+              #  - GOSSIP (node↔node): announce the POD IP + container bus port.
+              #    Pods reach each other's bus directly on the CNI network — no
+              #    VIP, no hairpin. Re-announced from $POD_IP on every (re)start.
+              #  - CLIENT (what MOVED/CLUSTER SHARDS hand out): announce the
+              #    per-pod external PORT; the HOSTNAME + preferred-endpoint-type
+              #    come from valkey.conf (same for all pods). Clients resolve the
+              #    hostname → VIP and dial that port; klipper routes to this pod.
               ANNOUNCE_IP="$POD_IP"
-              ANNOUNCE_PORT={{ .Values.ports.client }}
               ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
+              {{- if .Values.loadBalancer.enabled }}
+              IDX=$((ORDINAL + ORDINAL_OFFSET))
+              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))    # external client port via VIP
+              {{- else }}
+              ANNOUNCE_PORT={{ .Values.ports.client }}
               {{- end }}
-              echo "valkey-primary-${ORDINAL}: cluster-announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
+              echo "valkey-primary-${ORDINAL}: gossip ${ANNOUNCE_IP}:${ANNOUNCE_BUS_PORT}, client port ${ANNOUNCE_PORT}"
               exec valkey-server /etc/valkey/valkey.conf \
                 --cluster-announce-ip "$ANNOUNCE_IP" \
                 --cluster-announce-port "$ANNOUNCE_PORT" \
@@ -59,20 +53,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
-            - name: ANNOUNCE_IP
-              # what clients dial: the external VIP if one fronts the Service
-              # IP (announceIP), else the Service IP itself (sharedIP)
-              value: {{ .Values.loadBalancer.announceIP | default .Values.loadBalancer.sharedIP | quote }}
+            {{- if .Values.loadBalancer.enabled }}
             - name: BASE_CLIENT_PORT
               value: {{ .Values.loadBalancer.basePorts.client | quote }}
-            - name: BASE_BUS_PORT
-              value: {{ .Values.loadBalancer.basePorts.bus | quote }}
             - name: ORDINAL_OFFSET
               value: "0"      # primaries occupy idx 0..replicaCount-1
-            {{- else if .Values.loadBalancer.enabled }}
-            - name: ANNOUNCE_IPS
-              value: {{ join "," .Values.loadBalancer.primaryIPs | quote }}
             {{- end }}
           ports:
             - name: client

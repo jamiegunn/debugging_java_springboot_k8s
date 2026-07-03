@@ -90,8 +90,10 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
 - places the k3s airgap images tar at `/var/lib/rancher/k3s/agent/images/`
   (k3s imports it automatically at startup — no pull),
 - installs k3s with `INSTALL_K3S_SKIP_DOWNLOAD=true` pointing at the copied
-  binary, `--disable traefik` (we use ingress-nginx) and `--disable servicelb`
-  (we use keepalived),
+  binary, `--disable traefik` (we use ingress-nginx). klipper servicelb is
+  KEPT: it forwards each LoadBalancer Service's port to the pod on every node,
+  while keepalived floats the VIP across nodes for one stable address
+  (complementary, not either/or),
 - imports every app/backend image tar into containerd via
   `k3s ctr images import`.
 

@@ -1,34 +1,23 @@
 {{- if .Values.loadBalancer.enabled }}
 {{- /*
-  Per-service-per-pod LoadBalancer pattern. One Service per Valkey pod, each
-  selecting that single pod by name via the StatefulSet's automatically-injected
-  `statefulset.kubernetes.io/pod-name` label.
+  Per-pod LoadBalancer Services, port-separated. One Service per Valkey pod,
+  each selecting that single pod by name via the StatefulSet's injected
+  `statefulset.kubernetes.io/pod-name` label, exposing a UNIQUE client port
+  (basePorts.client + idx, idx counts primaries 0..n-1 then secondaries n..2n-1).
 
-  Why not one shared LB Service with one port: clients receive
-  MOVED <slot> <ip>:<port> redirects from any cluster node. For external
-  clients each <ip>:<port> pair must resolve to ONE specific pod (the slot
-  owner), which means one externally-reachable endpoint per pod. A single
-  ip:port that round-robins across nodes would break MULTI/EXEC, WAIT, and
-  sharded SSUBSCRIBE/SPUBLISH.
+  On k3s these are fulfilled by klipper (servicelb): it hostPort-binds each
+  Service's port on every node and forwards to the pod. keepalived floats one
+  VIP across the nodes, and dnsmasq resolves valkey.debug-demo.local → that VIP.
+  So a client dials valkey.debug-demo.local:6380 → VIP → klipper(:6380) → the
+  primary-1 pod. Per-shard addressability comes from the PORT; the address is a
+  hostname → VIP (no MetalLB, no per-pod IPs, no allow-shared-ip).
 
-  Two endpoint shapes (values.loadBalancer.mode):
-
-  sharedIP-perPort — all 6 Services pin the SAME loadBalancerIP and carry
-    the `metallb.universe.tf/allow-shared-ip` annotation; each exposes a
-    unique external port pair (client basePorts.client+idx, bus
-    basePorts.bus+idx). Per-shard addressability comes from the port, not
-    the IP — the same shape as an F5 VIP with port-based pool members.
-    externalTrafficPolicy must be Cluster here: MetalLB only permits
-    Local-policy Services to share an IP when their pod selectors are
-    identical, and ours deliberately select one pod each.
-
-  perPodIP — each Service pins its own loadBalancerIP from values, all on
-    the same port. externalTrafficPolicy: Local is safe (no IP sharing).
+  Only the CLIENT port is exposed. The cluster bus (gossip) stays fully
+  in-cluster: pods announce their pod IP + container bus port and reach each
+  other's bus directly on the CNI network — so no bus port is published here,
+  and there is no gossip hairpin through the VIP.
 */}}
-{{- if eq .Values.loadBalancer.mode "sharedIP-perPort" }}
-{{- $shared := .Values.loadBalancer.sharedIP }}
 {{- $cbase := int .Values.loadBalancer.basePorts.client }}
-{{- $bbase := int .Values.loadBalancer.basePorts.bus }}
 {{- $n := int .Values.replicaCount }}
 {{- range $i := until $n }}
 ---
@@ -38,16 +27,10 @@ metadata:
   name: valkey-primary-{{ $i }}-ext
   labels: {{- include "valkey.labels" $ | nindent 4 }}
     valkey.role: primary
-  annotations:
-    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
-    metallb.universe.tf/allow-shared-ip: "valkey"
 spec:
   type: LoadBalancer
-  loadBalancerIP: {{ $shared | quote }}
-  externalTrafficPolicy: Cluster
   ports:
     - {name: client, port: {{ add $cbase $i }}, targetPort: client}
-    - {name: bus,    port: {{ add $bbase $i }}, targetPort: bus}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-primary-{{ $i }}
 {{- end }}
@@ -60,60 +43,11 @@ metadata:
   name: valkey-secondary-{{ $i }}-ext
   labels: {{- include "valkey.labels" $ | nindent 4 }}
     valkey.role: secondary
-  annotations:
-    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
-    metallb.universe.tf/allow-shared-ip: "valkey"
 spec:
   type: LoadBalancer
-  loadBalancerIP: {{ $shared | quote }}
-  externalTrafficPolicy: Cluster
   ports:
     - {name: client, port: {{ add $cbase $idx }}, targetPort: client}
-    - {name: bus,    port: {{ add $bbase $idx }}, targetPort: bus}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-secondary-{{ $i }}
-{{- end }}
-{{- else }}
-{{- range $i, $ip := .Values.loadBalancer.primaryIPs }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: valkey-primary-{{ $i }}-ext
-  labels: {{- include "valkey.labels" $ | nindent 4 }}
-    valkey.role: primary
-  annotations:
-    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
-spec:
-  type: LoadBalancer
-  loadBalancerIP: {{ $ip | quote }}
-  externalTrafficPolicy: Local      # preserve source IP; advertise only from nodes hosting the pod
-  ports:
-    - {name: client, port: {{ $.Values.ports.client }}, targetPort: client}
-    - {name: bus,    port: {{ $.Values.ports.bus }},    targetPort: bus}
-  selector:
-    statefulset.kubernetes.io/pod-name: valkey-primary-{{ $i }}
-{{- end }}
-
-{{- range $i, $ip := .Values.loadBalancer.secondaryIPs }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: valkey-secondary-{{ $i }}-ext
-  labels: {{- include "valkey.labels" $ | nindent 4 }}
-    valkey.role: secondary
-  annotations:
-    metallb.universe.tf/address-pool: {{ $.Values.loadBalancer.pool | quote }}
-spec:
-  type: LoadBalancer
-  loadBalancerIP: {{ $ip | quote }}
-  externalTrafficPolicy: Local
-  ports:
-    - {name: client, port: {{ $.Values.ports.client }}, targetPort: client}
-    - {name: bus,    port: {{ $.Values.ports.bus }},    targetPort: bus}
-  selector:
-    statefulset.kubernetes.io/pod-name: valkey-secondary-{{ $i }}
-{{- end }}
 {{- end }}
 {{- end }}
