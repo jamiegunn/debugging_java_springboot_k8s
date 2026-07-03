@@ -46,8 +46,7 @@ storage:
 #
 # The cluster BUS (gossip) is NOT exposed here: pods announce their pod IP +
 # container bus port and reach each other's bus directly on the CNI network.
-# So there is no gossip hairpin through the VIP and no shim — the thing the old
-# Rancher-Desktop setup needed is simply gone.
+# So there is no gossip hairpin through the VIP and no proxy/shim in the bus path.
 loadBalancer:
   enabled: true
   # Each pod LISTENS on its own unique port (basePorts.client + idx) and its own
