@@ -4,6 +4,8 @@
 # in the order you need it. Each command is a thin wrapper over a focused script
 # (see scripts/k3s-*.sh); run `k3s.sh <cmd> --help` for that script's options.
 #
+# Run with NO arguments (or `tui`) for an interactive menu over everything.
+#
 #   Get running
 #     bundle        build the air-gap image bundle on the Mac (scripts/bundle-images.sh)
 #     install       full install: VMs → k3s → VIP/DNS → ingress → charts → smoke
@@ -35,6 +37,7 @@ usage() { sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
+    tui|menu|"")  exec "$D/k3s-tui.sh" ;;
     bundle)     exec "$D/bundle-images.sh" "$@" ;;
     install)    exec "$D/k3s-install.sh" "$@" ;;
     uninstall)  exec "$D/k3s-uninstall.sh" "$@" ;;
@@ -45,6 +48,6 @@ case "$cmd" in
     chaos)      exec "$D/k3s-chaos.sh" "$@" ;;
     tour)       exec "$D/api-tour.sh" "$@" ;;
     valkey)     exec "$D/valkey-tour.sh" "$@" ;;
-    ""|-h|--help) usage ;;
+    -h|--help)  usage ;;
     *) echo "unknown command: $cmd"; echo; usage; exit 64 ;;
 esac
