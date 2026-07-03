@@ -85,7 +85,7 @@ valkey_announced_endpoints() {
     # the ports from each -ext Service.
     local host role i port
     host="$(kubectl -n "$ns" get cm valkey -o jsonpath='{.data.valkey\.conf}' 2>/dev/null \
-            | awk '/cluster-announce-hostname/ {print $2; exit}' | tr -d '\r')"
+            | awk '$1=="cluster-announce-hostname" {print $2; exit}' | tr -d '\r')"
     : "${host:=${VALKEY_HOST:-valkey.debug-demo.local}}"
     for role in primary secondary; do
         for i in 0 1 2; do

@@ -62,8 +62,15 @@ IN_TCASE=0
 _cmd() { [[ $SHOW_CMDS -eq 1 && $IN_TCASE -eq 1 ]] && printf '      \033[36m$ %s\033[0m\n' "$*" >&3; return 0; }
 
 require_cmd kubectl curl python3
-CLI="$(command -v valkey-cli || command -v redis-cli || true)"
-[[ -n "$CLI" ]] || { err "valkey-cli/redis-cli required (brew install valkey)"; exit 1; }
+# shellcheck source=lib/k3s-env.sh
+source "$SCRIPT_DIR/lib/k3s-env.sh" 2>/dev/null || true
+
+# On k3s the endpoints are HOSTNAMES (valkey.debug-demo.local:port → VIP). The
+# Mac can't resolve them without /etc/resolver, so we run valkey-cli INSIDE the
+# cluster (kubectl exec into a valkey pod), where CoreDNS resolves the hostname
+# → VIP → klipper → the target pod. No Mac valkey-cli needed.
+VK_EXEC=(kubectl -n "${VALKEY_NS:-valkey}" exec -i valkey-primary-0 -- valkey-cli)
+VHOST="${VALKEY_HOST:-valkey.debug-demo.local}"
 
 VK_PASS="$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)"
 SUITE_START=$(date +%s)
@@ -118,18 +125,18 @@ tcase() {
     fi
 }
 
-# vk <ip:port> <args...> — pinned to one announced endpoint (no redirects)
-vk()  { local ep="$1"; shift; _cmd "valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
-# vkc <ip:port> <args...> — cluster-aware (-c follows MOVED/ASK)
-vkc() { local ep="$1"; shift; _cmd "valkey-cli -c -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
-# vkpipe <ip:port> <commands> — send multiple commands (one per line, as a
-# single string arg) over ONE connection. Taking the commands as an argument
-# (rather than via a piped printf) lets --commands echo the REAL commands.
+# vk <host:port> <args...> — pinned to one announced endpoint (no redirects),
+# run IN-CLUSTER so the hostname resolves via CoreDNS → VIP → klipper → pod.
+vk()  { local ep="$1"; shift; _cmd "kubectl -n valkey exec valkey-primary-0 -- valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "${VK_EXEC[@]}" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
+# vkc <host:port> <args...> — cluster-aware (-c follows MOVED/ASK by hostname)
+vkc() { local ep="$1"; shift; _cmd "kubectl -n valkey exec valkey-primary-0 -- valkey-cli -c -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "${VK_EXEC[@]}" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
+# vkpipe <host:port> <commands> — multiple commands (one per line) over ONE
+# connection, piped into an in-cluster valkey-cli.
 vkpipe() {
     local ep="$1" cmds="$2" disp
     disp="$(printf '%s' "$cmds" | awk 'NR>1{printf "\\n"}{printf "%s",$0}')"
-    _cmd "printf '${disp}\\n' | valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\""
-    printf '%s\n' "$cmds" | "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1
+    _cmd "printf '${disp}\\n' | kubectl -n valkey exec -i valkey-primary-0 -- valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\""
+    printf '%s\n' "$cmds" | "${VK_EXEC[@]}" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -146,17 +153,26 @@ ep_of() { local i; for i in "${!EP_NAME[@]}"; do [[ "${EP_NAME[$i]}" == "$1" ]] 
 SEED="$(ep_of valkey-primary-0)"
 PRIMARIES=("$(ep_of valkey-primary-0)" "$(ep_of valkey-primary-1)" "$(ep_of valkey-primary-2)")
 
-node_id()          { vk "$SEED" cluster nodes | awk -v a="$1" '{split($2,x,"@"); if (x[1]==a) print $1}'; }
-# Handle BOTH "lo-hi" ranges and bare single-slot entries (post-migration the
-# slot map fragments into singletons; a naive split on "-" leaves hi empty → 0,
-# which silently fails to match single-slot owners).
-owner_ep_of_slot() { vk "$SEED" cluster nodes | awk -v s="$1" '
+# Endpoints are HOSTNAME:port; CLUSTER NODES shows pod-ip:port. All nodes share
+# the hostname and differ by PORT, so we match/return by port. node_id maps an
+# endpoint (its port) to the node's id.
+node_id()          { local want="${1##*:}"; vk "$SEED" cluster nodes | awk -v p="$want" '{split($2,x,"@"); k=split(x[1],a,":"); if (a[k]==p) print $1}'; }
+# owner_ep_of_slot returns the owning master's HOSTNAME:port. Handles BOTH
+# "lo-hi" ranges and bare single-slot entries (post-migration the map fragments
+# into singletons; a naive split on "-" leaves hi empty → 0).
+owner_ep_of_slot() { vk "$SEED" cluster nodes | awk -v s="$1" -v h="$VHOST" '
     /master/ { for (i=9;i<=NF;i++) {
         if ($i ~ /^\[/) continue;                 # skip [slot->-id] migration markers
         n=split($i,r,"-"); lo=r[1]+0; hi=(n>1?r[2]:r[1])+0;
-        if (lo<=s+0 && hi>=s+0) { split($2,a,"@"); print a[1]; exit } } }'; }
+        if (lo<=s+0 && hi>=s+0) { split($2,a,"@"); k=split(a[1],b,":"); print h":"b[k]; exit } } }'; }
 # ownership map "slotranges@id" per primary, sorted — for before/after diffs
 slot_map() { vk "$SEED" cluster nodes | awk '/master/ && NF>8 {out=$1":"; for(i=9;i<=NF;i++) out=out $i ","; print out}' | sort; }
+# pod_ip_of_ep <hostname:port> — the POD IP behind an announced endpoint (from
+# CLUSTER NODES). MIGRATE must use this, not the hostname: MIGRATE opens a
+# node→node connection and the pod→VIP→klipper hairpin times out (IOERR) — the
+# same klipper svclb limitation that made us keep the cluster bus pod-to-pod.
+# Client redirects (MOVED/ASK) still use the hostname; only MIGRATE needs the IP.
+pod_ip_of_ep() { local port="${1##*:}"; vk "$SEED" cluster nodes | awk -v p="$port" '{split($2,x,"@"); n=split(x[1],a,":"); if(a[n]==p){print a[1]; exit}}'; }
 other_primary() { local avoid="$1" ep; for ep in "${PRIMARIES[@]}"; do [[ "$ep" != "$avoid" ]] && { echo "$ep"; return; }; done; }
 third_primary() { local a="$1" b="$2" ep; for ep in "${PRIMARIES[@]}"; do [[ "$ep" != "$a" && "$ep" != "$b" ]] && { echo "$ep"; return; }; done; }
 
@@ -236,9 +252,12 @@ tcase "6 unique announced endpoints, contiguous port block" \
 
 t_announce_consistent() {
     local ep bad=0
+    # CLUSTER NODES col2 is pod-ip:port@bus,hostname. The announced endpoint the
+    # CLIENT sees is hostname:port — all nodes share the hostname, so rebuild
+    # VHOST:port from each entry's port and compare that set.
     for ep in "${EP_ADDR[@]}"; do
         local view
-        view="$(vk "$ep" cluster nodes | awk '{split($2,a,"@"); print a[1]}' | sort | tr '\n' ' ')"
+        view="$(vk "$ep" cluster nodes | awk -v h="$VHOST" '{split($2,x,"@"); n=split(x[1],p,":"); print h":"p[n]}' | sort | tr '\n' ' ')"
         local expected
         expected="$(printf '%s\n' "${EP_ADDR[@]}" | sort | tr '\n' ' ')"
         [[ "$view" == "$expected" ]] || { echo "$ep sees: $view"; echo "expected:   $expected"; bad=1; }
@@ -255,7 +274,8 @@ t_pairing() {
     local i pid rline
     for i in 0 1 2; do
         pid="$(node_id "$(ep_of valkey-primary-$i)")"
-        rline="$(vk "$SEED" cluster nodes | awk -v a="$(ep_of valkey-secondary-$i)" '{split($2,x,"@"); if (x[1]==a) print $3, $4}')"
+        local sport; sport="$(ep_of valkey-secondary-$i)"; sport="${sport##*:}"
+        rline="$(vk "$SEED" cluster nodes | awk -v p="$sport" '{split($2,x,"@"); n=split(x[1],a,":"); if (a[n]==p) print $3, $4}')"
         [[ "$rline" == *slave*"$pid"* ]] || { echo "secondary-$i: '$rline' (expected slave of $pid)"; return 1; }
     done
 }
@@ -285,24 +305,30 @@ t_ping_all() {
         vk "$ep" ping | grep -q PONG || { echo "$ep: no PONG"; return 1; }
     done
 }
-tcase "PING answers on all 6 announced endpoints from outside the cluster" \
+tcase "PING answers on all 6 announced endpoints (by hostname)" \
     "the announced endpoint IS the product — if it doesn't answer, nothing else matters" \
-    "the full external chain works per node: VIP listener → MetalLB IP → Service → pod" \
-    "HAProxy listener missing for one port; Mac host-route gone; a pod not Ready" \
+    "the full chain works per node: hostname → VIP → klipper → the owning pod" \
+    "a Service/klipper port not programmed for one port; a pod not Ready" \
     t_ping_all
 
 t_bus_ports() {
-    local ep port
-    for ep in "${EP_ADDR[@]}"; do
-        port="$(( ${ep##*:} + 10000 ))"
-        _cmd "nc -z -w 3 ${ep%%:*} $port   # cluster-bus port = client port + 10000"
-        nc -z -w 3 "${ep%%:*}" "$port" || { echo "bus ${ep%%:*}:$port unreachable"; return 1; }
-    done
+    # On k3s the cluster BUS is direct pod-to-pod on the CNI network (each pod
+    # announces its POD IP + bus port) — it is deliberately NOT exposed through
+    # the VIP. So we prove the bus is healthy the way it actually runs: from the
+    # seed's gossip view, every one of the 6 nodes is "connected" with a fresh
+    # PONG (col 8 == connected, and ping-sent/pong-recv not stalled).
+    local n; n="$(vk "$SEED" cluster nodes)"
+    local total connected
+    total="$(echo "$n" | grep -c ':')"
+    connected="$(echo "$n" | awk '$8=="connected" || $0 ~ /myself/ {c++} END{print c}')"
+    [[ "$total" == 6 && "$connected" == 6 ]] || { echo "bus health: $connected/$total nodes connected"; echo "$n" | awk '{split($2,x,"@"); print x[1], $3, $8}'; return 1; }
+    echo "$n" | grep -qE '(disconnected|noaddr|fail)' && { echo "bus flag present"; return 1; }
+    return 0
 }
-tcase "all 6 cluster-bus ports (client+10000) reachable through the VIP" \
-    "peers gossip via announced bus addresses; a blocked bus port is a slow-motion cluster_state:fail" \
-    "the two-layer path forwards the bus block 1:1, not just the client ports" \
-    "F5/HAProxy config lists client ports only — requirement 3 of the two-layer contract" \
+tcase "the cluster bus is healthy pod-to-pod (all 6 nodes connected, no flags)" \
+    "peers gossip over direct pod-to-pod bus links on k3s (no VIP in the bus path)" \
+    "every node is reachable on its announced bus address and actively ponging" \
+    "a CNI/NetworkPolicy block on the bus port — a slow-motion cluster_state:fail" \
     t_bus_ports
 
 t_epochs() {
@@ -467,8 +493,8 @@ tcase "the slot number in MOVED equals CLUSTER KEYSLOT's answer" \
 
 t_moved_agree() {
     local o1 o2
-    o1="$(vk "$MWRONG" set "$MK" v | grep -oE '[0-9.]+:[0-9]+' | tail -1)"
-    o2="$(vk "$MTHIRD" set "$MK" v | grep -oE '[0-9.]+:[0-9]+' | tail -1)"
+    o1="$(vk "$MWRONG" set "$MK" v | awk '/MOVED/{print $NF}' | tr -d '\r' | tail -1)"
+    o2="$(vk "$MTHIRD" set "$MK" v | awk '/MOVED/{print $NF}' | tr -d '\r' | tail -1)"
     [[ -n "$o1" && "$o1" == "$o2" ]] || { echo "wrong nodes disagree: '$o1' vs '$o2'"; return 1; }
 }
 tcase "both wrong primaries redirect to the SAME owner" \
@@ -499,7 +525,9 @@ tcase "reading via the OTHER wrong node also converges on the same value" \
 
 t_moved_dial_target() {
     local target
-    target="$(vk "$MWRONG" get "$MK" | grep -oE '[0-9.]+:[0-9]+' | tail -1)"
+    # MOVED text is "MOVED <slot> <host>:<port>" — host is now a HOSTNAME
+    # (valkey.debug-demo.local), so grab the last token, not an IP regex.
+    target="$(vk "$MWRONG" get "$MK" | awk '/MOVED/{print $NF}' | tr -d '\r' | tail -1)"
     [[ -n "$target" ]] || { echo "no MOVED target captured"; return 1; }
     local v; v="$(vk "$target" get "$MK" | tail -1 | tr -d '\r')"
     [[ "$v" == "moved-ok" ]] || { echo "dialing redirect target $target literally: got '$v'"; return 1; }
@@ -592,7 +620,7 @@ tcase "-c chases the ASK end-to-end and completes the (nil) read" \
 
 t_migrate_key() {
     local out
-    out="$(vk "$SRC_EP" migrate "${DST_EP%%:*}" "${DST_EP##*:}" "$K_PRESENT" 0 5000 auth "$VK_PASS" | tail -1 | tr -d '\r')"
+    out="$(vk "$SRC_EP" migrate "$(pod_ip_of_ep "$DST_EP")" "${DST_EP##*:}" "$K_PRESENT" 0 5000 auth "$VK_PASS" | tail -1 | tr -d '\r')"
     # Exact "OK" — NOT *OK* (which false-matches "NOKEY").
     [[ "$out" == "OK" ]] || { echo "MIGRATE: $out"; return 1; }
     # EXISTS on the source now returns ASK (slot is MIGRATING, key is gone), so
@@ -637,7 +665,7 @@ t_migrate_back() {
     # mirror): SRC imports, DST migrates, move the key DST→SRC, finalize to SRC.
     vk "$SRC_EP" cluster setslot "$ASK_SLOT" importing "$DST_ID" >/dev/null
     vk "$DST_EP" cluster setslot "$ASK_SLOT" migrating "$SRC_ID" >/dev/null
-    local out; out="$(vk "$DST_EP" migrate "${SRC_EP%%:*}" "${SRC_EP##*:}" "$K_PRESENT" 0 5000 auth "$VK_PASS" | tail -1 | tr -d '\r')"
+    local out; out="$(vk "$DST_EP" migrate "$(pod_ip_of_ep "$SRC_EP")" "${SRC_EP##*:}" "$K_PRESENT" 0 5000 auth "$VK_PASS" | tail -1 | tr -d '\r')"
     [[ "$out" == "OK" ]] || { echo "migrate back: $out"; return 1; }
     # Finalize to the original owner FIRST on that owner, then everyone else.
     vk "$SRC_EP" cluster setslot "$ASK_SLOT" node "$SRC_ID" >/dev/null
@@ -761,7 +789,7 @@ t_cross_node_pubsub() {
     local sub_ep pub_ep
     sub_ep="${PRIMARIES[0]}"; pub_ep="${PRIMARIES[1]}"
     : > "$SUB_LOG"
-    "$CLI" -h "${sub_ep%%:*}" -p "${sub_ep##*:}" -a "$VK_PASS" --no-auth-warning subscribe "$CH" > "$SUB_LOG" 2>&1 &
+    "${VK_EXEC[@]}" -h "${sub_ep%%:*}" -p "${sub_ep##*:}" -a "$VK_PASS" --no-auth-warning subscribe "$CH" > "$SUB_LOG" 2>&1 &
     local sub_pid=$!
     sleep 2
     vk "$pub_ep" publish "$CH" "hello-across-the-bus" >/dev/null
@@ -781,7 +809,7 @@ tcase "a message published on node B reaches a subscriber connected to node A" \
 
 t_pubsub_channels() {
     local sub_ep="${PRIMARIES[2]}"
-    "$CLI" -h "${sub_ep%%:*}" -p "${sub_ep##*:}" -a "$VK_PASS" --no-auth-warning subscribe "$CH-vis" >/dev/null 2>&1 &
+    "${VK_EXEC[@]}" -h "${sub_ep%%:*}" -p "${sub_ep##*:}" -a "$VK_PASS" --no-auth-warning subscribe "$CH-vis" >/dev/null 2>&1 &
     local sub_pid=$!
     sleep 2
     local out; out="$(vk "$sub_ep" pubsub channels "$CH-vis")"
@@ -839,6 +867,7 @@ else
 
     VICTIM_POD="valkey-primary-1"
     VICTIM_EP="$(ep_of valkey-primary-1)"
+    VICTIM_PORT="${VICTIM_EP##*:}"   # the pod listens on its unique port, NOT 6379
     HEIR_EP="$(ep_of valkey-secondary-1)"
     VICTIM_ID="$(node_id "$VICTIM_EP")"
     HEIR_ID="$(node_id "$HEIR_EP")"
@@ -876,10 +905,10 @@ WAIT 1 500" | tail -1 | tr -d '\r')"
 
     if [[ $SHOW_CMDS -eq 1 ]]; then
         printf '      \033[36m# freeze the primary (run detached — blocks for 20s):\033[0m\n' >&3
-        printf '      \033[36m$ kubectl -n valkey exec %s -- valkey-cli -a "$PASS" debug sleep 20\033[0m\n' "$VICTIM_POD" >&3
+        printf '      \033[36m$ kubectl -n valkey exec %s -- valkey-cli -p %s -a "$PASS" debug sleep 20\033[0m\n' "$VICTIM_POD" "$VICTIM_PORT" >&3
     fi
     kubectl -n valkey exec "$VICTIM_POD" -- \
-        valkey-cli -a "$VK_PASS" --no-auth-warning debug sleep 20 >/dev/null 2>&1 &
+        valkey-cli -p "$VICTIM_PORT" -a "$VK_PASS" --no-auth-warning debug sleep 20 >/dev/null 2>&1 &
     FREEZE_PID=$!
     [[ $QUIET -eq 0 ]] && printf '\n\033[2m    victim frozen for 20s (DEBUG SLEEP) — no client commands, no bus PONGs\033[0m\n'
 
@@ -962,19 +991,18 @@ WAIT 1 500" | tail -1 | tr -d '\r')"
         t_other_shards
 
     t_api_during() {
-        local HAPROXY_IP ts cid i
-        HAPROXY_IP="$(cat "$REPO_ROOT/dumps/haproxy-vm-ip" 2>/dev/null)" \
-            || HAPROXY_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')"
+        local ENTRY ts cid i
+        ENTRY="${K3S_VIP:-192.168.105.100}"   # HTTP by hostname via the VIP
         ts="$(date +%s)"
-        _cmd "curl --resolve debug-demo.local:80:${HAPROXY_IP} -X POST http://debug-demo.local/api/customers -H 'Content-Type: application/json' -d '{\"name\":\"x\",\"email\":\"x@e.com\"}'"
-        cid="$(curl -fsS -m 8 --resolve "debug-demo.local:80:${HAPROXY_IP}" -X POST http://debug-demo.local/api/customers \
+        _cmd "curl --resolve ${APP_HOST:-debug-demo.local}:80:${ENTRY} -X POST http://${APP_HOST:-debug-demo.local}/api/customers -H 'Content-Type: application/json' -d '{\"name\":\"x\",\"email\":\"x@e.com\"}'"
+        cid="$(curl -fsS -m 8 --resolve "${APP_HOST:-debug-demo.local}:80:${ENTRY}" -X POST "http://${APP_HOST:-debug-demo.local}/api/customers" \
               -H 'Content-Type: application/json' \
               -d "{\"name\":\"failover-$ts\",\"email\":\"failover-$ts@example.com\"}" 2>/dev/null \
               | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' 2>/dev/null)"
         [[ -n "$cid" ]] || { echo "customer create failed during outage"; return 1; }
-        _cmd "curl --resolve debug-demo.local:80:${HAPROXY_IP} -X POST http://debug-demo.local/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":$cid,\"amount\":1.00}'"
+        _cmd "curl --resolve ${APP_HOST:-debug-demo.local}:80:${ENTRY} -X POST http://${APP_HOST:-debug-demo.local}/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":$cid,\"amount\":1.00}'"
         for i in $(seq 1 10); do
-            curl -fsS -m 8 --resolve "debug-demo.local:80:${HAPROXY_IP}" -X POST http://debug-demo.local/api/orders \
+            curl -fsS -m 8 --resolve "${APP_HOST:-debug-demo.local}:80:${ENTRY}" -X POST "http://${APP_HOST:-debug-demo.local}/api/orders" \
                  -H 'Content-Type: application/json' -d "{\"customerId\":$cid,\"amount\":1.00}" >/dev/null 2>&1 && return 0
             sleep 2
         done
