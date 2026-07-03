@@ -23,19 +23,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/k3s-env.sh
+source "$SCRIPT_DIR/lib/k3s-env.sh" 2>/dev/null || true
 set +e   # common.sh sets -e; a tour should narrate failures, not die on them
 
 require_cmd curl python3 kubectl
 
-# --- resolve the external entry point (same logic as smoke-test) -----------
-if [[ -f "$REPO_ROOT/dumps/haproxy-vm-ip" ]]; then
-    ENTRY_IP="$(cat "$REPO_ROOT/dumps/haproxy-vm-ip")"
-    VIA="HAProxy VM (F5 stand-in)"
-else
-    ENTRY_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo 192.168.64.2)"
-    VIA="RD node directly (no F5 stand-in)"
-fi
-HOST="debug-demo.local"
+# --- entry point: the keepalived VIP, reached BY HOSTNAME -------------------
+# curl --resolve puts the hostname in the Host header (so ingress routes it)
+# while dialing the VIP, so no Mac /etc/resolver is needed for this path.
+ENTRY_IP="${K3S_VIP:-192.168.105.100}"
+VIA="keepalived VIP → ingress-nginx"
+HOST="${APP_HOST:-debug-demo.local}"
 BASE="http://${HOST}"
 CURL=(curl -fsS -m 10 --resolve "${HOST}:80:${ENTRY_IP}")
 

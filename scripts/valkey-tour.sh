@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# valkey-tour.sh — read-only investigation of the running Valkey cluster
-# from outside the k8s cluster, via the per-pod LoadBalancer endpoints.
-# Endpoints are discovered from the valkey-*-ext Services, so the tour works
-# in both endpoint modes: sharedIP-perPort (one IP, client ports 6379-6384)
-# and legacy perPodIP (six IPs, one port).
+# valkey-tour.sh — read-only investigation of the running Valkey cluster,
+# entirely BY HOSTNAME. valkey-cli runs in-cluster (kubectl exec) so the
+# announced hostname (valkey.debug-demo.local) resolves via CoreDNS → VIP →
+# klipper → the owning pod; nodes are distinguished by port (6379-6384).
 #
 # Use this when you want a comprehensive snapshot: topology, every op type
 # the chart wires up, MOVED redirect behavior, latency, slow queries, big
@@ -12,12 +11,12 @@
 # checks, see scripts/smoke-test.sh.
 #
 # Prereqs:
-#   - scripts/host-routes.sh add   (Mac can route to the LB IP(s))
+#   - a healthy k3s stack (scripts/k3s-doctor.sh) — valkey-cli runs in-cluster,
 #   - valkey-cli or redis-cli on PATH (brew install valkey)
 #
 # Usage:
 #   ./valkey-tour.sh                   # full tour
-#   ./valkey-tour.sh --seed 192.168.64.51:6380   # use a different seed (ip[:port])
+#   ./valkey-tour.sh --seed valkey.debug-demo.local:6380   # a different seed (host[:port])
 #   ./valkey-tour.sh --section topology          # just one section
 #       sections: topology, strings, hash, list, zset, stream, pubsub, info, latency
 
@@ -25,6 +24,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/k3s-env.sh
+source "$SCRIPT_DIR/lib/k3s-env.sh" 2>/dev/null || true
 
 SEED=""
 PORT=""
@@ -51,19 +52,13 @@ while IFS=$'\t' read -r _name ep; do
 done < <(valkey_announced_endpoints valkey)
 if [[ -z "$SEED" ]]; then
     if [[ ${#ALL_EPS[@]} -gt 0 ]]; then
-        SEED="${ALL_EPS[0]%%:*}"
+        SEED="${ALL_EPS[0]%%:*}"          # the announced HOSTNAME (valkey.debug-demo.local)
         : "${PORT:=${ALL_EPS[0]##*:}}"
     else
-        SEED="192.168.64.51"
+        SEED="valkey.debug-demo.local"
     fi
 fi
 : "${PORT:=6379}"
-
-CLI="$(command -v valkey-cli || command -v redis-cli || true)"
-if [[ -z "$CLI" ]]; then
-    err "neither valkey-cli nor redis-cli on PATH — install with: brew install valkey"
-    exit 1
-fi
 
 PASS="$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)"
 if [[ -z "$PASS" ]]; then
@@ -71,17 +66,22 @@ if [[ -z "$PASS" ]]; then
     exit 1
 fi
 
+# Run valkey-cli IN-CLUSTER (kubectl exec into a valkey pod) so the announced
+# HOSTNAME resolves via CoreDNS → VIP → klipper → pod — no Mac /etc/resolver or
+# host routes needed. The seed hostname distinguishes nodes by PORT.
+VK_EXEC=(kubectl -n "${VALKEY_NS:-valkey}" exec -i valkey-primary-0 -- valkey-cli)
+
 # Connectivity check first — fail fast with a useful message
-if ! "$CLI" -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning ping 2>/dev/null | grep -q PONG; then
-    err "can't reach $SEED:$PORT"
-    err "did you run 'scripts/host-routes.sh add'? (or the cluster isn't healthy)"
+if ! "${VK_EXEC[@]}" -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning ping 2>/dev/null | grep -q PONG; then
+    err "can't reach $SEED:$PORT from inside the cluster — is the cluster healthy?"
+    err "check: scripts/k3s-doctor.sh"
     exit 1
 fi
 
 # vk = cluster-aware (follows MOVED redirects) — for single-key ops
 # vk_pin = pinned to one node (no -c) — for ops that need shard affinity (cluster commands, INFO, latency)
-vk()      { "$CLI" -c -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
-vk_pin()  { "$CLI"    -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
+vk()      { "${VK_EXEC[@]}" -c -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
+vk_pin()  { "${VK_EXEC[@]}"    -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
 
 # owner_addr_of_slot <slot> — the ip:port of the master owning that slot.
 # Uses split() on "-" (works on BSD awk); the gawk-only match($i,/re/,arr)
@@ -133,8 +133,8 @@ section topology && {
     echo "─ Per-node uptime + role ─"
     for ep in ${ALL_EPS[@]+"${ALL_EPS[@]}"}; do    # empty-array-safe under set -u / bash 3.2
         ep_ip="${ep%%:*}"; ep_port="${ep##*:}"
-        role=$("$CLI" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info replication 2>/dev/null | grep -E '^role:' | tr -d '\r' | cut -d: -f2)
-        up=$("$CLI" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info server 2>/dev/null | grep -E '^uptime_in_seconds:' | tr -d '\r' | cut -d: -f2)
+        role=$("${VK_EXEC[@]}" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info replication 2>/dev/null | grep -E '^role:' | tr -d '\r' | cut -d: -f2)
+        up=$("${VK_EXEC[@]}" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info server 2>/dev/null | grep -E '^uptime_in_seconds:' | tr -d '\r' | cut -d: -f2)
         printf "  %-21s role=%-7s uptime=%ss\n" "$ep" "$role" "$up"
     done
 }
@@ -222,7 +222,7 @@ section pubsub && {
     vk_pin pubsub shardchannels '*' | sed 's/^/  /'
     echo
     echo "To watch the classic channel live (cluster bus broadcasts, so any seed works):"
-    echo "  $CLI -h $SEED -p $PORT -a '\$PASS' subscribe orders:notifications"
+    echo "  kubectl -n valkey exec -it valkey-primary-0 -- valkey-cli -h $SEED -p $PORT -a '\$PASS' subscribe orders:notifications"
     echo "Then in another terminal, drive an order to trigger a PUBLISH:"
     echo "  curl -X POST http://debug-demo.local/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":1,\"amount\":1.00}'"
 }
@@ -252,7 +252,7 @@ section info && {
 section latency && {
     echo "Latency probes — these run a few thousand pings and report distribution."
     echo "Quick check (3 seconds, this seed only):"
-    "$CLI" -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning --latency -i 1 &
+    "${VK_EXEC[@]}" -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning --latency -i 1 &
     LPID=$!
     sleep 3
     kill $LPID 2>/dev/null

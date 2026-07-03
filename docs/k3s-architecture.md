@@ -143,13 +143,15 @@ diagnostic constraint.
   returns 201 — all air-gapped, all by hostname.
 - [x] **P4 — installer**: `scripts/k3s-install.sh` orchestrates P0-P3 +
   smoke; `scripts/k3s-uninstall.sh` (delete VMs, resolver, kubeconfig).
-- [~] **P5 — tests**: DONE — scripts/k3s-smoke.sh (14 checks, all by
-  hostname; validated 14/14) and scripts/k3s-chaos.sh (node-down /
-  vip-failover / valkey-freeze / backend scale-downs; node-down validated
-  live — valkey stayed cluster_state:ok through the outage). common.sh
-  auto-targets the k3s kubeconfig for the whole suite. REMAINING (polish):
-  port the exhaustive valkey-cluster-tests.sh (58 checks) and the api/valkey
-  tours to the k3s hostnames.
+- [x] **P5 — tests**: DONE. scripts/k3s-smoke.sh (14/14, all by hostname);
+  scripts/k3s-chaos.sh (node-down / vip-failover / valkey-freeze / backend
+  scale-downs; node-down validated live — valkey stayed cluster_state:ok
+  through the outage); valkey-cluster-tests.sh ported and ALL 58 checks pass
+  (MOVED, ASK, migration, replicas, pub/sub, full crash-failover — client
+  ops by hostname in-cluster, MIGRATE by pod-IP since the pod→VIP→klipper
+  hairpin times out); api-tour.sh + valkey-tour.sh re-pointed at the VIP /
+  in-cluster hostname. common.sh auto-targets the k3s kubeconfig for the
+  whole suite.
 - [x] **P6 — troubleshooting kit**: scripts/k3s-doctor.sh — one command
   checks every layer (tooling → VMs → nodes → VIP → DNS → ingress →
   workloads → Valkey cluster → end-to-end), and for anything broken prints
