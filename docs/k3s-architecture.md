@@ -141,12 +141,21 @@ diagnostic constraint.
   from the Mac follows MOVED by hostname and SET/GET round-trips, the app is UP
   through debug-demo.local, and POST /api/orders (Oracle + MQ + Valkey fan-out)
   returns 201 — all air-gapped, all by hostname.
-- [ ] **P4 — installer**: `scripts/k3s-install.sh` orchestrates P0-P3 +
+- [x] **P4 — installer**: `scripts/k3s-install.sh` orchestrates P0-P3 +
   smoke; `scripts/k3s-uninstall.sh` (delete VMs, resolver, kubeconfig).
-- [ ] **P5 — tests**: convert smoke / cluster-tests / api-tour / chaos /
-  valkey-tour to hostnames; add node-level chaos (kill an agent VM → VIP
-  failover + pod reschedule); keep the `--commands` cookbook echoes.
-- [ ] **P6 — troubleshooting kit**: the "make it dead easy" layer (see below).
+- [~] **P5 — tests**: DONE — scripts/k3s-smoke.sh (14 checks, all by
+  hostname; validated 14/14) and scripts/k3s-chaos.sh (node-down /
+  vip-failover / valkey-freeze / backend scale-downs; node-down validated
+  live — valkey stayed cluster_state:ok through the outage). common.sh
+  auto-targets the k3s kubeconfig for the whole suite. REMAINING (polish):
+  port the exhaustive valkey-cluster-tests.sh (58 checks) and the api/valkey
+  tours to the k3s hostnames.
+- [x] **P6 — troubleshooting kit**: scripts/k3s-doctor.sh — one command
+  checks every layer (tooling → VMs → nodes → VIP → DNS → ingress →
+  workloads → Valkey cluster → end-to-end), and for anything broken prints
+  the exact fix command (validated: 23/24, the 1 being the optional Mac
+  resolver). scripts/k3s.sh is the single front door: bundle / install /
+  resolver / doctor / smoke / status / chaos / tour / uninstall.
 
 ## P6 preview — the troubleshooting kit
 
