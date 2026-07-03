@@ -39,9 +39,10 @@ run() {  # run <cmd...> — echo it, run it, keep output on screen
 }
 
 # fast, local-only status — ONE `limactl list` call (no per-VM shell exec, which
-# would make the menu sluggish). Full VIP-owner/node state is menu option 6.
+# would make the menu sluggish) + a single 1s ping for real VIP liveness (the
+# Mac shares the VIP's L2 segment). Full VIP-owner/node state is menu option 6.
 status_line() {
-    local up=0 total=0 vm list kc
+    local up=0 total=0 vm list kc vip
     list="$(limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null)"
     for vm in "${K3S_ALL_VMS[@]:-}"; do
         [[ -z "$vm" ]] && continue
@@ -49,8 +50,11 @@ status_line() {
         printf '%s\n' "$list" | awk -v n="$vm" '$1==n && $2=="Running"{f=1} END{exit !f}' && up=$((up+1))
     done
     kc="${RD}✗ no kubeconfig${OFF}"; [[ -s "$KCFG" ]] && kc="${GN}✓ kubeconfig${OFF}"
-    printf '  %sVMs%s %s/%s running    %s    %sVIP%s %s   %s(full state → 6)%s\n' \
-        "$B" "$OFF" "$up" "$total" "$kc" "$B" "$OFF" "$K3S_VIP" "$DIM" "$OFF"
+    # real check: is the VIP actually answering? (not just the configured address)
+    if ping -c1 -t1 "$K3S_VIP" >/dev/null 2>&1; then vip="${GN}VIP ${K3S_VIP} up${OFF}"
+    else vip="${RD}VIP ${K3S_VIP} down${OFF}"; fi
+    printf '  %sVMs%s %s/%s running    %s    %s   %s(full state → 6)%s\n' \
+        "$B" "$OFF" "$up" "$total" "$kc" "$vip" "$DIM" "$OFF"
 }
 
 header() {

@@ -47,10 +47,18 @@ fi
 "$SCRIPT_DIR/k3s-net.sh" down 2>/dev/null
 
 info "deleting Lima VMs..."
+FAILED_VMS=()
 for vm in "${K3S_ALL_VMS[@]}"; do
+    limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$vm" || continue
+    limactl stop -f "$vm" >/dev/null 2>&1
+    # force-delete; retry once in case it raced the force-stop, then VERIFY —
+    # the old code hid delete failures under 2>/dev/null, so a VM (and its
+    # keepalived VIP) could survive an "uninstall complete".
+    limactl delete -f "$vm" >/dev/null 2>&1 || { sleep 1; limactl delete -f "$vm" >/dev/null 2>&1; }
     if limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$vm"; then
-        limactl stop -f "$vm" 2>/dev/null
-        limactl delete -f "$vm" 2>/dev/null && info "  removed $vm"
+        err "  FAILED to delete $vm"; FAILED_VMS+=("$vm")
+    else
+        info "  removed $vm"
     fi
 done
 
@@ -61,4 +69,9 @@ if [[ $PURGE_BUNDLE -eq 1 ]]; then
 fi
 
 echo
+if [[ ${#FAILED_VMS[@]} -gt 0 ]]; then
+    err "uninstall INCOMPLETE — these VMs are still running (their keepalived VIP is still up):"
+    for vm in "${FAILED_VMS[@]}"; do err "    limactl stop -f $vm && limactl delete -f $vm"; done
+    exit 1
+fi
 info "uninstall complete. Rebuild with: scripts/k3s-install.sh"
