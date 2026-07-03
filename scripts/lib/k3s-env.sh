@@ -28,7 +28,9 @@ K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 
 # --- network / VIP / DNS ----------------------------------------------------
 : "${LIMA_SHARED_SUBNET:=192.168.105}"   # socket_vmnet shared network
-: "${K3S_VIP:=${LIMA_SHARED_SUBNET}.100}"  # keepalived VRRP VIP (must be free)
+# K3S_VIP (keepalived VRRP VIP) is resolved further down, once REPO_ROOT is
+# known: env override > persisted dumps/k3s-vip (what the last install used) >
+# default .100. The install pre-flights it for conflicts and persists the value.
 : "${K3S_VRRP_ROUTER_ID:=51}"
 : "${K3S_VRRP_AUTH_PASS:=debugdemo}"
 
@@ -70,6 +72,15 @@ K3S_IMAGES=(
 : "${REPO_ROOT:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 : "${AIRGAP_DIR:=$REPO_ROOT/dumps/airgap}"        # image tars + k3s binary (gitignored)
 : "${K3S_KUBECONFIG:=$REPO_ROOT/dumps/k3s.kubeconfig}"
+
+# VIP resolution: env override wins; else the value the last install persisted
+# (dumps/k3s-vip); else the default. This keeps doctor/charts/tui/etc. all
+# agreeing on whatever VIP the running cluster actually uses.
+K3S_VIP_FILE="$REPO_ROOT/dumps/k3s-vip"
+if [[ -z "${K3S_VIP:-}" ]]; then
+    if [[ -s "$K3S_VIP_FILE" ]]; then K3S_VIP="$(tr -dc '0-9.' < "$K3S_VIP_FILE")"
+    else K3S_VIP="${LIMA_SHARED_SUBNET}.100"; fi
+fi
 
 # Arch for k3s airgap artifacts (Apple Silicon → arm64).
 case "$(uname -m)" in

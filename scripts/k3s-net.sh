@@ -154,18 +154,78 @@ configure_mac_resolver() {
     sudo killall -HUP mDNSResponder 2>/dev/null || true
 }
 
+# _vip_pick_help — the "use a different VIP" recipe, shared by both error paths.
+_vip_pick_help() {
+    err "  Use a different, free VIP (it persists for every later command). Find one:"
+    err "     for i in 200 210 220 230 240 250; do \\"
+    err "       ping -c1 -t1 ${LIMA_SHARED_SUBNET}.\$i >/dev/null 2>&1 \\"
+    err "         || echo \"${LIMA_SHARED_SUBNET}.\$i is free\"; done"
+    err "  then install with it:"
+    err "     K3S_VIP=${LIMA_SHARED_SUBNET}.240 ./tui install"
+}
+
+# preflight_vip — refuse to claim a VIP that isn't safely free. socket_vmnet's
+# shared network hands out DHCP across the whole /24, so the VIP (default .100)
+# is NOT reserved. Two ways it can collide, both a silent ARP conflict that
+# breaks external access — caught here before keepalived ever adds the address.
+preflight_vip() {
+    local vm ip mac
+    # (1) DHCP handed the VIP to one of OUR VMs as its real address.
+    for vm in "${K3S_ALL_VMS[@]}"; do
+        ip="$(k3s_vm_ip "$vm" 2>/dev/null)"
+        [[ "$ip" == "$K3S_VIP" ]] || continue
+        err "════════════════════════════════════════════════════════════════"
+        err "The VIP $K3S_VIP is $vm's OWN DHCP address — socket_vmnet handed it out."
+        err "keepalived can't use it as a floating VIP without conflicting with $vm."
+        err ""
+        err "FIX:"; _vip_pick_help
+        err "════════════════════════════════════════════════════════════════"
+        return 1
+    done
+    # (2) Our keepalived already holds it (as a secondary) → this is a re-run, fine.
+    for vm in "${K3S_ALL_VMS[@]}"; do
+        limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null | grep -qw "$K3S_VIP" && return 0
+    done
+    # (3) A FOREIGN device on the segment holds it. Probe from the Mac: ping to
+    #     force ARP resolution, then see if a real MAC answered (catches ICMP-
+    #     blocked-but-ARP-responsive holders too).
+    ping -c1 -t1 "$K3S_VIP" >/dev/null 2>&1
+    mac="$(arp -n "$K3S_VIP" 2>/dev/null | grep -oiE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}')"
+    [[ -z "$mac" ]] && return 0   # free — good to go
+
+    err "════════════════════════════════════════════════════════════════"
+    err "VIP $K3S_VIP is ALREADY IN USE on ${LIMA_SHARED_SUBNET}.0/24 (MAC $mac)."
+    err "keepalived must NOT claim it — a duplicate address is an ARP conflict"
+    err "that silently breaks all external access to the cluster."
+    err ""
+    err "FIX — pick ONE option, then reinstall:"
+    err ""
+    err "  A)"; _vip_pick_help
+    err ""
+    err "  B) Free $K3S_VIP by stopping whatever holds it:"
+    err "       limactl list          # is the holder one of your other VMs?"
+    err "       arp -n $K3S_VIP   # its MAC is $mac"
+    err "     stop that VM (limactl stop <name>), then rerun the install."
+    err "════════════════════════════════════════════════════════════════"
+    return 1
+}
+
 cmd_up() {
     [[ -s "$K3S_KUBECONFIG" ]] || { err "no kubeconfig — run scripts/k3s-cluster.sh up first"; exit 1; }
-    info "[1/4] keepalived on all nodes..."
+    info "[1/5] pre-flight: is VIP $K3S_VIP free on ${LIMA_SHARED_SUBNET}.0/24?"
+    preflight_vip || exit 1
+    info "[2/5] keepalived on all nodes..."
     configure_keepalived "$K3S_SERVER_VM" MASTER 150 || exit 1
     local p=100
     for vm in "${K3S_AGENT_VMS[@]}"; do configure_keepalived "$vm" BACKUP "$p" || exit 1; p=$((p-10)); done
-    info "[2/4] dnsmasq on the server..."
+    info "[3/5] dnsmasq on the server..."
     configure_dnsmasq
-    info "[3/4] CoreDNS stub zone..."
+    info "[4/5] CoreDNS stub zone..."
     configure_coredns
-    info "[4/4] Mac resolver..."
+    info "[5/5] Mac resolver..."
     configure_mac_resolver
+    # Persist the VIP so doctor/charts/tui/etc. all agree on the value actually used.
+    mkdir -p "$(dirname "$K3S_VIP_FILE")" 2>/dev/null && printf '%s\n' "$K3S_VIP" > "$K3S_VIP_FILE"
     echo
     info "VIP + DNS up. Verify: scripts/k3s-net.sh verify"
 }

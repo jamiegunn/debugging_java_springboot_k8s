@@ -62,7 +62,7 @@ for vm in "${K3S_ALL_VMS[@]}"; do
     fi
 done
 
-rm -f "$K3S_KUBECONFIG"
+rm -f "$K3S_KUBECONFIG" "$K3S_VIP_FILE"
 if [[ $PURGE_BUNDLE -eq 1 ]]; then
     info "purging air-gap bundle $AIRGAP_DIR..."
     rm -rf "$AIRGAP_DIR"
