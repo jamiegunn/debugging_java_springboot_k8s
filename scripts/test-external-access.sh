@@ -40,20 +40,25 @@ fi
 APP_HOST="${APP_HOST:-$APP_HOST_DEFAULT}"
 APP_VIA="${APP_VIA:-$APP_VIA_DEFAULT}"
 APP_INGRESS_HOST="${APP_INGRESS_HOST:-debug-demo.local}"
-# Valkey seed: discover primary-0's external endpoint from its Service so this
-# works in both endpoint modes (sharedIP-perPort: one IP, ports 6379-6384;
-# legacy perPodIP: six IPs, one port). SEED_IP/SEED_PORT env vars override.
-SEED_IP_DEFAULT="$(kubectl -n valkey get svc valkey-primary-0-ext -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-SEED_PORT_DEFAULT="$(kubectl -n valkey get svc valkey-primary-0-ext -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null || true)"
-SEED_IP="${SEED_IP:-${SEED_IP_DEFAULT:-192.168.64.51}}"
-SEED_PORT="${SEED_PORT:-${SEED_PORT_DEFAULT:-6379}}"
+# Valkey seed: primary-0's ANNOUNCED endpoint (what clients must dial) — the
+# VIP in two-layer mode, the Service's MetalLB IP in one-layer mode. Works in
+# both port shapes too (sharedIP-perPort: one IP, ports 6379-6384; legacy
+# perPodIP: six IPs, one port). SEED_IP/SEED_PORT env vars override.
+# Capture the helper output before filtering — piping it straight into an
+# awk that exits early would SIGPIPE the kubectl loop under pipefail.
+VK_EPS_ALL="$(valkey_announced_endpoints valkey)"
+SEED_EP_DEFAULT="$(printf '%s\n' "$VK_EPS_ALL" | awk -F'\t' '$1=="valkey-primary-0" {print $2; exit}')"
+SEED_IP="${SEED_IP:-${SEED_EP_DEFAULT%%:*}}"
+SEED_PORT="${SEED_PORT:-${SEED_EP_DEFAULT##*:}}"
+SEED_IP="${SEED_IP:-192.168.64.51}"
+SEED_PORT="${SEED_PORT:-6379}"
 
 VALKEY_CLI="$(command -v valkey-cli || command -v redis-cli || true)"
 PASS="$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)"
 
 echo "Target endpoints:"
 echo "  app    = http://${APP_INGRESS_HOST}/  (via ${APP_HOST}, ${APP_VIA})"
-echo "  valkey = ${SEED_IP}:${SEED_PORT}       (MetalLB seed; the rest is announced via CLUSTER SHARDS)"
+echo "  valkey = ${SEED_IP}:${SEED_PORT}       (announced seed; the rest via CLUSTER SHARDS)"
 echo
 
 # 1. App via L7 through HAProxy VM (or RD node)

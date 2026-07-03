@@ -22,14 +22,17 @@
 #   3. MetalLB + nginx-ingress    (MetalLB pool 192.168.64.50-60 for Valkey;
 #                                  nginx-ingress runs with hostNetwork=true bound
 #                                  to the RD node's :80 — Pattern D)
-#   4. Integration charts         (oracle, ibm-mq, valkey, [artifactory]) in parallel
+#   4. HAProxy F5 stand-in        (second Lima VM with HAProxy on 192.168.105.x;
+#                                  models the external F5: HTTP frontend for the
+#                                  hostNetwork ingress + Valkey L4 passthrough
+#                                  6379-6384/16379-16384. Provisioned before the
+#                                  charts so Valkey can announce its IP.)
+#   5. Integration charts         (oracle, ibm-mq, valkey, [artifactory]) in parallel
 #                                  Valkey default: 6 per-pod Services SHARE one
-#                                  LB IP (192.168.64.51), split by port 6379-6384
-#   5. App image build            (docker build into RD's moby)
-#   6. App chart install          (ClusterIP Service + Ingress; no direct LB)
-#   7. HAProxy F5 stand-in        (second Lima VM with HAProxy on 192.168.105.x;
-#                                  models the external F5 fronting hostNetwork
-#                                  ingress in production)
+#                                  LB IP (192.168.64.51), split by port 6379-6384,
+#                                  and ANNOUNCE the HAProxy VM IP (two-layer)
+#   6. App image build            (docker build into RD's moby)
+#   7. App chart install          (ClusterIP Service + Ingress; no direct LB)
 #   8. Post-install validation    (helm status, actuator/health, HAProxy health)
 #   9. Host-side setup            (PROMPTS FOR sudo — adds static routes for the
 #                                  MetalLB Valkey IPs and a /etc/hosts entry
@@ -288,8 +291,37 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
     --set controller.ingressClassResource.default=true \
     --set controller.watchIngressWithoutClass=true >/dev/null
 
-# --- Phase 4: integration charts (in parallel) ------------------------------
-info "[4/10] installing integration charts (oracle, mq, valkey$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo ', artifactory'))..."
+# --- Phase 4: HAProxy F5 stand-in (second Lima VM) --------------------------
+# Provisioned BEFORE the integration charts because Valkey's two-layer
+# announce shape needs the VM's IP at install time: the pods announce it
+# (loadBalancer.announceIP) so MOVED redirects name the VIP, exactly like
+# the production F5-without-CIS setup. The VM also carries the Valkey TCP
+# passthrough listeners (client 6379-6384, bus 16379-16384) next to the
+# HTTP frontend.
+HAPROXY_VM_IP=""
+if [[ $SKIP_HAPROXY_VM -eq 0 ]]; then
+    echo
+    info "[4/10] provisioning HAProxy F5 stand-in (second Lima VM)..."
+    if "$SCRIPT_DIR/install-haproxy-vm.sh" 2>&1 | sed 's/^/    /'; then
+        :
+    else
+        err "  HAProxy VM provisioning failed — re-run scripts/install-haproxy-vm.sh standalone"
+        err "  (or pass --skip-haproxy-vm to install without the F5 stand-in)"
+        exit 1
+    fi
+    if [[ -f "$HAPROXY_VM_IP_FILE" ]]; then
+        HAPROXY_VM_IP="$(cat "$HAPROXY_VM_IP_FILE")"
+        info "  HAProxy VM IP (F5 stand-in): $HAPROXY_VM_IP"
+    else
+        err "  HAProxy VM IP not cached at $HAPROXY_VM_IP_FILE"
+    fi
+else
+    info "[4/10] --skip-haproxy-vm: not provisioning HAProxy F5 stand-in"
+    info "       (HTTP via RD node IP directly; Valkey announces its MetalLB IP — one-layer)"
+fi
+
+# --- Phase 5: integration charts (in parallel) ------------------------------
+info "[5/10] installing integration charts (oracle, mq, valkey$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo ', artifactory'))..."
 
 install_oracle() {
     helm upgrade --install oracle "$REPO_ROOT/charts/oracle" -n oracle --create-namespace \
@@ -307,8 +339,18 @@ install_valkey() {
     # on a cold install where images are pulling in parallel — the release
     # gets marked 'failed' even though the cluster forms fine seconds later.
     # 15 min covers realistic worst-case first-install times.
+    local extra=()
+    if [[ -n "$HAPROXY_VM_IP" ]]; then
+        # Two-layer rehearsal (prod F5-without-CIS shape): pods announce the
+        # F5 stand-in's IP so MOVED redirects name the VIP; the dev VIP shim
+        # makes that VIP dialable from inside the cluster (gossip) — Apple's
+        # vz NAT blocks pod→Lima-VM traffic that prod LANs allow.
+        extra+=(--set "loadBalancer.announceIP=${HAPROXY_VM_IP}" --set devVipShim.enabled=true)
+    fi
+    # ${extra[@]+...} idiom: empty-array expansion is an unbound-variable
+    # error under set -u on macOS's stock bash 3.2.
     helm upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
-        --timeout 15m >/dev/null
+        ${extra[@]+"${extra[@]}"} --timeout 15m >/dev/null
 }
 install_artifactory() {
     helm upgrade --install artifactory "$REPO_ROOT/charts/artifactory" -n artifactory --create-namespace --no-hooks >/dev/null
@@ -361,21 +403,21 @@ fi
 wait $W_ORA $W_MQ $W_VK $W_NG
 if [[ $SKIP_ARTIFACTORY -eq 0 ]]; then wait $W_AF; fi
 
-# --- Phase 5: build app image ----------------------------------------------
+# --- Phase 6: build app image ----------------------------------------------
 if [[ $SKIP_BUILD -eq 1 ]]; then
-    info "[5/10] --skip-build set, reusing debug-demo-app:dev"
+    info "[6/10] --skip-build set, reusing debug-demo-app:dev"
     if ! docker image inspect debug-demo-app:dev >/dev/null 2>&1; then
         err "  image debug-demo-app:dev not present; re-run without --skip-build"
         exit 1
     fi
 else
-    info "[5/10] building app image (debug-demo-app:dev)..."
+    info "[6/10] building app image (debug-demo-app:dev)..."
     ( cd "$REPO_ROOT/app" && docker build -t debug-demo-app:dev . >/dev/null )
     info "  built"
 fi
 
-# --- Phase 6: install app ---------------------------------------------------
-info "[6/10] installing app chart (ClusterIP + Ingress; no direct LoadBalancer)..."
+# --- Phase 7: install app ---------------------------------------------------
+info "[7/10] installing app chart (ClusterIP + Ingress; no direct LoadBalancer)..."
 helm upgrade --install app "$REPO_ROOT/charts/debug-demo-app" -n debug-demo --create-namespace \
     --set image.repository=debug-demo-app \
     --set image.tag=dev \
@@ -393,29 +435,6 @@ helm upgrade --install app "$REPO_ROOT/charts/debug-demo-app" -n debug-demo --cr
     --set mq.user=app --set mq.password=passw0rd >/dev/null
 
 wait_for_label debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 300
-
-# --- Phase 7: HAProxy F5 stand-in (second Lima VM) -------------------------
-HAPROXY_VM_IP=""
-if [[ $SKIP_HAPROXY_VM -eq 0 ]]; then
-    echo
-    info "[7/10] provisioning HAProxy F5 stand-in (second Lima VM)..."
-    if "$SCRIPT_DIR/install-haproxy-vm.sh" 2>&1 | sed 's/^/    /'; then
-        :
-    else
-        err "  HAProxy VM provisioning failed — re-run scripts/install-haproxy-vm.sh standalone"
-        err "  (or pass --skip-haproxy-vm to install without the F5 stand-in)"
-        exit 1
-    fi
-    if [[ -f "$HAPROXY_VM_IP_FILE" ]]; then
-        HAPROXY_VM_IP="$(cat "$HAPROXY_VM_IP_FILE")"
-        info "  HAProxy VM IP (F5 stand-in): $HAPROXY_VM_IP"
-    else
-        err "  HAProxy VM IP not cached at $HAPROXY_VM_IP_FILE"
-    fi
-else
-    info "[7/10] --skip-haproxy-vm: not provisioning HAProxy F5 stand-in"
-    info "       (HTTP will be reached directly via the RD node IP — not full Pattern D)"
-fi
 
 # --- Phase 8: post-install validation ---------------------------------------
 if [[ $SKIP_VALIDATE -eq 0 ]]; then
@@ -565,7 +584,7 @@ if [[ $SKIP_SMOKE -eq 0 ]]; then
     info "[10/10] running scripts/smoke-test.sh (in-cluster + external + MOVED)..."
     SMOKE_ARGS=()
     [[ $SKIP_ARTIFACTORY -eq 1 ]] && SMOKE_ARGS+=(--skip-artifactory)
-    if "$SCRIPT_DIR/smoke-test.sh" "${SMOKE_ARGS[@]}" 2>&1 | tee /tmp/install-stack.smoke.out | tail -5; then
+    if "$SCRIPT_DIR/smoke-test.sh" ${SMOKE_ARGS[@]+"${SMOKE_ARGS[@]}"} 2>&1 | tee /tmp/install-stack.smoke.out | tail -5; then
         :
     fi
     SMOKE_RC=$?

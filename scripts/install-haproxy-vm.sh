@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 #
 # install-haproxy-vm.sh — provision the second Lima VM running HAProxy as the
-# external F5 stand-in for Pattern D. Idempotent: re-running is safe and fast.
+# external F5 stand-in. Idempotent: re-running is safe and fast.
+#
+# The VM plays the F5 role for BOTH traffic types:
+#   - HTTP (L7, Pattern D): frontend :80 → RD node :80 (hostNetwork ingress)
+#   - Valkey (L4, two-layer): TCP frontends 6379-6384 + 16379-16384 → the
+#     Valkey shared MetalLB IP, same ports. The Valkey pods announce THIS
+#     VM's IP (loadBalancer.announceIP), so MOVED redirects name the VIP —
+#     exactly the production F5-without-CIS shape.
 #
 # Steps:
 #   1. limactl start the VM (or skip if already running)
 #   2. discover the Rancher Desktop node IP (the k8s node where
 #      ingress-nginx hostNetwork is bound)
-#   3. generate haproxy.cfg pointing backend at <node-ip>:80
+#   3. generate haproxy.cfg: HTTP backend <node-ip>:80 + Valkey TCP passthrough
 #   4. push the config into the VM and reload haproxy
 #   5. print the HAProxy VM's IP — this is the "F5 VIP" for the POC
 #
@@ -27,6 +34,14 @@ source "$SCRIPT_DIR/lib/common.sh"
 VM_NAME="debug-demo-haproxy"
 LIMA_YAML="$SCRIPT_DIR/lima-haproxy.yaml"
 IP_OUT_FILE="$SCRIPT_DIR/../dumps/haproxy-vm-ip"
+
+# Valkey L4 passthrough targets. Must match charts/valkey/values.yaml:
+# loadBalancer.sharedIP and basePorts (client base 6379, bus base 16379,
+# 6 nodes → +0..+5). Overridable for non-default chart values.
+: "${VALKEY_LB_IP:=192.168.64.51}"
+: "${VALKEY_CLIENT_BASE:=6379}"
+: "${VALKEY_BUS_BASE:=16379}"
+: "${VALKEY_NODE_COUNT:=6}"
 
 MODE="install"
 for a in "$@"; do
@@ -130,7 +145,43 @@ backend ingress_nginx
     # Single-node dev cluster; in production this would be 'server node-N <ip>:80'
     # repeated for every k8s node in the pool.
     server rd-node $node_ip:80 check inter 5s fall 3 rise 2
+
+# ----- Valkey L4 passthrough: the "F5 VIP without CIS" shape ----------------
+# One TCP listener per Valkey node, port-separated (client 6379-6384, bus
+# 16379-16384), forwarding 1:1 to the same port on the in-cluster MetalLB
+# shared IP. Plain L4 — no inspection; the Valkey wire protocol is stateful
+# TCP. The pods announce THIS VM's IP (chart value loadBalancer.announceIP),
+# so MOVED redirects sent to external clients name these listeners.
+#
+# The BUS ports matter even though external clients never dial them: Valkey
+# nodes gossip with each other via the ANNOUNCED addresses, and kube-proxy
+# doesn't know this VM's IP — so node-to-node gossip hairpins out through
+# these listeners and back. Removing them collapses the cluster to
+# cluster_state:fail.
 EOF
+    local i cport bport
+    for i in $(seq 0 $((VALKEY_NODE_COUNT - 1))); do
+        cport=$((VALKEY_CLIENT_BASE + i))
+        bport=$((VALKEY_BUS_BASE + i))
+        cat <<EOF
+
+listen valkey_client_${cport}
+    mode tcp
+    option tcplog
+    bind *:${cport}
+    timeout client  600s
+    timeout server  600s
+    server valkey ${VALKEY_LB_IP}:${cport} check inter 5s fall 3 rise 2
+
+listen valkey_bus_${bport}
+    mode tcp
+    option tcplog
+    bind *:${bport}
+    timeout client  600s
+    timeout server  600s
+    server valkey ${VALKEY_LB_IP}:${bport} check inter 5s fall 3 rise 2
+EOF
+    done
 }
 
 case "$MODE" in

@@ -101,9 +101,9 @@ fulfillment models:
             ┌───────────────────────┼─────────────────────────────────┐
             │ HTTP (L7)             │ TCP (L4)                        │
             ▼                       ▼                                 │
-   HAProxy VM :80              MetalLB shared IP 192.168.64.51        │
-   backend → RD VM :80         valkey-primary-{0,1,2}-ext   :6379-81  │
-            │                  valkey-secondary-{0,1,2}-ext :6382-84  │
+   HAProxy VM :80              HAProxy VM :6379-6384 (+bus 1637x)     │
+   backend → RD VM :80         backend → MetalLB shared 192.168.64.51 │
+            │                  valkey-{primary,secondary}-N-ext       │
             │                  (per-pod Services, allow-shared-ip)    │
             ▼                       │                                 │
    RD VM 192.168.64.2 :80           │                                 │
@@ -115,8 +115,8 @@ fulfillment models:
             │ host: debug-demo.local                                  │
             ▼                       │                                 │
    app-debug-demo-app               │ cluster-announce =              │
-   (ClusterIP, port 8080)           │ shared IP + its own ext port    │
-                                    │ (so MOVED redirects point ext.) │
+   (ClusterIP, port 8080)           │ HAProxy VM IP + its own port    │
+                                    │ (MOVED redirects name the VIP)  │
             ────────────────────────┴─────────────────────────────────┘
 ```
 
@@ -179,9 +179,13 @@ chart decouples the two roles an address plays:
   prod).
 - `loadBalancer.announceIP` — what the pods ADVERTISE in cluster
   metadata (`CLUSTER NODES` / `CLUSTER SHARDS` / MOVED redirects).
-  This must be the address CLIENTS dial. Empty (default) = announce
-  sharedIP (one-layer, this POC). Set it to the F5 VIP in prod
-  (two-layer): clients dial the VIP, so redirects must name the VIP.
+  This must be the address CLIENTS dial. Empty = announce sharedIP
+  (one-layer). Set it to the F5 VIP in prod (two-layer): clients dial
+  the VIP, so redirects must name the VIP. **The full install
+  rehearses the two-layer shape**: install-stack.sh sets announceIP
+  to the HAProxy VM's IP and enables the chart's `devVipShim`, so
+  MOVED redirects name the F5 stand-in and external clients genuinely
+  traverse it. `--skip-haproxy-vm` falls back to one-layer.
 
 ```sh
 helm upgrade valkey ./charts/valkey -n valkey \
@@ -207,6 +211,18 @@ Non-negotiable F5 config when announceIP is set (also documented in
 4. SNAT automap is fine — Valkey sees the F5 as the client, the same
    source-IP trade-off as `externalTrafficPolicy: Cluster`, which
    Valkey doesn't care about.
+
+Dev caveat behind requirement 3: on Rancher Desktop, pods CANNOT reach
+the HAProxy VM — Apple's vz NAT refuses to forward VM-to-VM traffic
+between the RD subnet (192.168.64.x) and the Lima shared subnet
+(192.168.105.x) — so gossip via the announced VIP would fail. The
+chart's `devVipShim` (dev-only, hostNetwork DaemonSet) restores the
+prod property "nodes can reach the VIP": it adds the VIP as a /32 on
+the node's loopback and proxies VIP:<client+bus ports> to the
+in-cluster valkey-*-ext Services. Inside the cluster the VIP resolves
+on-node; outside it's still the real HAProxy VM. Never enable it in
+prod. Leftover on teardown: the /32 on lo persists until the RD VM
+restarts (harmless; the shim re-adds it on install).
 
 ### Why MetalLB hands out the IPs (and what replaces it elsewhere)
 
@@ -939,7 +955,10 @@ routable from this Mac), and `valkey-cli` is on PATH
 
 ```sh
 PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
-SEED=192.168.64.51        # shared LB IP (default sharedIP-perPort mode)
+# Clients must dial the ANNOUNCED address. Full install (two-layer): the
+# HAProxy VM IP, cached in dumps/haproxy-vm-ip. --skip-haproxy-vm install
+# (one-layer): the shared MetalLB IP 192.168.64.51.
+SEED=$(cat dumps/haproxy-vm-ip 2>/dev/null || echo 192.168.64.51)
 # Client ports by node: primary-0/1/2 = 6379/6380/6381, secondary-0/1/2 = 6382/6383/6384.
 # Primaries take writes; secondaries also work for reads. (In legacy perPodIP
 # mode the ports are all 6379 and the IPs are .51-.56 instead.)

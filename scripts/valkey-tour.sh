@@ -42,16 +42,13 @@ if [[ "$SEED" == *:* ]]; then
     SEED="${SEED%%:*}"
 fi
 
-# Discover the 6 external endpoints from the Services (works in both
-# sharedIP-perPort and perPodIP modes). ALL_EPS drives per-node sweeps.
+# Discover the 6 ANNOUNCED external endpoints — what clients must dial (the
+# VIP in two-layer mode, the Service IPs in one-layer; works in both
+# sharedIP-perPort and perPodIP shapes). ALL_EPS drives per-node sweeps.
 ALL_EPS=()
-for role in primary secondary; do
-    for n in 0 1 2; do
-        ep_ip=$(kubectl -n valkey get svc "valkey-${role}-${n}-ext" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-        ep_port=$(kubectl -n valkey get svc "valkey-${role}-${n}-ext" -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null || true)
-        [[ -n "$ep_ip" && -n "$ep_port" ]] && ALL_EPS+=("${ep_ip}:${ep_port}")
-    done
-done
+while IFS=$'\t' read -r _name ep; do
+    [[ -n "$ep" ]] && ALL_EPS+=("$ep")
+done < <(valkey_announced_endpoints valkey)
 if [[ -z "$SEED" ]]; then
     if [[ ${#ALL_EPS[@]} -gt 0 ]]; then
         SEED="${ALL_EPS[0]%%:*}"

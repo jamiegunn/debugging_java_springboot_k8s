@@ -1,0 +1,104 @@
+{{- if .Values.devVipShim.enabled }}
+{{- if not .Values.loadBalancer.announceIP }}
+{{- fail "devVipShim.enabled requires loadBalancer.announceIP to be set (the VIP to shim)" }}
+{{- end }}
+{{- /*
+  Dev-only VIP shim — see values.yaml devVipShim comment for the full why.
+  Makes the announced VIP (the HAProxy F5 stand-in VM) dialable FROM INSIDE
+  the cluster, which Valkey gossip requires and which Apple's vz NAT
+  otherwise prevents on Rancher Desktop. hostNetwork DaemonSet: an
+  initContainer adds VIP/32 to the node's loopback, then HAProxy listens on
+  VIP:<all client+bus ports> and forwards to the in-cluster valkey-*-ext
+  Services (whose ClusterIP side carries the same external port numbers).
+*/}}
+{{- $vip := .Values.loadBalancer.announceIP }}
+{{- $cbase := int .Values.loadBalancer.basePorts.client }}
+{{- $bbase := int .Values.loadBalancer.basePorts.bus }}
+{{- $n := int .Values.replicaCount }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-vip-shim
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+data:
+  haproxy.cfg: |
+    global
+        maxconn 2048
+
+    defaults
+        mode tcp
+        timeout connect 5s
+        timeout client  600s
+        timeout server  600s
+{{- range $i := until $n }}
+
+    listen primary-{{ $i }}-client
+        bind {{ $vip }}:{{ add $cbase $i }}
+        server svc valkey-primary-{{ $i }}-ext.{{ $.Release.Namespace }}.svc.cluster.local:{{ add $cbase $i }}
+    listen primary-{{ $i }}-bus
+        bind {{ $vip }}:{{ add $bbase $i }}
+        server svc valkey-primary-{{ $i }}-ext.{{ $.Release.Namespace }}.svc.cluster.local:{{ add $bbase $i }}
+    listen secondary-{{ $i }}-client
+        bind {{ $vip }}:{{ add $cbase (add $i $n) }}
+        server svc valkey-secondary-{{ $i }}-ext.{{ $.Release.Namespace }}.svc.cluster.local:{{ add $cbase (add $i $n) }}
+    listen secondary-{{ $i }}-bus
+        bind {{ $vip }}:{{ add $bbase (add $i $n) }}
+        server svc valkey-secondary-{{ $i }}-ext.{{ $.Release.Namespace }}.svc.cluster.local:{{ add $bbase (add $i $n) }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: valkey-vip-shim
+  labels: {{- include "valkey.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      # Deliberately NOT app.kubernetes.io/name=valkey — install/smoke
+      # tooling counts valkey pods by that label and expects exactly 6.
+      app.kubernetes.io/name: valkey-vip-shim
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey-vip-shim
+      annotations:
+        # Roll the pods when the config-shaping inputs change (can't checksum
+        # this template file — it would include itself recursively).
+        checksum/config: {{ printf "%s-%d-%d-%d" $vip $cbase $bbase $n | sha256sum }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+        - name: add-vip
+          image: {{ .Values.devVipShim.initImage | quote }}
+          securityContext:
+            capabilities: {add: [NET_ADMIN]}
+          command:
+            - sh
+            - -c
+            - |
+              # Make the VIP a local address so pod traffic to it terminates
+              # on this node (where haproxy below is listening) instead of
+              # being routed toward the unreachable Lima VM.
+              ip addr add {{ $vip }}/32 dev lo 2>/dev/null || true
+              ip addr show dev lo | grep -F "{{ $vip }}"
+      containers:
+        - name: haproxy
+          image: {{ .Values.devVipShim.image | quote }}
+          args: [-f, /usr/local/etc/haproxy/haproxy.cfg]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            # host is required: haproxy binds the VIP only, and a hostNetwork
+            # pod's default probe target is the node IP.
+            tcpSocket: {host: {{ $vip | quote }}, port: {{ $cbase }}}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - {name: config, mountPath: /usr/local/etc/haproxy}
+      volumes:
+        - name: config
+          configMap:
+            name: valkey-vip-shim
+{{- end }}

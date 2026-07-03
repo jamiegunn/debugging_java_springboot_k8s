@@ -245,25 +245,22 @@ check "Valkey cluster_state = ok with 6 known nodes" \
         echo "$out" | grep -q "cluster_state:ok" && echo "$out" | grep -q "cluster_known_nodes:6"
     '
 
-# Discover the external endpoints from the valkey-*-ext LoadBalancer Services.
-# In sharedIP-perPort mode this yields one IP with 6 distinct client ports;
-# in perPodIP mode, 6 IPs with the same port. Everything downstream (announce
-# check here, section 7 MOVED tests) keys off these ip:port pairs, so the
-# tests are endpoint-shape agnostic.
+# Discover the ANNOUNCED external endpoints — what clients must dial (see
+# valkey_announced_endpoints in lib/common.sh). One-layer: the Service's
+# MetalLB IP. Two-layer (announceIP set): the external VIP (HAProxy F5
+# stand-in here, F5 in prod) with the same per-node ports. Everything
+# downstream (announce check here, section 7 MOVED tests) keys off these
+# ip:port pairs, so the tests are endpoint-shape agnostic.
 VK_ALL_EPS=""       # all 6 nodes,     "ip:port ip:port ..."
 VK_PRIMARY_EPS=""   # primaries only,  same format
-for role in primary secondary; do
-    for i in 0 1 2; do
-        ip=$(kubectl -n valkey get svc "valkey-${role}-${i}-ext" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-        port=$(kubectl -n valkey get svc "valkey-${role}-${i}-ext" -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null)
-        [[ -n "$ip" && -n "$port" ]] || continue
-        VK_ALL_EPS="${VK_ALL_EPS:+$VK_ALL_EPS }${ip}:${port}"
-        [[ "$role" == "primary" ]] && VK_PRIMARY_EPS="${VK_PRIMARY_EPS:+$VK_PRIMARY_EPS }${ip}:${port}"
-    done
-done
+while IFS=$'\t' read -r name ep; do
+    [[ -n "$ep" ]] || continue
+    VK_ALL_EPS="${VK_ALL_EPS:+$VK_ALL_EPS }${ep}"
+    [[ "$name" == valkey-primary-* ]] && VK_PRIMARY_EPS="${VK_PRIMARY_EPS:+$VK_PRIMARY_EPS }${ep}"
+done < <(valkey_announced_endpoints valkey)
 export VK_ALL_EPS VK_PRIMARY_EPS
 
-check "Valkey ext Services: 6 LoadBalancer endpoints assigned by MetalLB" \
+check "Valkey ext Services: 6 externally-dialable endpoints (MetalLB assigned, announce resolved)" \
     bash -c 'n=$(echo "$VK_ALL_EPS" | wc -w | tr -d " "); [[ "$n" == "6" ]] || { echo "have: $VK_ALL_EPS"; exit 1; }'
 
 check "Valkey cluster-announce address of every node is an external LB endpoint (not a pod IP)" \
@@ -400,7 +397,7 @@ else
     # Basic reachability first — if this fails, all downstream tests will fail
     # for the same reason (routes missing / MetalLB IP not reachable) and the
     # signal is more useful up front.
-    check "Valkey PONG via L4 — ${SEED_EP} (MetalLB LB endpoint)" \
+    check "Valkey PONG via L4 — ${SEED_EP} (announced endpoint)" \
         bash -c '"$CLI" -h "$SEED_HOST" -p "$SEED_PORT" -a "$VK_PASS" --no-auth-warning ping 2>&1 | grep -q PONG'
 
     # Announce check from the OUTSIDE: every primary must announce one of the

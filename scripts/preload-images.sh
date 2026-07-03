@@ -42,12 +42,16 @@ IMAGES=(
     "registry.k8s.io/ingress-nginx/controller:v1.11.3@sha256:d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7"
     "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4@sha256:a9f03b34a3cbfbb26d103a14046ab2c5130a80c3d69d526ff8063d2b37b9fd3f"
 
-    # Stateful backends (install-stack.sh Phase 3 --set overrides + charts/*/values.yaml)
+    # Stateful backends (install-stack.sh --set overrides + charts/*/values.yaml)
     "gvenzl/oracle-free:23-slim-faststart"
     "icr.io/ibm-messaging/mq:9.4.5.1-r1-amd64"
     "valkey/valkey:8.0.1-alpine"
     "releases-docker.jfrog.io/jfrog/artifactory-jcr:7.90.10"
     "postgres:16-alpine"
+
+    # Valkey dev VIP shim (charts/valkey values: devVipShim.image/initImage)
+    "haproxy:3.0-alpine"
+    "busybox:1.36"
 
     # App image build (install-stack.sh Phase 4, app/Dockerfile FROM lines)
     "maven:3.9-eclipse-temurin-21"

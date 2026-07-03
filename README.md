@@ -180,10 +180,10 @@ What this does (10 phases; Phase 9 prompts for `sudo` once):
 1. **Prereq check** — verifies `rdctl`, `kubectl`, `helm`, `docker`, `curl`, `python3`, `limactl` are on PATH; the VM is Running; CPU/memory meet the minimum.
 2. **Image preload** — `scripts/preload-images.sh` pulls every registry image the stack needs (MetalLB, ingress-nginx, Oracle, MQ, Valkey, Artifactory, Postgres, plus the app's builder/runtime base images) into RD's moby up-front. Exists so **corporate-MITM TLS failures** surface here as one clear error naming the image and registry, instead of as an `ImagePullBackOff` twenty minutes in. Idempotent (skips cached images); fails fast on the first bad pull.
 3. **MetalLB + nginx-ingress** — MetalLB pool `192.168.64.50-60` (Valkey's shared LB IP comes from here; only `.51` is used in the default sharedIP-perPort mode), and installs nginx-ingress with **`hostNetwork=true`** so its pod binds directly to the RD node's :80 (Pattern D).
-4. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min).
-5. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
-6. **App chart** — installs `debug-demo-app` with ClusterIP Service + Ingress (no direct LoadBalancer).
-7. **HAProxy F5 stand-in** — provisions a second Lima VM (`debug-demo-haproxy`) with HAProxy on Lima's `shared` subnet (192.168.105.x). The VM plays the F5 role: it fronts the RD node's :80. First boot pulls a small Alpine cloudinit image (~2-3 min).
+4. **HAProxy F5 stand-in** — provisions a second Lima VM (`debug-demo-haproxy`) with HAProxy on Lima's `shared` subnet (192.168.105.x). The VM plays the F5 role for BOTH traffic types: HTTP frontend :80 → RD node :80, and Valkey L4 passthrough 6379-6384/16379-16384 → the Valkey shared MetalLB IP. Provisioned before the charts so Valkey can announce the VM's IP. First boot pulls a small Alpine cloudinit image (~2-3 min).
+5. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min). Valkey gets `loadBalancer.announceIP=<HAProxy VM IP>` + the dev VIP shim — the two-layer F5 shape (see "Production: F5 VIP in front" below).
+6. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
+7. **App chart** — installs `debug-demo-app` with ClusterIP Service + Ingress (no direct LoadBalancer).
 8. **Post-install validation** — in-cluster actuator/health, Valkey cluster state, `hostNetwork=true` on ingress-nginx pod, HAProxy VM → app end-to-end reachability.
 9. **Host-side setup** (sudo) — static routes for the Valkey IPs, `/etc/hosts` entry `<HAProxy VM IP> debug-demo.local`, and `sysctl net.inet.ip.forwarding=1` (so the HAProxy VM can route to the RD VM via the Mac). Idempotent.
 10. **End-to-end smoke test** — runs `scripts/smoke-test.sh` (in-cluster + external + explicit MOVED tests for GET/SET, XADD, SPUBLISH).
@@ -632,15 +632,22 @@ NODES` return externally-resolvable endpoints (not pod IPs). This is
 the same shape as an enterprise F5 setup where the security team
 allocates **one VIP per app** and the pool members differ by port.
 
-| Endpoint | Address (default `sharedIP-perPort` mode) | Backed by |
-|---|---|---|
-| App (HTTP for Postman, anything) | `http://debug-demo.local/` | HAProxy VM (Lima, 192.168.105.x) → hostNetwork ingress-nginx on RD node :80 → app ClusterIP |
-| Valkey primary-0 | `192.168.64.51:6379` | `valkey-primary-0-ext` Service → just that pod |
-| Valkey primary-1 | `192.168.64.51:6380` | `valkey-primary-1-ext` |
-| Valkey primary-2 | `192.168.64.51:6381` | `valkey-primary-2-ext` |
-| Valkey secondary-0 | `192.168.64.51:6382` | `valkey-secondary-0-ext` |
-| Valkey secondary-1 | `192.168.64.51:6383` | `valkey-secondary-1-ext` |
-| Valkey secondary-2 | `192.168.64.51:6384` | `valkey-secondary-2-ext` |
+With the full install (F5 stand-in provisioned), clients dial the
+**HAProxy VM IP** — the pods announce it, so MOVED redirects name it too
+(two-layer). With `--skip-haproxy-vm`, clients dial the MetalLB IP
+directly (one-layer):
+
+| Endpoint | Full install (two-layer) | `--skip-haproxy-vm` (one-layer) | Backed by |
+|---|---|---|---|
+| App (HTTP) | `http://debug-demo.local/` via HAProxy VM | RD node :80 directly | hostNetwork ingress-nginx → app ClusterIP |
+| Valkey primary-0 | `<haproxy-vm-ip>:6379` | `192.168.64.51:6379` | `valkey-primary-0-ext` Service → just that pod |
+| Valkey primary-1 | `<haproxy-vm-ip>:6380` | `192.168.64.51:6380` | `valkey-primary-1-ext` |
+| Valkey primary-2 | `<haproxy-vm-ip>:6381` | `192.168.64.51:6381` | `valkey-primary-2-ext` |
+| Valkey secondary-0 | `<haproxy-vm-ip>:6382` | `192.168.64.51:6382` | `valkey-secondary-0-ext` |
+| Valkey secondary-1 | `<haproxy-vm-ip>:6383` | `192.168.64.51:6383` | `valkey-secondary-1-ext` |
+| Valkey secondary-2 | `<haproxy-vm-ip>:6384` | `192.168.64.51:6384` | `valkey-secondary-2-ext` |
+
+(The HAProxy VM IP is cached at `dumps/haproxy-vm-ip`.)
 
 The legacy shape — one pinned IP per pod (`192.168.64.51-56`, all on
 `:6379`) — is still available via
@@ -673,9 +680,12 @@ helm upgrade valkey ./charts/valkey -n valkey \
   --set loadBalancer.announceIP=<f5-vip>
 ```
 
-When `announceIP` is unset (the default, used in this POC) the pods
-announce `sharedIP` — the one-layer shape where clients dial the
-MetalLB IP directly.
+When `announceIP` is unset the pods announce `sharedIP` — the
+one-layer shape where clients dial the MetalLB IP directly. **The full
+install rehearses the two-layer shape**: `install-stack.sh` sets
+`announceIP` to the HAProxy VM's IP and enables the chart's dev VIP
+shim (below), so every MOVED redirect names the F5 stand-in and
+external clients genuinely traverse it.
 
 F5 configuration requirements for the two-layer shape:
 
@@ -696,6 +706,22 @@ F5 configuration requirements for the two-layer shape:
 4. **SNAT automap is fine.** Valkey sees the F5's address as the
    client — same trade-off as `externalTrafficPolicy: Cluster`,
    functionally harmless.
+
+#### Dev-only VIP shim (`devVipShim` in the valkey chart)
+
+Requirement 3 needs the k8s nodes to be able to DIAL the VIP — true on
+any corporate LAN, false on Rancher Desktop: Apple's vz NAT refuses to
+forward VM-to-VM traffic between the RD subnet (192.168.64.x) and the
+Lima shared subnet (192.168.105.x), so pods can never reach the HAProxy
+VM. The chart's `devVipShim` restores the prod property without touching
+RD internals: a hostNetwork DaemonSet adds the VIP as a /32 on the
+node's loopback and runs a tiny HAProxy that listens on
+`VIP:<client+bus ports>`, forwarding to the in-cluster `valkey-*-ext`
+Services. From inside the cluster the VIP resolves on-node; from the
+Mac and anything external it is still the real HAProxy VM. Gossip
+functionally hairpins through the shim instead of the real VM — in prod
+it hairpins through the real F5. **Never enable this in prod** — there
+the VIP is genuinely reachable and the shim would mask it.
 
 In a real environment the shared IP is reached through a VIP/LB layer
 (F5/HAProxy/cloud NLB). On Rancher Desktop's vz-NAT, the dev-Mac
