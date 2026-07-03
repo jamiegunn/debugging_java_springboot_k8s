@@ -7,9 +7,10 @@
 #   scripts/stackctl.sh              interactive menu (start here)
 #   scripts/stackctl.sh install      guided install (wraps install-stack.sh)
 #   scripts/stackctl.sh status       what's running right now
-#   scripts/stackctl.sh smoke        44-check verification
+#   scripts/stackctl.sh smoke        44-check verification (--commands to show CLI)
+#   scripts/stackctl.sh unit-tests   JVM unit tests (mvn test, JDK 21 auto-pinned)
 #   scripts/stackctl.sh tour         narrated API walk-through
-#   scripts/stackctl.sh cluster-tests   MOVED / ASK / failover semantics
+#   scripts/stackctl.sh cluster-tests   MOVED / ASK / failover (--commands to show CLI)
 #   scripts/stackctl.sh chaos        break things on purpose
 #   scripts/stackctl.sh uninstall    guided teardown
 #
@@ -109,18 +110,20 @@ menu() {
   Verify
     3) smoke           44-check verification: in-cluster + external + MOVED
     4) cluster-tests   Valkey semantics: MOVED, ASK (live slot migration),
-                       replica reads, failover + failback
+                       replica reads, failover + failback (58 checks)
+    5) unit-tests      JVM unit tests (mvn test, JDK 21 auto-pinned)
+       (3/4 accept --commands to print the CLI command behind each check)
 
   Explore
-    5) tour            narrated API walk-through (prints every command)
-    6) valkey-tour     the Valkey cluster from outside: topology, ops, latency
-    7) swagger         where the interactive API explorer lives
+    6) tour            narrated API walk-through (prints every command)
+    7) valkey-tour     the Valkey cluster from outside: topology, ops, latency
+    8) swagger         where the interactive API explorer lives
 
   Break
-    8) chaos           inject failures, watch what survives
+    9) chaos           inject failures, watch what survives
 
   Tear down
-    9) uninstall       guided teardown
+    0) uninstall       guided teardown
 
     q) quit
 EOF
@@ -131,14 +134,15 @@ EOF
             2) do_status ;;
             3) "$SCRIPT_DIR/smoke-test.sh" ;;
             4) "$SCRIPT_DIR/valkey-cluster-tests.sh" ;;
-            5) PAUSE=1 "$SCRIPT_DIR/api-tour.sh" ;;
-            6) "$SCRIPT_DIR/valkey-tour.sh" ;;
-            7) ip="$(cat "$REPO_ROOT/dumps/haproxy-vm-ip" 2>/dev/null || echo '<install first>')"
+            5) "$SCRIPT_DIR/run-unit-tests.sh" --coverage ;;
+            6) PAUSE=1 "$SCRIPT_DIR/api-tour.sh" ;;
+            7) "$SCRIPT_DIR/valkey-tour.sh" ;;
+            8) ip="$(cat "$REPO_ROOT/dumps/haproxy-vm-ip" 2>/dev/null || echo '<install first>')"
                echo; bold "Swagger UI:"
                echo "  http://debug-demo.local/swagger-ui.html"
                dim "  (debug-demo.local → $ip in /etc/hosts; spec at /v3/api-docs)" ;;
-            8) "$SCRIPT_DIR/chaos.sh" ;;
-            9) do_uninstall ;;
+            9) "$SCRIPT_DIR/chaos.sh" ;;
+            0) do_uninstall ;;
             q) exit 0 ;;
             *) echo "?" ;;
         esac
@@ -150,7 +154,8 @@ case "${1:-menu}" in
     install)       shift; do_install "$@" ;;
     uninstall)     shift; do_uninstall "$@" ;;
     status)        do_status ;;
-    smoke)         "$SCRIPT_DIR/smoke-test.sh" ;;
+    smoke)         shift 2>/dev/null; "$SCRIPT_DIR/smoke-test.sh" "$@" ;;
+    unit-tests|test) shift 2>/dev/null; "$SCRIPT_DIR/run-unit-tests.sh" "$@" ;;
     tour)          shift 2>/dev/null; "$SCRIPT_DIR/api-tour.sh" "$@" ;;
     cluster-tests) shift 2>/dev/null; "$SCRIPT_DIR/valkey-cluster-tests.sh" "$@" ;;
     chaos)         shift 2>/dev/null; "$SCRIPT_DIR/chaos.sh" "$@" ;;

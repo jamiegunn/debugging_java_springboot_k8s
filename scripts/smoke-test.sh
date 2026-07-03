@@ -20,6 +20,11 @@
 # Usage:
 #   ./smoke-test.sh                     # everything (default)
 #   ./smoke-test.sh --skip-artifactory  # don't expect artifactory Ready
+#   ./smoke-test.sh --commands          # ALSO print the exact command behind
+#                                       # each check, so you can run it yourself
+#
+# With --commands, run the printed setup block once first; then every check's
+# command (kubectl/curl/valkey-cli) is copy-pasteable.
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,9 +33,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 SKIP_ARTIFACTORY=0
+SHOW_CMDS=0
 for a in "$@"; do
     case "$a" in
         --skip-artifactory) SKIP_ARTIFACTORY=1 ;;
+        --commands)         SHOW_CMDS=1 ;;
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown arg: $a"; exit 64 ;;
     esac
@@ -41,8 +48,25 @@ require_cmd kubectl curl python3
 PASS_COUNT=0
 FAIL_COUNT=0
 FAIL_LINES=()
+# In --commands mode, print the underlying command before running it. Checks
+# are invoked as `check "name" bash -c 'BODY'`, so BODY (arg 3) is the literal
+# command; anything else we print as-is. kx()/$POD/$VK_PASS/$VK_*_EPS etc. are
+# defined by the setup block printed once at the top, so the bodies are runnable.
+show_cmd() {
+    [[ $SHOW_CMDS -eq 1 ]] || return 0
+    if [[ "$1" == bash && "$2" == "-c" ]]; then
+        # Preserve the body's structure (drop blank lines) so multi-line
+        # bodies stay valid to paste; simple one-liners print on one line.
+        printf '\033[36m'
+        echo "$3" | sed '/^[[:space:]]*$/d'
+        printf '\033[0m'
+    else
+        printf '\033[36m$ %s\033[0m\n' "$*"
+    fi
+}
 check() {
     local name="$1"; shift
+    show_cmd "$@"
     if "$@" >/tmp/smoke.out 2>&1; then
         printf '[PASS] %s\n' "$name"
         PASS_COUNT=$((PASS_COUNT+1))
@@ -53,6 +77,32 @@ check() {
         sed 's/^/        /' /tmp/smoke.out | head -10
     fi
 }
+
+if [[ $SHOW_CMDS -eq 1 ]]; then
+    cat <<'PRE'
+==================================================================
+ --commands mode. Run this setup block ONCE, then every command
+ printed below (in cyan) is copy-pasteable:
+------------------------------------------------------------------
+export POD=$(kubectl -n debug-demo get pod -l app.kubernetes.io/name=debug-demo-app \
+              -o jsonpath='{.items[0].metadata.name}')
+kx() { kubectl -n debug-demo exec "$POD" -- "$@"; }        # run inside the app pod
+export VK_PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
+export CLI=$(command -v valkey-cli || command -v redis-cli)
+export HTTP_ENTRY_IP=$(cat dumps/haproxy-vm-ip 2>/dev/null \
+    || kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+# Announced Valkey endpoints (space-separated ip:port); primaries are the first 3:
+source scripts/lib/common.sh
+export VK_ALL_EPS=$(valkey_announced_endpoints valkey | cut -f2 | tr '\n' ' ')
+export VK_PRIMARY_EPS=$(valkey_announced_endpoints valkey | grep primary | cut -f2 | tr '\n' ' ')
+export SMOKE_SUFFIX="$$-$(date +%s)"
+------------------------------------------------------------------
+ Section-7 (MOVED) checks also use $OWNER_HOST/$OWNER_PORT/$WRONG_HOST/
+ $WRONG_PORT — set by the moved_setup helper for a given key; see the
+ source. Everything else runs as printed.
+==================================================================
+PRE
+fi
 
 # ----------------------------------------------------------------------------
 # Section 1: cluster + pods

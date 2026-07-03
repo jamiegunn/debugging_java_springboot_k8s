@@ -1203,10 +1203,13 @@ valkey-cli -h $SEED -p $PRIMARY_PORT -a $PASS info replication | grep -E '^role|
 ## Build & test
 
 ```sh
-cd app
-# Java 21 required for tests (Mockito can't instrument JDK 26+):
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test     # unit (Mockito + @WebMvcTest)
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify   # adds Testcontainers ITs (needs docker)
+# scripts/run-unit-tests.sh auto-detects a JDK 21 (Mockito can't instrument
+# JDK 26+) and pins JAVA_HOME for the Maven run:
+scripts/run-unit-tests.sh                # unit (Mockito + @WebMvcTest), no docker
+scripts/run-unit-tests.sh --coverage     # + per-class test counts
+scripts/run-unit-tests.sh --integration  # + Testcontainers ITs (needs docker)
+scripts/run-unit-tests.sh -- -Dtest=Foo  # pass anything after -- to Maven
+# Raw: cd app && JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test
 ```
 
 Cluster-protocol semantics (MOVED, ASK via live slot migration, replica
@@ -1216,6 +1219,11 @@ need a real 6-node cluster and real failure detection. The failover section
 freezes a primary with DEBUG SLEEP (enabled for local connections in the
 chart) because `kubectl delete pod` is healed by the StatefulSet faster
 than the 5s cluster-node-timeout — no election would ever happen.
+
+Both `smoke-test.sh` and `valkey-cluster-tests.sh` take `--commands`: each
+check echoes the exact kubectl/curl/valkey-cli command (concrete resolved
+values) so the suites double as a copy-pasteable cookbook. `stackctl.sh` is
+the guided front door and also exposes `unit-tests`.
 
 `*IT.java` tests under `src/it/java` use Testcontainers to spin up
 Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.

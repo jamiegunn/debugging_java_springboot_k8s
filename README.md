@@ -85,11 +85,16 @@ SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
 ### Tests
 
 ```sh
+# Easiest — finds a JDK 21 for you (Mockito can't instrument JDK 26+) and
+# runs Maven with it pinned:
+scripts/run-unit-tests.sh                 # unit tests (35), no Docker needed
+scripts/run-unit-tests.sh --coverage      # + per-class test counts
+scripts/run-unit-tests.sh --integration   # + Testcontainers ITs (needs Docker)
+scripts/run-unit-tests.sh -- -Dtest=OrderServiceTest   # one class
+
+# Or raw Maven, pinning the JDK yourself:
 cd app
-# The project targets Java 21; Mockito can't instrument newer JDKs (26+).
-# If your default JDK is newer, pin it for the test run:
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test     # unit (35 tests)
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify   # + Testcontainers integration
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test
 ```
 
 Unit coverage worth knowing about: the order-creation **fan-out contract**
@@ -99,12 +104,22 @@ demonstrated by `scripts/chaos.sh`), and a **cluster-slot proof** that the
 `{customerId}` hash-tag pinning actually co-locates keys (real CRC16 slot
 math in `ValkeyKeysTest`).
 
-Cluster-protocol tests run against the live stack, not in JUnit:
+Cluster-protocol tests run against the live stack, not in JUnit — 58 checks,
+each narrating why it runs / what it proves / how it fails:
 
 ```sh
-scripts/valkey-cluster-tests.sh   # MOVED, ASK (live slot migration), replica
-                                  # reads, failover via DEBUG SLEEP + failback
+scripts/valkey-cluster-tests.sh              # topology, slot routing, MOVED,
+                                             # ASK (live slot migration), replica
+                                             # reads, pub/sub, failover + failback
+scripts/valkey-cluster-tests.sh --skip-failover   # non-disruptive subset (46)
+scripts/valkey-cluster-tests.sh --commands        # ALSO print the exact
+                                                  # valkey-cli command behind
+                                                  # each check, copy-pasteable
 ```
+
+Both `smoke-test.sh` and `valkey-cluster-tests.sh` accept `--commands`: every
+check prints the underlying `kubectl` / `curl` / `valkey-cli` command with
+concrete resolved values, so the test suites double as a runnable cookbook.
 
 ## Getting Started (from a clean macOS install)
 

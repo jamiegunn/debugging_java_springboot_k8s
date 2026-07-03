@@ -27,6 +27,12 @@
 #   ./valkey-cluster-tests.sh                 # everything
 #   ./valkey-cluster-tests.sh --skip-failover # no disruption to primaries
 #   ./valkey-cluster-tests.sh --quiet         # verdicts only, no narration
+#   ./valkey-cluster-tests.sh --commands      # ALSO print the exact valkey-cli
+#                                             # command behind each check, so you
+#                                             # can copy-paste and run it yourself
+#
+# With --commands, run this first so the printed commands are runnable:
+#   export PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,14 +43,22 @@ set +e   # the harness decides pass/fail; a failing probe must not kill the run
 
 SKIP_FAILOVER=0
 QUIET=0
+SHOW_CMDS=0
 for a in "$@"; do
     case "$a" in
         --skip-failover) SKIP_FAILOVER=1 ;;
         --quiet)         QUIET=1 ;;
+        --commands)      SHOW_CMDS=1 ;;
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown arg: $a"; exit 64 ;;
     esac
 done
+
+# fd 3 = the real terminal, so command echoes bypass tcase's output capture
+# (tcase runs each test in $(...), which would otherwise swallow them).
+exec 3>&1
+IN_TCASE=0
+_cmd() { [[ $SHOW_CMDS -eq 1 && $IN_TCASE -eq 1 ]] && printf '      \033[36m$ %s\033[0m\n' "$*" >&3; return 0; }
 
 require_cmd kubectl curl python3
 CLI="$(command -v valkey-cli || command -v redis-cli || true)"
@@ -84,7 +98,9 @@ tcase() {
     fi
     local t0 t1 rc out
     t0=$(date +%s)
+    IN_TCASE=1
     out="$("$@" 2>&1)"; rc=$?
+    IN_TCASE=0
     t1=$(date +%s)
     if [[ $rc -eq 0 ]]; then
         printf '    \033[32m→ PASS\033[0m \033[2m(%ss)\033[0m' "$((t1-t0))"
@@ -102,11 +118,12 @@ tcase() {
 }
 
 # vk <ip:port> <args...> — pinned to one announced endpoint (no redirects)
-vk()  { local ep="$1"; shift; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
+vk()  { local ep="$1"; shift; _cmd "valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
 # vkc <ip:port> <args...> — cluster-aware (-c follows MOVED/ASK)
-vkc() { local ep="$1"; shift; "$CLI" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
-# vkpipe <ip:port> — multiple commands over ONE connection via stdin
-vkpipe() { local ep="$1"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1; }
+vkc() { local ep="$1"; shift; _cmd "valkey-cli -c -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
+# vkpipe <ip:port> — multiple commands over ONE connection via stdin. The
+# caller's printf feeds the commands; in --commands mode we surface that hint.
+vkpipe() { local ep="$1"; _cmd "printf '<cmd>\\\\n<cmd>\\\\n' | valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\"   # commands piped over one connection"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1; }
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -137,6 +154,22 @@ other_primary() { local avoid="$1" ep; for ep in "${PRIMARIES[@]}"; do [[ "$ep" 
 third_primary() { local a="$1" b="$2" ep; for ep in "${PRIMARIES[@]}"; do [[ "$ep" != "$a" && "$ep" != "$b" ]] && { echo "$ep"; return; }; done; }
 
 RUN_ID="$$-$(date +%s)"
+
+if [[ $SHOW_CMDS -eq 1 ]]; then
+    cat <<PRE
+
+  --commands mode: the exact valkey-cli command behind each check prints in
+  cyan under it. To run them yourself, first set:
+
+      export PASS=\$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
+
+  Endpoints on THIS cluster (announced ip:port, what clients dial):
+$(for i in "${!EP_NAME[@]}"; do printf '      %-20s %s\n' "${EP_NAME[$i]}" "${EP_ADDR[$i]}"; done)
+
+  valkey-cli flags used: -c = cluster mode (auto-follow MOVED/ASK); no -c =
+  pinned to that one node (needed for CLUSTER/INFO/cluster-admin commands).
+PRE
+fi
 
 # ===========================================================================
 section "0. Topology invariants — is this even a healthy 3-shard cluster?"
@@ -255,6 +288,7 @@ t_bus_ports() {
     local ep port
     for ep in "${EP_ADDR[@]}"; do
         port="$(( ${ep##*:} + 10000 ))"
+        _cmd "nc -z -w 3 ${ep%%:*} $port   # cluster-bus port = client port + 10000"
         nc -z -w 3 "${ep%%:*}" "$port" || { echo "bus ${ep%%:*}:$port unreachable"; return 1; }
     done
 }
@@ -825,6 +859,10 @@ else
         "WAIT=0 (lagging replica) — in which case data loss later is expected, not a failover bug" \
         t_canary_write
 
+    if [[ $SHOW_CMDS -eq 1 ]]; then
+        printf '      \033[36m# freeze the primary (run detached — blocks for 20s):\033[0m\n' >&3
+        printf '      \033[36m$ kubectl -n valkey exec %s -- valkey-cli -a "$PASS" debug sleep 20\033[0m\n' "$VICTIM_POD" >&3
+    fi
     kubectl -n valkey exec "$VICTIM_POD" -- \
         valkey-cli -a "$VK_PASS" --no-auth-warning debug sleep 20 >/dev/null 2>&1 &
     FREEZE_PID=$!
@@ -913,11 +951,13 @@ else
         HAPROXY_IP="$(cat "$REPO_ROOT/dumps/haproxy-vm-ip" 2>/dev/null)" \
             || HAPROXY_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')"
         ts="$(date +%s)"
+        _cmd "curl --resolve debug-demo.local:80:${HAPROXY_IP} -X POST http://debug-demo.local/api/customers -H 'Content-Type: application/json' -d '{\"name\":\"x\",\"email\":\"x@e.com\"}'"
         cid="$(curl -fsS -m 8 --resolve "debug-demo.local:80:${HAPROXY_IP}" -X POST http://debug-demo.local/api/customers \
               -H 'Content-Type: application/json' \
               -d "{\"name\":\"failover-$ts\",\"email\":\"failover-$ts@example.com\"}" 2>/dev/null \
               | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' 2>/dev/null)"
         [[ -n "$cid" ]] || { echo "customer create failed during outage"; return 1; }
+        _cmd "curl --resolve debug-demo.local:80:${HAPROXY_IP} -X POST http://debug-demo.local/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":$cid,\"amount\":1.00}'"
         for i in $(seq 1 10); do
             curl -fsS -m 8 --resolve "debug-demo.local:80:${HAPROXY_IP}" -X POST http://debug-demo.local/api/orders \
                  -H 'Content-Type: application/json' -d "{\"customerId\":$cid,\"amount\":1.00}" >/dev/null 2>&1 && return 0
