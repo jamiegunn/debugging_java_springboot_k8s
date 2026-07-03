@@ -65,7 +65,8 @@ configure_keepalived() {
     [[ -n "$iface" ]] || { err "  $vm: no interface on $LIMA_SHARED_SUBNET"; return 1; }
     info "  $vm: keepalived $state (prio $prio) on $iface, VIP $K3S_VIP, track=$TRACK"
     local check; check="$(track_script_body)"
-    vsh "$vm" "cat > /etc/keepalived/keepalived.conf <<'EOF'
+    vsh "$vm" "mkdir -p /etc/keepalived
+cat > /etc/keepalived/keepalived.conf <<'EOF'
 vrrp_script chk_node {
     script \"$check\"
     interval 2
@@ -98,7 +99,10 @@ EOF
 configure_dnsmasq() {
     local vm="$K3S_SERVER_VM" ip; ip="$(k3s_vm_ip "$vm")"
     info "  $vm: dnsmasq — *.$BASE_DOMAIN → $K3S_VIP (listen $ip)"
-    vsh "$vm" "cat > /etc/dnsmasq.d/debug-demo.conf <<EOF
+    vsh "$vm" "mkdir -p /etc/dnsmasq.d
+# Ensure dnsmasq loads drop-ins (Alpine's default conf may not set conf-dir).
+grep -q '^conf-dir=/etc/dnsmasq.d' /etc/dnsmasq.conf 2>/dev/null || echo 'conf-dir=/etc/dnsmasq.d/,*.conf' >> /etc/dnsmasq.conf
+cat > /etc/dnsmasq.d/debug-demo.conf <<EOF
 # Wildcard: debug-demo.local AND every *.debug-demo.local → the keepalived VIP.
 address=/$BASE_DOMAIN/$K3S_VIP
 domain-needed
@@ -111,8 +115,13 @@ EOF
 }
 
 configure_coredns() {
-    local ip; ip="$(k3s_vm_ip "$K3S_SERVER_VM")"
-    info "  CoreDNS: stub zone $BASE_DOMAIN → dnsmasq@$ip (so PODS resolve it too)"
+    # Pods must resolve *.debug-demo.local → the VIP. We do NOT forward to the
+    # host dnsmasq: pod → node-shared-IP works over TCP but times out over UDP
+    # (a flannel quirk for the non-cluster node IP), and DNS is UDP. Instead we
+    # answer the whole zone directly IN CoreDNS with the template plugin — every
+    # name in debug-demo.local returns the VIP. No host round-trip, no UDP hole.
+    # (The Mac still uses the host dnsmasq via /etc/resolver, which works fine.)
+    info "  CoreDNS: template zone $BASE_DOMAIN → $K3S_VIP (pods resolve names locally)"
     kc -n kube-system apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -123,8 +132,12 @@ data:
   debug-demo.server: |
     ${BASE_DOMAIN}:53 {
         errors
-        cache 30
-        forward . ${ip}
+        template IN A {
+            answer "{{ .Name }} 60 IN A ${K3S_VIP}"
+        }
+        template IN AAAA {
+            rcode NXDOMAIN
+        }
     }
 EOF
     # nudge CoreDNS to reload the custom config

@@ -79,10 +79,23 @@ create_vm() {
 # run a script inside a VM as root
 vsh() { limactl shell "$1" -- sudo sh -c "$2"; }
 
+# the VM's interface on the shared subnet — flannel MUST use this (the unique,
+# L2-adjacent shared net), NOT eth0 (the lima user-net, 192.168.5.15 on EVERY
+# VM). Without pinning it, flannel picks the lower-metric default route (eth0)
+# and writes useless host-gw routes via 192.168.5.15.
+shared_iface() {
+    limactl shell "$1" -- ip -4 -o addr show 2>/dev/null \
+        | awk -v n="$LIMA_SHARED_SUBNET" '$4 ~ ("^" n "\\.") {print $2; exit}'
+}
+
 copy_bundle() {
     local name="$1"
     info "  $name: copying air-gap bundle (k3s + core-images tar + $(ls "$AIRGAP_DIR"/images/*.tar 2>/dev/null | wc -l | tr -d ' ') image tars)..."
-    vsh "$name" "mkdir -p $BUNDLE_DEST/images $K3S_IMAGES_DIR_VM" || return 1
+    # BUNDLE_DEST must be USER-owned — limactl copy connects as the lima user,
+    # not root, so a sudo-created (root) dir gives rsync "Permission denied".
+    # The k3s images dir is root-owned and needs sudo.
+    limactl shell "$name" -- mkdir -p "$BUNDLE_DEST/images" || return 1
+    vsh "$name" "mkdir -p $K3S_IMAGES_DIR_VM" || return 1
     lcopy "$AIRGAP_DIR/k3s"                                    "$name:$BUNDLE_DEST/k3s" || return 1
     lcopy "$AIRGAP_DIR/k3s-airgap-images-${K3S_ARCH}.tar.zst"  "$name:$BUNDLE_DEST/" || return 1
     # k3s auto-loads its core images from this dir at startup (no pull):
@@ -109,7 +122,7 @@ import_images() {
 }
 
 install_server() {
-    local name="$K3S_SERVER_VM" ip; ip="$(k3s_vm_ip "$name")"
+    local name="$K3S_SERVER_VM" ip iface; ip="$(k3s_vm_ip "$name")"; iface="$(shared_iface "$name")"
     info "  $name: installing k3s server (offline) at $ip..."
     # Fully offline: the binary is at /usr/local/bin/k3s and the core images
     # tar is in the agent/images dir (k3s auto-loads it — no pull). Alpine uses
@@ -119,12 +132,16 @@ install_server() {
     #     port on every node and forwards to the pod; keepalived floats a VIP
     #     across the nodes so there's one stable address. klipper + keepalived
     #     are complementary (port→pod forwarding + floating VIP), not either/or.
+    #   --flannel-backend=host-gw → the nodes are L2-adjacent on the shared
+    #     subnet, so flannel routes pod CIDRs directly (no VXLAN). This avoids
+    #     the VXLAN tx-checksum-offload bug on nested VMs that silently drops
+    #     UDP (breaks ALL DNS while TCP works) — and it's faster.
     #   --tls-san VIP+host  → apiserver cert valid when reached via VIP/hostname
     vsh "$name" "
         cat > /etc/init.d/k3s <<EOS
 #!/sbin/openrc-run
 command=/usr/local/bin/k3s
-command_args=\"server --disable traefik --node-ip $ip --advertise-address $ip --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
+command_args=\"server --disable traefik --flannel-backend=host-gw --flannel-iface=$iface --node-ip $ip --advertise-address $ip --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
 command_background=true
 pidfile=/run/k3s.pid
 output_log=/var/log/k3s.log
@@ -146,13 +163,13 @@ EOS
 }
 
 install_agent() {
-    local name="$1" ip; ip="$(k3s_vm_ip "$name")"
+    local name="$1" ip iface; ip="$(k3s_vm_ip "$name")"; iface="$(shared_iface "$name")"
     info "  $name: installing k3s agent (offline), joining $SERVER_IP..."
     vsh "$name" "
         cat > /etc/init.d/k3s-agent <<EOS
 #!/sbin/openrc-run
 command=/usr/local/bin/k3s
-command_args=\"agent --server https://$SERVER_IP:6443 --token $NODE_TOKEN --node-ip $ip\"
+command_args=\"agent --server https://$SERVER_IP:6443 --token $NODE_TOKEN --flannel-iface=$iface --node-ip $ip\"
 command_background=true
 pidfile=/run/k3s-agent.pid
 output_log=/var/log/k3s-agent.log
