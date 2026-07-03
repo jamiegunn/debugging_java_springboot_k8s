@@ -237,9 +237,10 @@ The kubeconfig is written to `dumps/k3s.kubeconfig`;
 `scripts/lib/common.sh` auto-points every script's `kubectl` at it, so
 you don't have to export `KUBECONFIG`.
 
-Other `scripts/k3s.sh` subcommands:
+Other `scripts/k3s.sh` subcommands (all also reachable as `./tui <cmd>`):
 
 ```sh
+scripts/k3s.sh              # (no args) open the interactive TUI — same as ./tui
 scripts/k3s.sh bundle       # (re)build the air-gap image bundle on the Mac
 scripts/k3s.sh install      # full install (bundle → VMs → k3s → VIP/DNS → ingress → charts → smoke)
 scripts/k3s.sh resolver     # write the Mac /etc/resolver so hostnames resolve (sudo; optional)
@@ -250,6 +251,23 @@ scripts/k3s.sh chaos ...    # inject failures (node-down, vip-failover, valkey-f
 scripts/k3s.sh tour         # narrated API walk-through (api-tour.sh)
 scripts/k3s.sh valkey       # the Valkey cluster from outside (valkey-tour.sh)
 scripts/k3s.sh uninstall    # delete the VMs, resolver, kubeconfig
+```
+
+#### If the VIP is already taken
+
+The VIP defaults to `192.168.105.100`, which lives inside the Lima shared
+network's DHCP range — it is **not reserved**. Install pre-flights it: if
+another device on the segment already holds it, `k3s-net.sh` aborts with the
+exact fix. Pick a free address and install with it — the value **persists**
+(to `dumps/k3s-vip`) so every later `doctor`/`smoke`/`tui`/chart command agrees
+on it without re-exporting:
+
+```sh
+# find a free one
+for i in 200 210 220 230 240 250; do
+  ping -c1 -t1 192.168.105.$i >/dev/null 2>&1 || echo "192.168.105.$i is free"; done
+# install with it (sticks for all later commands)
+K3S_VIP=192.168.105.240 ./tui install
 ```
 
 ### 4. Resolve hostnames from the Mac (optional)

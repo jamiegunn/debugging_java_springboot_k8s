@@ -156,14 +156,27 @@ diagnostic constraint.
   checks every layer (tooling → VMs → nodes → VIP → DNS → ingress →
   workloads → Valkey cluster → end-to-end), and for anything broken prints
   the exact fix command (validated: 23/24, the 1 being the optional Mac
-  resolver). scripts/k3s.sh is the single front door: bundle / install /
-  resolver / doctor / smoke / status / chaos / tour / uninstall.
+  resolver). `./tui` (root launcher) / `scripts/k3s.sh` is the single front
+  door: bare `./tui` opens an interactive menu; subcommands are tui / bundle /
+  install / resolver / doctor / smoke / status / chaos / tour / valkey /
+  uninstall.
 
-## P6 preview — the troubleshooting kit
+## The troubleshooting kit (built)
 
-Once the cluster is hostname-native and multi-node, the kit becomes:
-`stackctl.sh` as the one front door → `doctor` (one command that checks every
-layer: VMs up, VIP owner, dnsmasq answering, CoreDNS stub, node Ready, pods
-Ready, ingress serving, Valkey cluster_state, each hostname resolving+dialing)
-→ guided capture bundles → the existing dump/jattach/memory tooling, all
-addressed by hostname and aware of which node owns the VIP.
+The kit: **`./tui`** (or `scripts/k3s.sh`) as the one front door → `doctor`
+(one command that checks every layer: VMs up, VIP owner, dnsmasq answering,
+CoreDNS stub, node Ready, pods Ready, ingress serving, Valkey cluster_state,
+each hostname resolving+dialing) → `smoke` / `chaos` / the tours → the existing
+dump/jattach/memory tooling, all addressed by hostname and aware of which node
+owns the VIP.
+
+## Robustness hardening (post-P6)
+
+- **VIP pre-flight + override.** `k3s-net.sh` refuses to bring the keepalived
+  VIP up if a foreign device (or one of our own VMs' DHCP address) already
+  holds it — the shared-network DHCP range isn't reserved — and prints the exact
+  fix. The VIP is overridable (`K3S_VIP=… ./tui install`) and persists to
+  `dumps/k3s-vip` so every later command agrees on it.
+- **Verified teardown.** `k3s-uninstall.sh` retries and verifies each VM is
+  actually gone (the old silent-`2>/dev/null`-delete could leave VMs — and the
+  VIP — running under an "uninstall complete").

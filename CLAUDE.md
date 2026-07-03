@@ -291,8 +291,8 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (klipper). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → klipper → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
-| `scripts/k3s.sh` | Single front door: `bundle` / `install` / `resolver` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. |
-| `scripts/k3s-*.sh` | Phase scripts: `k3s-install.sh` (orchestrator), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import), `k3s-net.sh` (keepalived VIP + dnsmasq + CoreDNS stub), `k3s-platform.sh` (ingress-nginx + namespaces + storage), `k3s-charts.sh` (the five charts), `k3s-uninstall.sh`. Plus `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
+| `./tui` (root) + `scripts/k3s.sh` | Single front door: `tui` / `bundle` / `install` / `resolver` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu; `./tui <cmd>` forwards to the same commands. |
+| `scripts/k3s-*.sh` | Phase scripts: `k3s-install.sh` (orchestrator), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import), `k3s-net.sh` (keepalived VIP **pre-flight** + dnsmasq + CoreDNS stub), `k3s-platform.sh` (ingress-nginx + namespaces + storage), `k3s-charts.sh` (the five charts), `k3s-uninstall.sh` (verifies VM deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
 | `scripts/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
 | `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `run-unit-tests.sh`, `local-ci.sh` |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
@@ -314,11 +314,20 @@ each Lima VM, installs k3s with `INSTALL_K3S_SKIP_DOWNLOAD=true`, and
 `imagePullPolicy: Never`/`IfNotPresent`; a pod that tried to pull would
 fail — which is the point (it proves nothing reaches out).
 
-Preferred: **`scripts/k3s.sh install`** — one command runs the full
+Preferred: **`scripts/k3s.sh install`** (or `./tui install`; bare `./tui`
+opens an interactive menu over everything) — one command runs the full
 flow (Lima VMs → k3s → keepalived VIP + dnsmasq/CoreDNS → ingress-nginx
 → namespaces/storage → the five charts → smoke test). It is idempotent.
 The `install` phase orchestrates the `k3s-*.sh` scripts; the air-gap
 bundle is built by `scripts/k3s.sh bundle` (or on demand by `install`).
+
+**VIP is overridable + persistent.** `K3S_VIP` defaults to `.100`, which
+sits inside the Lima shared-network DHCP range (not reserved). `k3s-net.sh`
+pre-flights it and aborts with an explicit fix if a foreign device (or one
+of our own VMs' DHCP address) already holds it. Override with
+`K3S_VIP=192.168.105.240 ./tui install`; the value persists to
+`dumps/k3s-vip` (precedence: env > that file > `.100`), so `doctor`, charts,
+and the TUI all agree on it afterward. `k3s-uninstall.sh` clears it.
 
 ```sh
 # 0. Build the air-gap bundle on the Mac (needs docker + internet/mirror)
