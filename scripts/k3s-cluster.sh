@@ -28,8 +28,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/k3s-env.sh
 source "$SCRIPT_DIR/lib/k3s-env.sh"
+# common.sh sets `set -e`; this orchestrator does its own error handling across
+# many VMs and MUST NOT die on the first transient (e.g. an rsync hiccup right
+# after a VM boots). Keep -u -o pipefail, drop -e.
+set +e
 
 require_cmd limactl kubectl
+
+# limactl copy with retries — scp/rsync into a freshly-booted VM is flaky for
+# the first few seconds (exit 23 = rsync partial/stat error).
+lcopy() {
+    local src="$1" dst="$2" i
+    for i in 1 2 3 4 5; do
+        limactl copy "$src" "$dst" 2>/tmp/lcopy.err && return 0
+        sleep 3
+    done
+    err "  copy failed after retries: $src → $dst : $(tail -1 /tmp/lcopy.err 2>/dev/null)"
+    return 1
+}
 
 LIMA_TEMPLATE="$REPO_ROOT/k3s/lima-node.yaml"
 BUNDLE_DEST="/tmp/airgap"       # where the bundle lands inside each VM
@@ -65,18 +81,19 @@ vsh() { limactl shell "$1" -- sudo sh -c "$2"; }
 
 copy_bundle() {
     local name="$1"
-    info "  $name: copying air-gap bundle..."
-    vsh "$name" "mkdir -p $BUNDLE_DEST/images $K3S_IMAGES_DIR_VM"
-    limactl copy "$AIRGAP_DIR/k3s"                              "$name:$BUNDLE_DEST/k3s" 2>/dev/null
-    limactl copy "$AIRGAP_DIR/k3s-airgap-images-${K3S_ARCH}.tar.zst" "$name:$BUNDLE_DEST/" 2>/dev/null
+    info "  $name: copying air-gap bundle (k3s + core-images tar + $(ls "$AIRGAP_DIR"/images/*.tar 2>/dev/null | wc -l | tr -d ' ') image tars)..."
+    vsh "$name" "mkdir -p $BUNDLE_DEST/images $K3S_IMAGES_DIR_VM" || return 1
+    lcopy "$AIRGAP_DIR/k3s"                                    "$name:$BUNDLE_DEST/k3s" || return 1
+    lcopy "$AIRGAP_DIR/k3s-airgap-images-${K3S_ARCH}.tar.zst"  "$name:$BUNDLE_DEST/" || return 1
     # k3s auto-loads its core images from this dir at startup (no pull):
-    vsh "$name" "cp $BUNDLE_DEST/k3s-airgap-images-${K3S_ARCH}.tar.zst $K3S_IMAGES_DIR_VM/ && install -m755 $BUNDLE_DEST/k3s /usr/local/bin/k3s"
+    vsh "$name" "cp $BUNDLE_DEST/k3s-airgap-images-${K3S_ARCH}.tar.zst $K3S_IMAGES_DIR_VM/ && install -m755 $BUNDLE_DEST/k3s /usr/local/bin/k3s" || return 1
     # app/backend image tars — copied now, imported after k3s is up (step 5)
     local t
     for t in "$AIRGAP_DIR"/images/*.tar; do
         [[ -e "$t" ]] || continue
-        limactl copy "$t" "$name:$BUNDLE_DEST/images/" 2>/dev/null
+        lcopy "$t" "$name:$BUNDLE_DEST/images/" || return 1
     done
+    info "    $name: bundle copied"
 }
 
 import_images() {
@@ -165,7 +182,7 @@ cmd_up() {
     for vm in "${K3S_AGENT_VMS[@]}"; do create_vm "$vm" "$K3S_AGENT_CPUS" "$K3S_AGENT_MEM" || exit 1; done
 
     info "[2/6] copying air-gap bundle into VMs..."
-    for vm in "${K3S_ALL_VMS[@]}"; do copy_bundle "$vm"; done
+    for vm in "${K3S_ALL_VMS[@]}"; do copy_bundle "$vm" || { err "bundle copy to $vm failed"; exit 1; }; done
 
     info "[3/6] installing k3s server..."
     install_server || exit 1
