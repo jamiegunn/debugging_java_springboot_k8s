@@ -123,9 +123,9 @@ diagnostic constraint.
 - [x] **P0 — foundation**: `scripts/lib/k3s-env.sh`, this doc,
   `scripts/bundle-images.sh` (air-gap bundle), `scripts/k3s-cluster.sh` (VMs +
   k3s + image import).
-- [ ] **P1 — VIP + DNS**: keepalived config on all nodes, dnsmasq on server,
+- [x] **P1 — VIP + DNS**: keepalived config on all nodes, dnsmasq on server,
   Mac `/etc/resolver`, CoreDNS stub zone. `scripts/k3s-net.sh`.
-- [ ] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
+- [x] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
   namespaces, storage (local-path). Verify VIP failover + hostname resolution.
 - [ ] **P3 — charts**: strip MetalLB/shim from `charts/valkey`; hostname
   announce; Oracle/MQ/Artifactory unchanged but `imagePullPolicy: Never`;
