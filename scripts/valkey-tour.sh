@@ -82,6 +82,34 @@ fi
 # vk_pin = pinned to one node (no -c) — for ops that need shard affinity (cluster commands, INFO, latency)
 vk()      { "$CLI" -c -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
 vk_pin()  { "$CLI"    -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning "$@"; }
+
+# owner_addr_of_slot <slot> — the ip:port of the master owning that slot.
+# Uses split() on "-" (works on BSD awk); the gawk-only match($i,/re/,arr)
+# form errors out on macOS's default awk. Handles single-slot entries
+# (empty hi → use lo) and skips [migration] markers.
+owner_addr_of_slot() {
+    vk_pin cluster nodes | awk -v s="$1" '
+        /master/ {
+            for (i=9; i<=NF; i++) {
+                if ($i ~ /^\[/) continue
+                n=split($i, r, "-"); lo=r[1]+0; hi=(n>1?r[2]:r[1])+0
+                if (lo<=s+0 && hi>=s+0) { split($2,a,"@"); print a[1]; exit }
+            }
+        }'
+}
+
+# print_shard_table — a compact "slot ranges → owning primary" view derived
+# from CLUSTER NODES. Replaces the raw `CLUSTER SHARDS` dump, whose nested
+# RESP array valkey-cli prints one flat field per line (unreadable).
+print_shard_table() {
+    vk_pin cluster nodes | awk '
+        /master/ && NF>8 {
+            ranges=""
+            for (i=9; i<=NF; i++) { if ($i ~ /^\[/) continue; ranges=ranges (ranges?" ":"") $i }
+            split($2,a,"@")
+            printf "  %-22s slots: %s\n", a[1], (ranges?ranges:"(none)")
+        }'
+}
 section() {
     [[ -n "$SECTIONS" && "$SECTIONS" != "$1" ]] && return 1
     echo
@@ -99,8 +127,8 @@ section topology && {
     echo "─ CLUSTER NODES (id role addr master_id) ─"
     vk_pin cluster nodes | awk '{printf "  %s  %-25s %-15s %s\n", substr($1,1,8)".."substr($1,length($1)-3), $3, $2, $4}'
     echo
-    echo "─ CLUSTER SHARDS (slot ranges → owning primary) ─"
-    vk_pin cluster shards 2>/dev/null | sed 's/^/  /' || vk_pin cluster slots | sed 's/^/  /'
+    echo "─ Shards (slot ranges → owning primary) ─"
+    print_shard_table
     echo
     echo "─ Per-node uptime + role ─"
     for ep in ${ALL_EPS[@]+"${ALL_EPS[@]}"}; do    # empty-array-safe under set -u / bash 3.2
@@ -118,8 +146,7 @@ section strings && {
     echo
     for k in foo bar baz qux quux corge grault; do
         slot=$(vk_pin cluster keyslot "$k" | tr -d '\r')
-        owner=$(vk_pin cluster countkeysinslot "$slot" >/dev/null; vk_pin cluster nodes | awk -v s="$slot" '
-            !/slave/ { for(i=9;i<=NF;i++) { if(match($i, /^([0-9]+)-([0-9]+)$/, m)) { if(s>=m[1] && s<=m[2]) print $2 } } }')
+        owner=$(owner_addr_of_slot "$slot")
         printf "  key=%-8s slot=%-5d owner=%s\n" "$k" "$slot" "$owner"
     done
     echo
