@@ -122,9 +122,15 @@ tcase() {
 vk()  { local ep="$1"; shift; _cmd "valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
 # vkc <ip:port> <args...> — cluster-aware (-c follows MOVED/ASK)
 vkc() { local ep="$1"; shift; _cmd "valkey-cli -c -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "$CLI" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
-# vkpipe <ip:port> — multiple commands over ONE connection via stdin. The
-# caller's printf feeds the commands; in --commands mode we surface that hint.
-vkpipe() { local ep="$1"; _cmd "printf '<cmd>\\\\n<cmd>\\\\n' | valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\"   # commands piped over one connection"; "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1; }
+# vkpipe <ip:port> <commands> — send multiple commands (one per line, as a
+# single string arg) over ONE connection. Taking the commands as an argument
+# (rather than via a piped printf) lets --commands echo the REAL commands.
+vkpipe() {
+    local ep="$1" cmds="$2" disp
+    disp="$(printf '%s' "$cmds" | awk 'NR>1{printf "\\n"}{printf "%s",$0}')"
+    _cmd "printf '${disp}\\n' | valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\""
+    printf '%s\n' "$cmds" | "$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning 2>&1
+}
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -564,7 +570,8 @@ tcase "hitting the TARGET without ASKING bounces back with MOVED" \
 
 t_ask_asking_direct() {
     local out
-    out="$(printf 'ASKING\nGET %s\n' "$K_ABSENT" | vkpipe "$DST_EP" | tail -1)"
+    out="$(vkpipe "$DST_EP" "ASKING
+GET $K_ABSENT" | tail -1)"
     [[ "$out" != *MOVED* && "$out" != *ERR* ]] || { echo "ASKING+GET at target got: $out"; return 1; }
 }
 tcase "ASKING + GET on one connection is accepted at the target" \
@@ -680,7 +687,8 @@ tcase "a plain GET on the replica is redirected to its primary" \
     t_replica_moved
 
 t_replica_readonly() {
-    local out; out="$(printf 'READONLY\nGET %s\n' "$RK" | vkpipe "$REPLICA_EP" | tail -1)"
+    local out; out="$(vkpipe "$REPLICA_EP" "READONLY
+GET $RK" | tail -1)"
     [[ "$out" == "replica-test" ]] || { echo "got: $out"; return 1; }
 }
 tcase "READONLY on the same connection lets the replica serve the read" \
@@ -691,7 +699,10 @@ tcase "READONLY on the same connection lets the replica serve the read" \
 
 t_replica_readwrite() {
     # valkey-cli pipe mode emits a trailing blank line; grab the last NON-blank.
-    local out; out="$(printf 'READONLY\nGET %s\nREADWRITE\nGET %s\n' "$RK" "$RK" | vkpipe "$REPLICA_EP" | grep -v '^[[:space:]]*$' | tail -1)"
+    local out; out="$(vkpipe "$REPLICA_EP" "READONLY
+GET $RK
+READWRITE
+GET $RK" | grep -v '^[[:space:]]*$' | tail -1)"
     [[ "$out" == *MOVED* ]] || { echo "after READWRITE expected MOVED, got: $out"; return 1; }
 }
 tcase "READWRITE cancels READONLY — the next read is redirected again" \
@@ -701,7 +712,8 @@ tcase "READWRITE cancels READONLY — the next read is redirected again" \
     t_replica_readwrite
 
 t_replica_no_writes() {
-    local out; out="$(printf 'READONLY\nSET %s nope\n' "$RK" | vkpipe "$REPLICA_EP" | grep -v '^[[:space:]]*$' | tail -1)"
+    local out; out="$(vkpipe "$REPLICA_EP" "READONLY
+SET $RK nope" | grep -v '^[[:space:]]*$' | tail -1)"
     [[ "$out" == *MOVED* ]] || { echo "write on replica in READONLY got: $out"; return 1; }
 }
 tcase "even in READONLY mode, a WRITE on the replica is refused (MOVED)" \
@@ -712,7 +724,8 @@ tcase "even in READONLY mode, a WRITE on the replica is refused (MOVED)" \
 
 t_wait_ack() {
     local out
-    out="$(printf 'SET %s acked\nWAIT 1 500\n' "$RK" | vkpipe "$ROWNER" | tail -1 | tr -d '\r')"
+    out="$(vkpipe "$ROWNER" "SET $RK acked
+WAIT 1 500" | tail -1 | tr -d '\r')"
     [[ "$out" =~ ^[0-9]+$ && "$out" -ge 1 ]] || { echo "WAIT returned: $out"; return 1; }
 }
 tcase "WAIT 1 500 after a write returns >=1 (the replica acknowledged)" \
@@ -851,7 +864,8 @@ else
     t_canary_write() {
         [[ -n "$CANARY" ]] || { echo "no key hashing to victim found in 200 tries"; return 1; }
         vk "$VICTIM_EP" set "$CANARY" survives >/dev/null
-        local out; out="$(printf 'SET %s survives\nWAIT 1 500\n' "$CANARY" | vkpipe "$VICTIM_EP" | tail -1 | tr -d '\r')"
+        local out; out="$(vkpipe "$VICTIM_EP" "SET $CANARY survives
+WAIT 1 500" | tail -1 | tr -d '\r')"
         [[ "$out" =~ ^[0-9]+$ && "$out" -ge 1 ]] || { echo "canary not replica-acked: WAIT=$out"; return 1; }
     }
     tcase "canary key written to the victim's keyspace and ACKED by its replica" \
