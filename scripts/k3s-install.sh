@@ -82,7 +82,7 @@ info "[5/5] retarget keepalived at ingress :80, then verify..."
 if [[ $SKIP_SMOKE -eq 0 ]]; then
     echo
     info "running smoke test..."
-    "$SCRIPT_DIR/smoke-test.sh" 2>&1 | tail -6
+    "$SCRIPT_DIR/k3s-smoke.sh" 2>"$SCRIPT_DIR/smoke-test.sh" 2>&1 | tail -61 | tail -8
 fi
 
 echo

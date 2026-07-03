@@ -9,6 +9,17 @@ set -euo pipefail
 : "${APP_CONTAINER:=app}"
 : "${JDK_DEBUG_IMAGE:=eclipse-temurin:25-jdk-alpine}"
 
+# Target the multi-node k3s cluster automatically: if the project kubeconfig
+# exists and KUBECONFIG isn't already set, point every `kubectl` here. This is
+# what makes the whole test/tooling suite run against k3s instead of whatever
+# the Mac's default context happens to be.
+if [[ -z "${KUBECONFIG:-}" ]]; then
+    _COMMON_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+    if [[ -s "$_COMMON_REPO/dumps/k3s.kubeconfig" ]]; then
+        export KUBECONFIG="$_COMMON_REPO/dumps/k3s.kubeconfig"
+    fi
+fi
+
 err()  { printf 'error: %s\n' "$*" >&2; }
 info() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
@@ -68,15 +79,28 @@ ensure_dir() {
 # LoadBalancer IP (one-layer). Ports always come from the Services.
 valkey_announced_endpoints() {
     local ns="${1:-valkey}"
-    local announce_ip role i ip port
-    announce_ip="$(kubectl -n "$ns" get statefulset valkey-primary \
-        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ANNOUNCE_IP")].value}' 2>/dev/null || true)"
+    # On k3s the announced address is the HOSTNAME (cluster-announce-hostname),
+    # resolved to the VIP by dnsmasq/CoreDNS; the per-node distinguisher is the
+    # port. Read the hostname from the chart's config so it tracks values, and
+    # the ports from each -ext Service.
+    local host role i port
+    host="$(kubectl -n "$ns" get cm valkey -o jsonpath='{.data.valkey\.conf}' 2>/dev/null \
+            | awk '/cluster-announce-hostname/ {print $2; exit}' | tr -d '\r')"
+    : "${host:=${VALKEY_HOST:-valkey.debug-demo.local}}"
     for role in primary secondary; do
         for i in 0 1 2; do
-            ip="$(kubectl -n "$ns" get svc "valkey-${role}-${i}-ext" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
             port="$(kubectl -n "$ns" get svc "valkey-${role}-${i}-ext" -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null || true)"
-            [[ -n "$ip" && -n "$port" ]] || continue
-            printf 'valkey-%s-%s\t%s:%s\n' "$role" "$i" "${announce_ip:-$ip}" "$port"
+            [[ -n "$port" ]] || continue
+            printf 'valkey-%s-%s\t%s:%s\n' "$role" "$i" "$host" "$port"
         done
     done
+}
+
+# vkexec <valkey-cli-args...> — run valkey-cli INSIDE the cluster (from an
+# ephemeral pod) so hostnames resolve via CoreDNS → VIP with no Mac /etc/resolver
+# needed. This is how the test suites reach valkey.debug-demo.local:port by name.
+# VK_PASS must be exported by the caller.
+vkexec() {
+    kubectl -n "${VALKEY_NS:-valkey}" exec -i valkey-primary-0 -- \
+        valkey-cli -a "${VK_PASS:-}" --no-auth-warning "$@" 2>/dev/null
 }
