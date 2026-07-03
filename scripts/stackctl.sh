@@ -112,7 +112,7 @@ menu() {
     4) cluster-tests   Valkey semantics: MOVED, ASK (live slot migration),
                        replica reads, failover + failback (58 checks)
     5) unit-tests      JVM unit tests (mvn test, JDK 21 auto-pinned)
-       (3/4 accept --commands to print the CLI command behind each check)
+       (3 & 4 echo the CLI command behind each check; --no-commands to hide)
 
   Explore
     6) tour            narrated API walk-through (prints every command)

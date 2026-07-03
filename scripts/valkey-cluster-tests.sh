@@ -23,16 +23,16 @@
 # DISRUPTIVE: section 3 migrates one slot (and restores it); section 6 takes
 # one shard's primary offline for ~20s. Fine for this dev stack, never prod.
 #
-# Usage:
-#   ./valkey-cluster-tests.sh                 # everything
-#   ./valkey-cluster-tests.sh --skip-failover # no disruption to primaries
-#   ./valkey-cluster-tests.sh --quiet         # verdicts only, no narration
-#   ./valkey-cluster-tests.sh --commands      # ALSO print the exact valkey-cli
-#                                             # command behind each check, so you
-#                                             # can copy-paste and run it yourself
-#
-# With --commands, run this first so the printed commands are runnable:
+# By DEFAULT, the exact valkey-cli command behind each check is echoed (in
+# cyan) as it runs, so you can see and copy-paste what was executed. Run this
+# once first to make the printed commands directly runnable:
 #   export PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
+#
+# Usage:
+#   ./valkey-cluster-tests.sh                 # everything, with commands echoed
+#   ./valkey-cluster-tests.sh --skip-failover # no disruption to primaries
+#   ./valkey-cluster-tests.sh --no-commands   # narration + verdicts, no commands
+#   ./valkey-cluster-tests.sh --quiet         # verdicts only (no narration/commands)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,12 +43,13 @@ set +e   # the harness decides pass/fail; a failing probe must not kill the run
 
 SKIP_FAILOVER=0
 QUIET=0
-SHOW_CMDS=0
+SHOW_CMDS=1     # echo the command behind each check by default
 for a in "$@"; do
     case "$a" in
         --skip-failover) SKIP_FAILOVER=1 ;;
-        --quiet)         QUIET=1 ;;
-        --commands)      SHOW_CMDS=1 ;;
+        --quiet)         QUIET=1; SHOW_CMDS=0 ;;
+        --no-commands)   SHOW_CMDS=0 ;;
+        --commands)      SHOW_CMDS=1 ;;   # kept for back-compat (now the default)
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown arg: $a"; exit 64 ;;
     esac

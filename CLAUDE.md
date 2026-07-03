@@ -1220,10 +1220,11 @@ freezes a primary with DEBUG SLEEP (enabled for local connections in the
 chart) because `kubectl delete pod` is healed by the StatefulSet faster
 than the 5s cluster-node-timeout — no election would ever happen.
 
-Both `smoke-test.sh` and `valkey-cluster-tests.sh` take `--commands`: each
-check echoes the exact kubectl/curl/valkey-cli command (concrete resolved
-values) so the suites double as a copy-pasteable cookbook. `stackctl.sh` is
-the guided front door and also exposes `unit-tests`.
+Both `smoke-test.sh` and `valkey-cluster-tests.sh` echo the exact
+kubectl/curl/valkey-cli command behind each check BY DEFAULT (concrete
+resolved values) so you see what ran and the suites double as a
+copy-pasteable cookbook; `--no-commands` hides them. `stackctl.sh` is the
+guided front door and also exposes `unit-tests`.
 
 `*IT.java` tests under `src/it/java` use Testcontainers to spin up
 Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.

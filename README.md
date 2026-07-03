@@ -112,14 +112,15 @@ scripts/valkey-cluster-tests.sh              # topology, slot routing, MOVED,
                                              # ASK (live slot migration), replica
                                              # reads, pub/sub, failover + failback
 scripts/valkey-cluster-tests.sh --skip-failover   # non-disruptive subset (46)
-scripts/valkey-cluster-tests.sh --commands        # ALSO print the exact
-                                                  # valkey-cli command behind
-                                                  # each check, copy-pasteable
+scripts/valkey-cluster-tests.sh --no-commands     # hide the echoed commands
 ```
 
-Both `smoke-test.sh` and `valkey-cluster-tests.sh` accept `--commands`: every
-check prints the underlying `kubectl` / `curl` / `valkey-cli` command with
-concrete resolved values, so the test suites double as a runnable cookbook.
+**Both `smoke-test.sh` and `valkey-cluster-tests.sh` echo the underlying
+`kubectl` / `curl` / `valkey-cli` command behind every check by default** (with
+concrete resolved values), so you always see what was run and the suites double
+as a runnable cookbook. Pass `--no-commands` to hide them. For Valkey commands,
+`export PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)`
+first to make the printed commands directly runnable.
 
 ## Getting Started (from a clean macOS install)
 

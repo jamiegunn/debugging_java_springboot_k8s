@@ -17,14 +17,14 @@
 #
 # Each check prints [PASS]/[FAIL] with detail. Exit code = number of failures.
 #
-# Usage:
-#   ./smoke-test.sh                     # everything (default)
-#   ./smoke-test.sh --skip-artifactory  # don't expect artifactory Ready
-#   ./smoke-test.sh --commands          # ALSO print the exact command behind
-#                                       # each check, so you can run it yourself
+# By DEFAULT, the exact command behind each check (kubectl / curl / valkey-cli)
+# is echoed as it runs, so you can see and copy-paste what was executed. Run the
+# setup block it prints once, and every printed command becomes runnable.
 #
-# With --commands, run the printed setup block once first; then every check's
-# command (kubectl/curl/valkey-cli) is copy-pasteable.
+# Usage:
+#   ./smoke-test.sh                     # everything, with commands echoed
+#   ./smoke-test.sh --skip-artifactory  # don't expect artifactory Ready
+#   ./smoke-test.sh --no-commands       # verdicts only, no command echo
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,11 +33,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 SKIP_ARTIFACTORY=0
-SHOW_CMDS=0
+SHOW_CMDS=1     # echo the command behind each check by default
 for a in "$@"; do
     case "$a" in
         --skip-artifactory) SKIP_ARTIFACTORY=1 ;;
-        --commands)         SHOW_CMDS=1 ;;
+        --no-commands)      SHOW_CMDS=0 ;;
+        --commands)         SHOW_CMDS=1 ;;   # kept for back-compat (now the default)
         -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown arg: $a"; exit 64 ;;
     esac
@@ -81,8 +82,9 @@ check() {
 if [[ $SHOW_CMDS -eq 1 ]]; then
     cat <<'PRE'
 ==================================================================
- --commands mode. Run this setup block ONCE, then every command
- printed below (in cyan) is copy-pasteable:
+ The command behind each check is echoed below (in cyan). Run this
+ setup block ONCE and every printed command is copy-pasteable
+ (suppress all this with --no-commands):
 ------------------------------------------------------------------
 export POD=$(kubectl -n debug-demo get pod -l app.kubernetes.io/name=debug-demo-app \
               -o jsonpath='{.items[0].metadata.name}')
