@@ -55,6 +55,24 @@ loadBalancer:
   mode: sharedIP-perPort   # sharedIP-perPort | perPodIP
   # --- sharedIP-perPort mode ---
   sharedIP: "192.168.64.51"
+  # announceIP: what the pods ADVERTISE in cluster metadata (CLUSTER NODES /
+  # CLUSTER SHARDS / MOVED redirects) — i.e. the address CLIENTS dial. Leave
+  # empty to announce sharedIP (one-layer: clients dial the MetalLB/CIS IP
+  # directly). Set it when an external LB sits IN FRONT of the Service IP
+  # (two-layer, e.g. an F5 VIP without CIS forwarding to the MetalLB IP):
+  # clients dial the F5 VIP, so that's what must be announced.
+  #
+  # Requirements when announceIP != sharedIP:
+  #   - the external LB must forward ports 1:1 (client basePorts.client+idx,
+  #     bus basePorts.bus+idx) as plain L4 TCP passthrough — no port
+  #     rewriting, no L7 inspection
+  #   - the BUS ports must be forwarded too: Valkey nodes gossip with each
+  #     other via the ANNOUNCED addresses. kube-proxy short-circuits traffic
+  #     to the Service IP, but it knows nothing about the external VIP, so
+  #     node-to-node gossip genuinely hairpins out through the external LB
+  #     and back. If the LB blocks the bus ports, the cluster degrades to
+  #     cluster_state:fail.
+  announceIP: ""
   basePorts:
     client: 6379           # primary-0 ext 6379, primary-1 6380, ... secondary-2 6384
     bus: 16379             # same +idx offsets as client

@@ -167,6 +167,47 @@ the node's port 80 directly with no Service in front of it.
 - Nginx-ingress is **only** for HTTP traffic; no L7 proxy can sit in
   the Valkey path.
 
+### Production shape: F5 VIP without CIS → set announceIP
+
+Production uses an F5 that is NOT cluster-integrated (no CIS), so the
+F5 VIP forwards to the in-cluster LB IP — two LB layers, the same
+model as the HTTP path here (HAProxy VM fronting the cluster). The
+chart decouples the two roles an address plays:
+
+- `loadBalancer.sharedIP` — what the six Services pin as
+  `loadBalancerIP` (fulfilled by MetalLB here, whatever controller in
+  prod).
+- `loadBalancer.announceIP` — what the pods ADVERTISE in cluster
+  metadata (`CLUSTER NODES` / `CLUSTER SHARDS` / MOVED redirects).
+  This must be the address CLIENTS dial. Empty (default) = announce
+  sharedIP (one-layer, this POC). Set it to the F5 VIP in prod
+  (two-layer): clients dial the VIP, so redirects must name the VIP.
+
+```sh
+helm upgrade valkey ./charts/valkey -n valkey \
+  --set loadBalancer.sharedIP=<metallb-ip> \
+  --set loadBalancer.announceIP=<f5-vip>
+```
+
+Non-negotiable F5 config when announceIP is set (also documented in
+`charts/valkey/values.yaml`):
+
+1. Ports forward 1:1 — client 6379-6384 AND bus 16379-16384, VIP
+   port = backend port. The announced ports must be dialable exactly
+   as announced; no port rewriting.
+2. Plain L4 TCP passthrough (fastL4 / standard TCP); no L7/TLS in
+   the path — the Valkey wire protocol is stateful TCP.
+3. **Bus ports open on the VIP — gossip hairpins through the F5.**
+   Nodes gossip with each other via the ANNOUNCED addresses.
+   kube-proxy short-circuits traffic to the Service IP inside the
+   node, but knows nothing about the F5 VIP, so pod↔pod gossip
+   genuinely leaves the cluster, traverses the F5 on 16379-16384,
+   and returns. Blocked bus ports → `cluster_state:fail`. Budget the
+   VIP for that standing gossip traffic.
+4. SNAT automap is fine — Valkey sees the F5 as the client, the same
+   source-IP trade-off as `externalTrafficPolicy: Cluster`, which
+   Valkey doesn't care about.
+
 ### Why MetalLB hands out the IPs (and what replaces it elsewhere)
 
 A `Service type=LoadBalancer` is *a request*, not an implementation.

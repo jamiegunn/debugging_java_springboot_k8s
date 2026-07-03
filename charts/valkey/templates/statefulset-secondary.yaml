@@ -30,8 +30,9 @@ spec:
               {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
               # Shared external IP; per-shard addressability comes from the
               # port. Secondaries occupy idx replicaCount..2*replicaCount-1.
+              # ANNOUNCE_IP is what clients dial — the Service IP itself, or
+              # the external VIP fronting it when announceIP is set in values.
               IDX=$((ORDINAL + ORDINAL_OFFSET))
-              ANNOUNCE_IP="$SHARED_IP"
               ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
               ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
               {{- else if .Values.loadBalancer.enabled }}
@@ -54,8 +55,10 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
             {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
-            - name: SHARED_IP
-              value: {{ .Values.loadBalancer.sharedIP | quote }}
+            - name: ANNOUNCE_IP
+              # what clients dial: the external VIP if one fronts the Service
+              # IP (announceIP), else the Service IP itself (sharedIP)
+              value: {{ .Values.loadBalancer.announceIP | default .Values.loadBalancer.sharedIP | quote }}
             - name: BASE_CLIENT_PORT
               value: {{ .Values.loadBalancer.basePorts.client | quote }}
             - name: BASE_BUS_PORT

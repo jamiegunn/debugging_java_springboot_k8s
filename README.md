@@ -655,6 +655,48 @@ specific to the shared-IP mode:
   on 6379/16379 internally; the per-Service external port maps back to
   the same targetPort. Only the announce values differ per pod.
 
+### Production: F5 VIP in front, no CIS (two-layer)
+
+Our production target is an F5 that is **not** integrated with the
+cluster (no F5 CIS controller). The F5 VIP forwards to the in-cluster
+LB IP — two LB layers, exactly like the HTTP path in this POC where
+the HAProxy VM (F5 stand-in) fronts the cluster. The chart supports
+this with one value:
+
+```sh
+# Service IP stays whatever MetalLB (or any in-cluster controller)
+# assigns; the pods ANNOUNCE the F5 VIP instead — because cluster
+# metadata (CLUSTER NODES / CLUSTER SHARDS / MOVED redirects) must
+# name the address CLIENTS dial, and clients dial the VIP.
+helm upgrade valkey ./charts/valkey -n valkey \
+  --set loadBalancer.sharedIP=<metallb-ip> \
+  --set loadBalancer.announceIP=<f5-vip>
+```
+
+When `announceIP` is unset (the default, used in this POC) the pods
+announce `sharedIP` — the one-layer shape where clients dial the
+MetalLB IP directly.
+
+F5 configuration requirements for the two-layer shape:
+
+1. **Ports forward 1:1.** Client `6379-6384` and bus `16379-16384` on
+   the VIP must map to the same port numbers on the backend (the
+   MetalLB IP). No port rewriting — the announced ports must be the
+   ports clients actually reach.
+2. **Plain L4 TCP passthrough** (fastL4 / standard TCP profile). The
+   Valkey wire protocol is stateful TCP; no L7 inspection or TLS
+   termination in the path.
+3. **The bus ports must be open on the VIP.** Valkey nodes gossip
+   with each other using the *announced* addresses. kube-proxy
+   short-circuits traffic addressed to the Service IP, but it knows
+   nothing about the F5 VIP — so node-to-node gossip genuinely leaves
+   the cluster, hits the F5 on `16379-16384`, and comes back. If the
+   F5 blocks those ports, the cluster degrades to
+   `cluster_state:fail`. Budget for that hairpin traffic on the VIP.
+4. **SNAT automap is fine.** Valkey sees the F5's address as the
+   client — same trade-off as `externalTrafficPolicy: Cluster`,
+   functionally harmless.
+
 In a real environment the shared IP is reached through a VIP/LB layer
 (F5/HAProxy/cloud NLB). On Rancher Desktop's vz-NAT, the dev-Mac
 stand-in for that VIP is a one-time `sudo route add` (one route in
