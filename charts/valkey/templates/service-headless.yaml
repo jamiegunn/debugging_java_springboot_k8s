@@ -7,8 +7,11 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: true   # so cluster gossip can find peers during bootstrap
   ports:
-    - {name: client, port: {{ .Values.ports.client }}, targetPort: client}
-    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: bus}
+    # Headless (clusterIP None) — DNS only; connections go straight to pod IP on
+    # whatever port the client names, so these are cosmetic. Pods listen on
+    # per-ordinal ports; the bootstrap Job and clients use those.
+    - {name: client, port: {{ .Values.ports.client }}, targetPort: {{ .Values.ports.client }}}
+    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: {{ .Values.ports.bus }}}
   selector: {{- include "valkey.primarySelector" . | nindent 4 }}
 ---
 apiVersion: v1
@@ -20,6 +23,9 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: true
   ports:
-    - {name: client, port: {{ .Values.ports.client }}, targetPort: client}
-    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: bus}
+    # Headless (clusterIP None) — DNS only; connections go straight to pod IP on
+    # whatever port the client names, so these are cosmetic. Pods listen on
+    # per-ordinal ports; the bootstrap Job and clients use those.
+    - {name: client, port: {{ .Values.ports.client }}, targetPort: {{ .Values.ports.client }}}
+    - {name: bus,    port: {{ .Values.ports.bus }},    targetPort: {{ .Values.ports.bus }}}
   selector: {{- include "valkey.secondarySelector" . | nindent 4 }}

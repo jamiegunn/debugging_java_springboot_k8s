@@ -27,32 +27,32 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              # See statefulset-primary.yaml. Announce the shared VIP + this
-              # pod's unique ports; klipper remaps to the pod. Secondaries occupy
-              # idx replicaCount..2*replicaCount-1.
+              # See statefulset-primary.yaml. Each pod listens on its unique
+              # port and announces its POD IP + that port, so gossip/replication
+              # are direct pod-to-pod (VIP out of the bus path). Secondaries
+              # occupy idx replicaCount..2*replicaCount-1.
               {{- if .Values.loadBalancer.enabled }}
               IDX=$((ORDINAL + ORDINAL_OFFSET))
-              ANNOUNCE_IP="$ANNOUNCE_VIP"
-              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
-              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
+              LISTEN_PORT=$((BASE_CLIENT_PORT + IDX))
+              CLUSTER_PORT=$((BASE_BUS_PORT + IDX))
               {{- else }}
-              ANNOUNCE_IP="$POD_IP"
-              ANNOUNCE_PORT={{ .Values.ports.client }}
-              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
+              LISTEN_PORT={{ .Values.ports.client }}
+              CLUSTER_PORT={{ .Values.ports.bus }}
               {{- end }}
-              echo "valkey-secondary-${ORDINAL}: announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
+              echo "$LISTEN_PORT" > /tmp/valkey-port
+              echo "valkey-secondary-${ORDINAL}: listen ${LISTEN_PORT}/${CLUSTER_PORT}, announce ${POD_IP}"
               exec valkey-server /etc/valkey/valkey.conf \
-                --cluster-announce-ip "$ANNOUNCE_IP" \
-                --cluster-announce-port "$ANNOUNCE_PORT" \
-                --cluster-announce-bus-port "$ANNOUNCE_BUS_PORT"
+                --port "$LISTEN_PORT" \
+                --cluster-port "$CLUSTER_PORT" \
+                --cluster-announce-ip "$POD_IP" \
+                --cluster-announce-port "$LISTEN_PORT" \
+                --cluster-announce-bus-port "$CLUSTER_PORT"
           env:
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
             {{- if .Values.loadBalancer.enabled }}
-            - name: ANNOUNCE_VIP
-              value: {{ .Values.loadBalancer.announceIP | quote }}
             - name: BASE_CLIENT_PORT
               value: {{ .Values.loadBalancer.basePorts.client | quote }}
             - name: BASE_BUS_PORT
@@ -60,22 +60,22 @@ spec:
             - name: ORDINAL_OFFSET
               value: {{ .Values.replicaCount | quote }}   # secondaries follow the primaries
             {{- end }}
-          ports:
-            - name: client
-              containerPort: {{ .Values.ports.client }}
-            - name: bus
-              containerPort: {{ .Values.ports.bus }}
           readinessProbe:
             exec:
               command:
                 - sh
                 - -c
                 - |
-                  valkey-cli {{ if .Values.auth.enabled }}-a "$(cat /etc/valkey/password)"{{ end }} ping | grep -q PONG
+                  valkey-cli -p "$(cat /tmp/valkey-port)" {{ if .Values.auth.enabled }}-a "$(cat /etc/valkey/password)"{{ end }} ping | grep -q PONG
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
-            tcpSocket: {port: client}
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  valkey-cli -p "$(cat /tmp/valkey-port)" {{ if .Values.auth.enabled }}-a "$(cat /etc/valkey/password)"{{ end }} ping | grep -q PONG
             initialDelaySeconds: 30
             periodSeconds: 30
           resources: {{- toYaml .Values.resources | nindent 12 }}

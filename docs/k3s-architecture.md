@@ -127,26 +127,20 @@ diagnostic constraint.
   Mac `/etc/resolver`, CoreDNS stub zone. `scripts/k3s-net.sh`.
 - [x] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
   namespaces, storage (local-path). Verify VIP failover + hostname resolution.
-- [~] **P3 — charts**: DONE — MetalLB/shim stripped, Oracle/MQ/app install
-  offline, app Ingress on debug-demo.local, Valkey announces the VIP + hostname.
-  VALIDATED LIVE: 3 masters form, `CLUSTER SHARDS` returns
-  `valkey.debug-demo.local` (hostnames, not IPs), and a client on the Mac
-  hitting the VIP gets hostname-based metadata. OPEN ITEM below.
-  - **Open: replica join over the klipper VIP bus.** With `announce-ip = VIP`
-    and port separation, the cluster bus flows pod → VIP → klipper svclb → pod.
-    Master↔master gossip converges fine, but 2 of 3 replica joins hang in the
-    bidirectional bus handshake through klipper's proxy (svclb SNATs the source,
-    which seems to stall the persistent bus link). The network path itself is
-    reachable (pods can `nc` every VIP bus port).
-  - **The clean fix (next):** make each pod LISTEN on its unique port
-    (`--port 6379+idx --cluster-port 16379+idx`) and announce `pod-ip` +
-    that unique port. Then GOSSIP is direct pod-to-pod on the CNI network (no
-    VIP, no klipper in the bus path), while CLIENTS still get
-    `valkey.debug-demo.local:port` → VIP → klipper → pod (the Service targetPort
-    becomes the pod's unique port). This removes the VIP entirely from the
-    cluster bus and keeps the hostname client model. Touches: configmap (drop
-    fixed `port`), both entrypoints (`--port`/`--cluster-port` + announce
-    pod-ip), Service `targetPort`, and the readiness probe port.
+- [x] **P3 — charts** — DONE and VALIDATED END TO END. Each Valkey pod
+  listens on its own unique port (base+idx) and announces its POD IP + that
+  port, so gossip/replication are DIRECT pod-to-pod on the CNI network (VIP and
+  klipper are out of the bus path — the earlier VIP-announce hung replica
+  joins). Clients get valkey.debug-demo.local:<port> (hostname endpoints),
+  which resolves to the VIP → klipper → the owning pod (Service targetPort = the
+  pod's unique port). The app pins the Valkey hostname → VIP via hostAliases,
+  because Lettuce/netty's resolver mishandles Kubernetes ndots:5 search-domain
+  expansion (getent resolves it, netty doesn't). Live proof on the 3-node k3s
+  cluster: 6-node Valkey cluster forms (cluster_state:ok, 3 masters + 3 paired
+  replicas), CLUSTER SHARDS/MOVED return valkey.debug-demo.local, a valkey-cli
+  from the Mac follows MOVED by hostname and SET/GET round-trips, the app is UP
+  through debug-demo.local, and POST /api/orders (Oracle + MQ + Valkey fan-out)
+  returns 201 — all air-gapped, all by hostname.
 - [ ] **P4 — installer**: `scripts/k3s-install.sh` orchestrates P0-P3 +
   smoke; `scripts/k3s-uninstall.sh` (delete VMs, resolver, kubeconfig).
 - [ ] **P5 — tests**: convert smoke / cluster-tests / api-tour / chaos /

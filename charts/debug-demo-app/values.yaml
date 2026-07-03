@@ -98,3 +98,6 @@ probes:
     path: /actuator/health/readiness
     initialDelaySeconds: 10
     periodSeconds: 5
+
+# Extra /etc/hosts entries (set by k3s-charts.sh to pin the Valkey hostname → VIP)
+hostAliases: []

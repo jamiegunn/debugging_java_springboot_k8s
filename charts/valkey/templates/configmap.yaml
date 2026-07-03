@@ -5,19 +5,18 @@ metadata:
   labels: {{- include "valkey.labels" . | nindent 4 }}
 data:
   valkey.conf: |
-    # Network
+    # Network. `port` and `cluster-port` are NOT set here — each pod listens on
+    # its own unique port, so the entrypoint passes --port / --cluster-port.
     bind 0.0.0.0
-    port {{ .Values.ports.client }}
     protected-mode no
 
-    # Cluster mode. cluster-announce-{ip,port,bus-port} are per-pod and set as
-    # CLI flags by the StatefulSet entrypoint (each pod announces its pod IP for
-    # gossip + its own external client port). The HOSTNAME and endpoint
-    # preference are the SAME for every pod, so they live here:
+    # Cluster mode. cluster-announce-{ip,port,bus-port} are per-pod CLI flags
+    # (each pod announces its POD IP + unique ports, so gossip is direct
+    # pod-to-pod). The HOSTNAME + endpoint preference are the SAME for every pod:
     #   - cluster-announce-hostname: the name CLUSTER SHARDS/NODES/MOVED hand to
     #     clients (resolves to the keepalived VIP via dnsmasq/CoreDNS).
-    #   - cluster-preferred-endpoint-type hostname: make the cluster return that
-    #     hostname (with the announced port) instead of an IP.
+    #   - cluster-preferred-endpoint-type hostname: return that hostname (with
+    #     the per-pod announced port) instead of an IP.
     cluster-enabled yes
     cluster-config-file /data/nodes.conf
     cluster-node-timeout 5000

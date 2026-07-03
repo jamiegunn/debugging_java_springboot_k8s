@@ -44,7 +44,6 @@ install_valkey() {
     # Bootstrap Job welds the cluster; give it headroom on a cold cluster.
     helm_kc upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
         --set image.pullPolicy=IfNotPresent \
-        --set loadBalancer.announceIP="$K3S_VIP" \
         --set loadBalancer.announceHostname="$VALKEY_HOST" \
         --timeout 15m >/dev/null 2>&1
 }
@@ -67,7 +66,10 @@ install_app() {
         --set oracle.host=oracle-oracle.oracle.svc.cluster.local \
         --set oracle.service=FREEPDB1 \
         --set mq.host=ibm-mq-ibm-mq.mq.svc.cluster.local \
-        --set mq.user=app --set mq.password=passw0rd >/dev/null 2>&1
+        --set mq.user=app --set mq.password=passw0rd \
+        --set "hostAliases[0].ip=${K3S_VIP}" \
+        --set "hostAliases[0].hostnames[0]=${VALKEY_HOST}" \
+        --set "hostAliases[0].hostnames[1]=${APP_HOST}" >/dev/null 2>&1
 }
 
 wait_ready() {

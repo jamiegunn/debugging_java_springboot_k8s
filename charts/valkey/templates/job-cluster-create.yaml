@@ -36,72 +36,76 @@ spec:
               {{- else }}
               AUTH=""
               {{- end }}
-              PRIMARIES="valkey-primary-0.valkey-primary-headless valkey-primary-1.valkey-primary-headless valkey-primary-2.valkey-primary-headless"
-              SECONDARIES="valkey-secondary-0.valkey-secondary-headless valkey-secondary-1.valkey-secondary-headless valkey-secondary-2.valkey-secondary-headless"
+              # Each pod listens on a UNIQUE port (base+idx) so gossip can be
+              # direct pod-to-pod. So every valkey-cli here must target the right
+              # per-ordinal port, and --cluster create/add-node use host:port.
+              {{- if .Values.loadBalancer.enabled }}
+              BASE={{ .Values.loadBalancer.basePorts.client }}; UNIQUE=1
+              {{- else }}
+              BASE={{ .Values.ports.client }}; UNIQUE=0
+              {{- end }}
+              N={{ .Values.replicaCount }}
+              port_for() { if [ "$UNIQUE" = 1 ]; then echo $((BASE + $1)); else echo $BASE; fi; }
 
-              echo "Waiting for all 6 nodes to PING..."
-              for node in $PRIMARIES $SECONDARIES; do
+              PRIMARY_EPS=""; SECONDARY_EPS=""
+              i=0; while [ $i -lt $N ]; do
+                PRIMARY_EPS="$PRIMARY_EPS valkey-primary-$i.valkey-primary-headless:$(port_for $i)"
+                SECONDARY_EPS="$SECONDARY_EPS valkey-secondary-$i.valkey-secondary-headless:$(port_for $((N+i)))"
+                i=$((i+1))
+              done
+              ALL_EPS="$PRIMARY_EPS $SECONDARY_EPS"
+              SEED_H="valkey-primary-0.valkey-primary-headless"; SEED_P="$(port_for 0)"
+              cli() { h="$1"; p="$2"; shift 2; valkey-cli -h "$h" -p "$p" $AUTH "$@"; }   # cli <host> <port> <cmd...>
+
+              echo "Waiting for all nodes to PING..."
+              for ep in $ALL_EPS; do
+                h="${ep%:*}"; p="${ep##*:}"
                 for i in $(seq 1 60); do
-                  if valkey-cli -h "$node" $AUTH ping 2>/dev/null | grep -q PONG; then
-                    echo "  $node OK"
-                    break
-                  fi
+                  if cli "$h" "$p" ping 2>/dev/null | grep -q PONG; then echo "  $ep OK"; break; fi
                   sleep 5
                 done
               done
 
-              STATE="$(valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster info | awk -F: '/cluster_state/ {print $2}' | tr -d '\r\n ')"
-              if [ "$STATE" = "ok" ]; then
-                echo "Cluster already healthy. Nothing to do."
-                exit 0
+              # Already fully healthy? Need cluster_state ok AND all 2N nodes known
+              # (a bare 3-primary cluster is also 'ok', so don't early-exit on that).
+              INFO="$(cli "$SEED_H" "$SEED_P" cluster info)"
+              STATE="$(echo "$INFO" | awk -F: '/cluster_state/ {print $2}' | tr -d '\r\n ')"
+              KNOWN="$(echo "$INFO" | awk -F: '/cluster_known_nodes/ {print $2}' | tr -d '\r\n ')"
+              if [ "$STATE" = "ok" ] && [ "$KNOWN" = "$((N*2))" ]; then
+                echo "Cluster already healthy ($KNOWN nodes). Nothing to do."; exit 0
               fi
 
-              # PVCs from a previous install (StatefulSet PVCs are NOT cascade-deleted
-              # by helm uninstall) can leave stale nodes.conf entries — dead pod IPs
-              # of previous incarnations are recorded as "peers" and the new nodes
-              # split-brain. valkey-cli --cluster create refuses to run against a
-              # node with any existing cluster config. Detect that state and hard-
-              # reset every node to a clean slate before creating.
+              # Stale PVC state (dead peers from a prior install) → hard reset all.
               STALE=0
-              for node in $PRIMARIES $SECONDARIES; do
-                if valkey-cli -h "$node" $AUTH cluster nodes 2>/dev/null | grep -qE '(disconnected|handshake|noaddr)'; then
-                  STALE=1; break
-                fi
-                # Also stale if this node knows more than just itself (should have 1
-                # entry before --cluster create runs).
-                n_peers=$(valkey-cli -h "$node" $AUTH cluster nodes 2>/dev/null | wc -l)
+              for ep in $ALL_EPS; do
+                h="${ep%:*}"; p="${ep##*:}"
+                if cli "$h" "$p" cluster nodes 2>/dev/null | grep -qE '(disconnected|handshake|noaddr)'; then STALE=1; break; fi
+                n_peers=$(cli "$h" "$p" cluster nodes 2>/dev/null | wc -l)
                 if [ "$n_peers" -gt 1 ]; then STALE=1; break; fi
               done
               if [ "$STALE" -eq 1 ]; then
-                echo "Detected stale cluster state (dead peer entries from a previous install)."
-                echo "Hard-resetting every node to a clean pre-cluster state..."
-                for node in $PRIMARIES $SECONDARIES; do
-                  # CLUSTER RESET HARD: clears cluster config + wipes data. Safe here
-                  # because we're about to CLUSTER CREATE from scratch anyway.
-                  valkey-cli -h "$node" $AUTH cluster reset hard 2>/dev/null || true
-                  valkey-cli -h "$node" $AUTH flushall 2>/dev/null || true
+                echo "Detected stale cluster state; hard-resetting every node..."
+                for ep in $ALL_EPS; do
+                  h="${ep%:*}"; p="${ep##*:}"
+                  cli "$h" "$p" cluster reset hard 2>/dev/null || true
+                  cli "$h" "$p" flushall 2>/dev/null || true
                 done
-                # Give nodes a moment to settle after the reset
                 sleep 3
               fi
 
               echo "Creating cluster on primaries (no replicas yet)..."
-              echo yes | valkey-cli $AUTH --cluster create \
-                  valkey-primary-0.valkey-primary-headless:{{ .Values.ports.client }} \
-                  valkey-primary-1.valkey-primary-headless:{{ .Values.ports.client }} \
-                  valkey-primary-2.valkey-primary-headless:{{ .Values.ports.client }} \
-                  --cluster-replicas 0
+              echo yes | valkey-cli $AUTH --cluster create $PRIMARY_EPS --cluster-replicas 0
 
-              # Now attach each secondary to its matching primary by index.
-              for i in 0 1 2; do
-                PRIMARY_ID="$(valkey-cli -h valkey-primary-${i}.valkey-primary-headless $AUTH cluster myid | tr -d '\r\n ')"
-                echo "Attaching valkey-secondary-${i} as replica of valkey-primary-${i} (id=$PRIMARY_ID)..."
-                valkey-cli $AUTH --cluster add-node \
-                    valkey-secondary-${i}.valkey-secondary-headless:{{ .Values.ports.client }} \
-                    valkey-primary-${i}.valkey-primary-headless:{{ .Values.ports.client }} \
-                    --cluster-slave --cluster-master-id "$PRIMARY_ID"
+              echo "Attaching each secondary to its by-index primary..."
+              i=0; while [ $i -lt $N ]; do
+                PEP="valkey-primary-$i.valkey-primary-headless:$(port_for $i)"
+                SEP="valkey-secondary-$i.valkey-secondary-headless:$(port_for $((N+i)))"
+                PID="$(cli "valkey-primary-$i.valkey-primary-headless" "$(port_for $i)" cluster myid | tr -d '\r\n ')"
+                echo "  secondary-$i → primary-$i (id=$PID)"
+                valkey-cli $AUTH --cluster add-node "$SEP" "$PEP" --cluster-slave --cluster-master-id "$PID"
+                i=$((i+1))
               done
 
               echo "Final cluster check:"
-              valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster info
-              valkey-cli -h valkey-primary-0.valkey-primary-headless $AUTH cluster nodes
+              cli "$SEED_H" "$SEED_P" cluster info
+              cli "$SEED_H" "$SEED_P" cluster nodes

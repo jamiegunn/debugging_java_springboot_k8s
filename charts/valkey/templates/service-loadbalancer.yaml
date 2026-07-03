@@ -12,15 +12,17 @@
   primary-1 pod. Per-shard addressability comes from the PORT; the address is a
   hostname → VIP (no MetalLB, no per-pod IPs, no allow-shared-ip).
 
-  Both the CLIENT and BUS ports are exposed. The cluster bus (gossip) and
-  intra-cluster client connections dial announceIP:port = VIP:port; klipper
-  forwards VIP:6380 → pod:6379 (client) and VIP:16380 → pod:16379 (bus). Pods
-  reach the VIP directly on k3s (shared L2), so this needs no shim.
+  Only the CLIENT port is exposed, and its targetPort is the pod's UNIQUE
+  listen port (base+idx) — the pod actually listens there, so no remap is
+  needed. Clients: valkey.debug-demo.local:6380 → VIP → klipper → pod-1:6380.
+  The cluster BUS is NOT here: gossip/replication go direct pod-to-pod on the
+  CNI network (announce = pod IP), so the VIP and klipper are out of the bus
+  path entirely — which is what lets replicas join reliably.
 */}}
 {{- $cbase := int .Values.loadBalancer.basePorts.client }}
-{{- $bbase := int .Values.loadBalancer.basePorts.bus }}
 {{- $n := int .Values.replicaCount }}
 {{- range $i := until $n }}
+{{- $port := add $cbase $i }}
 ---
 apiVersion: v1
 kind: Service
@@ -31,13 +33,12 @@ metadata:
 spec:
   type: LoadBalancer
   ports:
-    - {name: client, port: {{ add $cbase $i }}, targetPort: client}
-    - {name: bus,    port: {{ add $bbase $i }}, targetPort: bus}
+    - {name: client, port: {{ $port }}, targetPort: {{ $port }}}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-primary-{{ $i }}
 {{- end }}
 {{- range $i := until $n }}
-{{- $idx := add $i $n }}
+{{- $port := add $cbase (add $i $n) }}
 ---
 apiVersion: v1
 kind: Service
@@ -48,8 +49,7 @@ metadata:
 spec:
   type: LoadBalancer
   ports:
-    - {name: client, port: {{ add $cbase $idx }}, targetPort: client}
-    - {name: bus,    port: {{ add $bbase $idx }}, targetPort: bus}
+    - {name: client, port: {{ $port }}, targetPort: {{ $port }}}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-secondary-{{ $i }}
 {{- end }}

@@ -50,26 +50,21 @@ storage:
 # Rancher-Desktop setup needed is simply gone.
 loadBalancer:
   enabled: true
-  # Each pod announces the SHARED VIP (an IP, required for the cluster bus)
-  # plus a UNIQUE port. announceIP is the keepalived VIP — set by k3s-charts.sh
-  # to K3S_VIP. It must be an IP; the client-facing HOSTNAME is announced
-  # separately (announceHostname + cluster-preferred-endpoint-type hostname in
-  # the configmap), so CLUSTER SHARDS/MOVED return the name while the cluster
-  # bus and intra-cluster connections use VIP:port.
+  # Each pod LISTENS on its own unique port (basePorts.client + idx) and its own
+  # bus port (basePorts.bus + idx), and announces its POD IP + those ports. So
+  # the cluster bus and replication are DIRECT pod-to-pod on the CNI network —
+  # no VIP, no klipper, no shim in the gossip path (that's what makes replica
+  # joins reliable). CLIENTS get the hostname below (cluster-preferred-endpoint-
+  # type hostname), which resolves to the keepalived VIP and, on the announced
+  # port, is routed by klipper to the owning pod (Service targetPort = the pod's
+  # unique port, so no remap is needed).
   #
-  # Why the VIP (not the pod IP) is the announce IP: intra-cluster connections
-  # (a replica syncing from its master, MIGRATE, etc.) dial announceIP:
-  # announcePort. With port separation the pod listens on ports.client (6379)
-  # but announces 6380 — so the address MUST remap the port, which klipper does
-  # (VIP:6380 → pod:6379). Announcing the pod IP would send those to
-  # pod-ip:6380 where nothing listens, and replicas could never join. On k3s
-  # the VIP is directly reachable from pods (shared L2), so gossip flows through
-  # it with no shim — the thing Rancher Desktop needed is simply gone.
-  announceIP: ""                 # set to the VIP by k3s-charts.sh
+  # announceHostname must resolve to the VIP from BOTH the Mac (/etc/resolver)
+  # and pods (CoreDNS). No announceIP is needed — the announce IP is the pod IP.
   announceHostname: "valkey.debug-demo.local"
   basePorts:
     client: 6379           # primary-0 → 6379, primary-1 → 6380, ... secondary-2 → 6384
-    bus: 16379             # bus = client + 10000, same +idx offsets
+    bus: 16379             # bus = client base; node idx N listens on 16379+N
 
 config:
   # Extra raw lines appended to valkey.conf. Useful for tuning maxmemory etc.

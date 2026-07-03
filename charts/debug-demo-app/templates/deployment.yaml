@@ -20,6 +20,13 @@ spec:
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
       shareProcessNamespace: true
+      {{- with .Values.hostAliases }}
+      # Pin external-style hostnames to the VIP in /etc/hosts. Lettuce/netty's
+      # own DNS resolver mishandles Kubernetes ndots:5 search-domain expansion
+      # for names like valkey.debug-demo.local (getent resolves them, netty
+      # doesn't), so map them here — /etc/hosts is consulted before DNS.
+      hostAliases: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
