@@ -122,6 +122,33 @@ as a runnable cookbook. Pass `--no-commands` to hide them. For Valkey commands,
 `export PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)`
 first to make the printed commands directly runnable.
 
+### Chaos: break things and diagnose them
+
+`scripts/chaos.sh` injects one failure at a time and **leaves it broken** so
+you can investigate. Each scenario prints the command that broke it, a probe
+showing the blast radius, live **debug** commands, and a **heal** recipe:
+
+```sh
+scripts/chaos.sh mq-down          # scale IBM MQ to 0 — orders die, CRUD lives
+scripts/chaos.sh oracle-down      # scale Oracle to 0 — CRUD dies, cache lives
+scripts/chaos.sh valkey-down      # scale Valkey to 0 — cache + fan-out die
+scripts/chaos.sh haproxy-stop     # stop the F5 stand-in — external path dies,
+                                  #   in-cluster + Valkey gossip (via shim) live
+scripts/chaos.sh valkey-failover  # freeze a primary — real election (self-heals)
+scripts/chaos.sh app-kill         # delete the app pod — 503 window (self-heals)
+
+scripts/chaos.sh heal mq-down     # run the heal commands for one scenario
+scripts/chaos.sh heal             # restore everything
+scripts/chaos.sh debug oracle-down    # just re-run a scenario's debug commands
+scripts/chaos.sh incremental      # guided cumulative degradation, then restore
+scripts/chaos.sh                  # interactive menu
+```
+
+Stack failures to see cumulative damage — `chaos.sh mq-down` then
+`chaos.sh valkey-down` then `chaos.sh oracle-down`, watching the probe lose
+capabilities one backend at a time — then `chaos.sh heal`. The probe
+auto-diagnoses which backend broke from the pattern of what survived.
+
 ## Getting Started (from a clean macOS install)
 
 This section assumes **nothing**: no Homebrew, no Rancher Desktop, no

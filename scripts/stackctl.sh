@@ -120,7 +120,8 @@ menu() {
     8) swagger         where the interactive API explorer lives
 
   Break
-    9) chaos           inject failures, watch what survives
+    9) chaos           inject failures (leaves broken); prints debug + heal
+                       commands per scenario. `chaos.sh heal` restores.
 
   Tear down
     0) uninstall       guided teardown
