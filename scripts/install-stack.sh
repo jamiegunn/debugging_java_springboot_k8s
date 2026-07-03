@@ -16,26 +16,31 @@
 #
 # Phases:
 #   1. Prereq check               (rdctl, kubectl, helm, docker, curl, python3, limactl)
-#   2. MetalLB + nginx-ingress    (MetalLB pool 192.168.64.50-60 for Valkey;
+#   2. Image preload              (scripts/preload-images.sh — pull every registry
+#                                  image up-front so corporate-MITM TLS failures
+#                                  surface here, not as ImagePullBackOff later)
+#   3. MetalLB + nginx-ingress    (MetalLB pool 192.168.64.50-60 for Valkey;
 #                                  nginx-ingress runs with hostNetwork=true bound
 #                                  to the RD node's :80 — Pattern D)
-#   3. Integration charts         (oracle, ibm-mq, valkey, [artifactory]) in parallel
+#   4. Integration charts         (oracle, ibm-mq, valkey, [artifactory]) in parallel
 #                                  Valkey's per-pod LBs claim 192.168.64.51-56
-#   4. App image build            (docker build into RD's moby)
-#   5. App chart install          (ClusterIP Service + Ingress; no direct LB)
-#   6. HAProxy F5 stand-in        (second Lima VM with HAProxy on 192.168.105.x;
+#   5. App image build            (docker build into RD's moby)
+#   6. App chart install          (ClusterIP Service + Ingress; no direct LB)
+#   7. HAProxy F5 stand-in        (second Lima VM with HAProxy on 192.168.105.x;
 #                                  models the external F5 fronting hostNetwork
 #                                  ingress in production)
-#   7. Post-install validation    (helm status, actuator/health, HAProxy health)
-#   8. Host-side setup            (PROMPTS FOR sudo — adds static routes for the
+#   8. Post-install validation    (helm status, actuator/health, HAProxy health)
+#   9. Host-side setup            (PROMPTS FOR sudo — adds static routes for the
 #                                  MetalLB Valkey IPs and a /etc/hosts entry
 #                                  pointing debug-demo.local at the HAProxy VM
 #                                  IP; idempotent — skips work already in place)
-#   9. End-to-end smoke test      (scripts/smoke-test.sh — in-cluster + external)
+#  10. End-to-end smoke test      (scripts/smoke-test.sh — in-cluster + external)
 #
 # Usage:
-#   ./install-stack.sh                  # everything (default — will prompt for sudo in Phase 8)
+#   ./install-stack.sh                  # everything (default — will prompt for sudo in Phase 9)
 #   ./install-stack.sh --check          # report current state, install nothing
+#   ./install-stack.sh --image-manifest-only # print the image list Phase 2 would pull, then exit
+#   ./install-stack.sh --skip-image-preload  # skip the up-front image pulls (clean networks)
 #   ./install-stack.sh --skip-build     # reuse existing debug-demo-app:dev image
 #   ./install-stack.sh --skip-artifactory   # faster cluster install (~3-5 min saved)
 #   ./install-stack.sh --skip-validate  # skip the in-cluster actuator/Valkey checks
@@ -56,6 +61,7 @@ SKIP_VALIDATE=0
 SKIP_HAPROXY_VM=0
 SKIP_HOST_SETUP=0
 SKIP_SMOKE=0
+SKIP_IMAGE_PRELOAD=0
 CHECK_ONLY=0
 for a in "$@"; do
     case "$a" in
@@ -65,6 +71,12 @@ for a in "$@"; do
         --skip-haproxy-vm)  SKIP_HAPROXY_VM=1 ;;
         --skip-host-setup)  SKIP_HOST_SETUP=1 ;;
         --skip-smoke)       SKIP_SMOKE=1 ;;
+        --skip-image-preload) SKIP_IMAGE_PRELOAD=1 ;;
+        --image-manifest-only)
+            # Print the image list Phase 2 would pull, for security review /
+            # air-gap prep, and exit without touching anything.
+            exec "$SCRIPT_DIR/preload-images.sh" --manifest-only
+            ;;
         --check)            CHECK_ONLY=1 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -81,7 +93,7 @@ APP_INGRESS_HOST="debug-demo.local"     # /etc/hosts entry → HAProxy VM IP
 HAPROXY_VM_IP_FILE="$REPO_ROOT/dumps/haproxy-vm-ip"  # written by install-haproxy-vm.sh
 
 # --- Phase 1: prereq check --------------------------------------------------
-info "[1/9] checking prerequisites..."
+info "[1/10] checking prerequisites..."
 require_cmd kubectl helm docker curl python3
 if [[ $SKIP_HAPROXY_VM -eq 0 ]]; then
     require_cmd limactl
@@ -212,8 +224,25 @@ if [[ $STUCK -gt 0 ]]; then
 fi
 info "  no stuck releases"
 
-# --- Phase 2: MetalLB -------------------------------------------------------
-info "[2/9] installing MetalLB + nginx-ingress (hostNetwork mode)..."
+# --- Phase 2: image preload --------------------------------------------------
+# Pull every registry image the rest of the install needs, before anything is
+# applied to the cluster. On corporate networks with TLS interception this is
+# where the MITM failure surfaces — as one clear docker error naming the image
+# and registry, instead of a pod wedged in ImagePullBackOff mid-install.
+if [[ $SKIP_IMAGE_PRELOAD -eq 1 ]]; then
+    info "[2/10] --skip-image-preload: skipping up-front image pulls"
+    info "       (images will be pulled lazily by kubelet/docker as each phase needs them)"
+else
+    info "[2/10] preloading container images (scripts/preload-images.sh)..."
+    "$SCRIPT_DIR/preload-images.sh" || {
+        err "  image preload failed — fix the registry access above and re-run,"
+        err "  or bypass with --skip-image-preload if you accept lazy pulls."
+        exit 1
+    }
+fi
+
+# --- Phase 3: MetalLB -------------------------------------------------------
+info "[3/10] installing MetalLB + nginx-ingress (hostNetwork mode)..."
 if kubectl -n metallb-system get deployment controller >/dev/null 2>&1; then
     info "  MetalLB controller already present, skipping manifest apply"
 else
@@ -257,8 +286,8 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
     --set controller.ingressClassResource.default=true \
     --set controller.watchIngressWithoutClass=true >/dev/null
 
-# --- Phase 3: integration charts (in parallel) ------------------------------
-info "[3/9] installing integration charts (oracle, mq, valkey$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo ', artifactory'))..."
+# --- Phase 4: integration charts (in parallel) ------------------------------
+info "[4/10] installing integration charts (oracle, mq, valkey$( [[ $SKIP_ARTIFACTORY -eq 0 ]] && echo ', artifactory'))..."
 
 install_oracle() {
     helm upgrade --install oracle "$REPO_ROOT/charts/oracle" -n oracle --create-namespace \
@@ -270,7 +299,14 @@ install_mq() {
         --set image.tag=9.4.5.1-r1-amd64 >/dev/null
 }
 install_valkey() {
-    helm upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace >/dev/null
+    # The Valkey chart has a `valkey-cluster-bootstrap` post-install Job that
+    # runs CLUSTER MEET + CLUSTER ADDSLOTS to weld 6 standalone pods into a
+    # cluster. Helm waits on this Job. Default timeout (5 min) isn't enough
+    # on a cold install where images are pulling in parallel — the release
+    # gets marked 'failed' even though the cluster forms fine seconds later.
+    # 15 min covers realistic worst-case first-install times.
+    helm upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
+        --timeout 15m >/dev/null
 }
 install_artifactory() {
     helm upgrade --install artifactory "$REPO_ROOT/charts/artifactory" -n artifactory --create-namespace --no-hooks >/dev/null
@@ -323,21 +359,21 @@ fi
 wait $W_ORA $W_MQ $W_VK $W_NG
 if [[ $SKIP_ARTIFACTORY -eq 0 ]]; then wait $W_AF; fi
 
-# --- Phase 4: build app image ----------------------------------------------
+# --- Phase 5: build app image ----------------------------------------------
 if [[ $SKIP_BUILD -eq 1 ]]; then
-    info "[4/9] --skip-build set, reusing debug-demo-app:dev"
+    info "[5/10] --skip-build set, reusing debug-demo-app:dev"
     if ! docker image inspect debug-demo-app:dev >/dev/null 2>&1; then
         err "  image debug-demo-app:dev not present; re-run without --skip-build"
         exit 1
     fi
 else
-    info "[4/9] building app image (debug-demo-app:dev)..."
+    info "[5/10] building app image (debug-demo-app:dev)..."
     ( cd "$REPO_ROOT/app" && docker build -t debug-demo-app:dev . >/dev/null )
     info "  built"
 fi
 
-# --- Phase 5: install app ---------------------------------------------------
-info "[5/9] installing app chart (ClusterIP + Ingress; no direct LoadBalancer)..."
+# --- Phase 6: install app ---------------------------------------------------
+info "[6/10] installing app chart (ClusterIP + Ingress; no direct LoadBalancer)..."
 helm upgrade --install app "$REPO_ROOT/charts/debug-demo-app" -n debug-demo --create-namespace \
     --set image.repository=debug-demo-app \
     --set image.tag=dev \
@@ -356,11 +392,11 @@ helm upgrade --install app "$REPO_ROOT/charts/debug-demo-app" -n debug-demo --cr
 
 wait_for_label debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 300
 
-# --- Phase 6: HAProxy F5 stand-in (second Lima VM) -------------------------
+# --- Phase 7: HAProxy F5 stand-in (second Lima VM) -------------------------
 HAPROXY_VM_IP=""
 if [[ $SKIP_HAPROXY_VM -eq 0 ]]; then
     echo
-    info "[6/9] provisioning HAProxy F5 stand-in (second Lima VM)..."
+    info "[7/10] provisioning HAProxy F5 stand-in (second Lima VM)..."
     if "$SCRIPT_DIR/install-haproxy-vm.sh" 2>&1 | sed 's/^/    /'; then
         :
     else
@@ -375,14 +411,14 @@ if [[ $SKIP_HAPROXY_VM -eq 0 ]]; then
         err "  HAProxy VM IP not cached at $HAPROXY_VM_IP_FILE"
     fi
 else
-    info "[6/9] --skip-haproxy-vm: not provisioning HAProxy F5 stand-in"
+    info "[7/10] --skip-haproxy-vm: not provisioning HAProxy F5 stand-in"
     info "       (HTTP will be reached directly via the RD node IP — not full Pattern D)"
 fi
 
-# --- Phase 7: post-install validation ---------------------------------------
+# --- Phase 8: post-install validation ---------------------------------------
 if [[ $SKIP_VALIDATE -eq 0 ]]; then
     echo
-    info "[7/9] post-install validation..."
+    info "[8/10] post-install validation..."
     # In-cluster checks (don't depend on host routes / /etc/hosts)
     POD=$(kubectl -n debug-demo get pod -l app.kubernetes.io/name=debug-demo-app \
             -o jsonpath='{.items[?(@.status.containerStatuses[0].ready==true)].metadata.name}' 2>/dev/null | awk '{print $1}')
@@ -405,18 +441,30 @@ if [[ $SKIP_VALIDATE -eq 0 ]]; then
     else
         err "  ingress-nginx pod hostNetwork: '$NG_POD_HOSTNET' (expected 'true' for Pattern D)"
     fi
-    # End-to-end through HAProxy VM, if it's up
+    # End-to-end through HAProxy VM, if it's up. Retry: HAProxy's backend
+    # health check needs ~10s (inter 5s, rise 2) to mark the RD node UP after
+    # the config reload, so an immediate curl right after Phase 6 will 503.
     if [[ -n "$HAPROXY_VM_IP" ]]; then
-        if curl -fsS -m 5 -o /dev/null -w '%{http_code}' "http://$HAPROXY_VM_IP/actuator/health" 2>/dev/null | grep -q 200; then
-            info "  HAProxy VM → ingress-nginx → app: /actuator/health = 200 ✓"
-        else
-            err "  HAProxy VM → ingress-nginx → app: FAIL (Mac IP forwarding may need enabling)"
-            err "  Verify: sysctl net.inet.ip.forwarding   (should be 1)"
+        VALIDATED=0
+        for attempt in 1 2 3 4 5 6; do
+            if curl -fsS -m 5 -o /dev/null -w '%{http_code}' "http://$HAPROXY_VM_IP/actuator/health" 2>/dev/null | grep -q 200; then
+                info "  HAProxy VM → ingress-nginx → app: /actuator/health = 200 ✓ (attempt $attempt)"
+                VALIDATED=1
+                break
+            fi
+            sleep 3
+        done
+        if [[ $VALIDATED -eq 0 ]]; then
+            err "  HAProxy VM → ingress-nginx → app: FAIL after 6 tries (~18s)"
+            err "  Diagnose:"
+            err "    sysctl net.inet.ip.forwarding   (should be 1)"
+            err "    curl -sS http://${HAPROXY_VM_IP}:8404/;csv | awk -F, '/ingress_nginx,rd-node/{print \$18}'   (should be UP)"
+            err "    limactl shell debug-demo-haproxy -- sh -c 'curl -sS http://192.168.64.2/'"
         fi
     fi
 fi
 
-# --- Phase 8: host-side setup (sudo) ---------------------------------------
+# --- Phase 9: host-side setup (sudo) ---------------------------------------
 # Idempotent: only invokes sudo when something actually needs to change.
 # Now: static routes are needed for Valkey only (HAProxy VM has its own
 #      shared-network IP that the Mac reaches directly via Lima). /etc/hosts
@@ -446,7 +494,7 @@ ip_forwarding_on() {
 
 if [[ $SKIP_HOST_SETUP -eq 0 ]]; then
     echo
-    info "[8/9] host-side setup (may prompt for sudo)..."
+    info "[9/10] host-side setup (may prompt for sudo)..."
     HOSTS_TARGET="$(etc_hosts_target_ip)"
 
     NEED_SUDO=0
@@ -463,7 +511,7 @@ if [[ $SKIP_HOST_SETUP -eq 0 ]]; then
     else
         info "  some host-side state is missing; will run sudo commands"
         # Warm the sudo timestamp once so we don't get multiple prompts.
-        sudo -v || { err "  sudo required for Phase 8. Re-run with --skip-host-setup to defer."; exit 1; }
+        sudo -v || { err "  sudo required for Phase 9. Re-run with --skip-host-setup to defer."; exit 1; }
 
         if ! host_routes_present; then
             info "  adding static routes via scripts/host-routes.sh add (for Valkey LBs)"
@@ -506,13 +554,13 @@ if [[ $SKIP_HOST_SETUP -eq 0 ]]; then
         fi
     fi
 else
-    info "[8/9] --skip-host-setup: skipping host routes + /etc/hosts edit"
+    info "[9/10] --skip-host-setup: skipping host routes + /etc/hosts edit"
 fi
 
-# --- Phase 9: end-to-end smoke test ----------------------------------------
+# --- Phase 10: end-to-end smoke test ----------------------------------------
 if [[ $SKIP_SMOKE -eq 0 ]]; then
     echo
-    info "[9/9] running scripts/smoke-test.sh (in-cluster + external + MOVED)..."
+    info "[10/10] running scripts/smoke-test.sh (in-cluster + external + MOVED)..."
     SMOKE_ARGS=()
     [[ $SKIP_ARTIFACTORY -eq 1 ]] && SMOKE_ARGS+=(--skip-artifactory)
     if "$SCRIPT_DIR/smoke-test.sh" "${SMOKE_ARGS[@]}" 2>&1 | tee /tmp/install-stack.smoke.out | tail -5; then
@@ -523,7 +571,7 @@ if [[ $SKIP_SMOKE -eq 0 ]]; then
         err "  smoke-test had $SMOKE_RC failure(s) — full output: /tmp/install-stack.smoke.out"
     fi
 else
-    info "[9/9] --skip-smoke: not running smoke-test"
+    info "[10/10] --skip-smoke: not running smoke-test"
 fi
 
 echo

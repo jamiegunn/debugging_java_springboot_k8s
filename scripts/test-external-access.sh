@@ -11,7 +11,7 @@
 # wired up.
 #
 # Prereqs:
-#   - scripts/install-stack.sh has been run (or you've done its Phase 8
+#   - scripts/install-stack.sh has been run (or you've done its Phase 9
 #     equivalents by hand: static routes, /etc/hosts entry, IP forwarding)
 #   - valkey-cli or redis-cli on PATH (brew install valkey or redis)
 #

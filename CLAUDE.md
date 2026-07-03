@@ -346,7 +346,7 @@ necessary because Rancher Desktop puts the k8s pod and Service
 network behind NAT.
 
 ```sh
-# All three handled automatically by install-stack.sh (Phase 8). Manual:
+# All three handled automatically by install-stack.sh (Phase 9). Manual:
 scripts/host-routes.sh add        # static routes for Valkey IPs (sudo)
 sudo sysctl -w net.inet.ip.forwarding=1        # so HAProxy VM can reach RD node
 HAPROXY_IP="$(cat dumps/haproxy-vm-ip)"
@@ -455,9 +455,23 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 
 ## How to install everything
 
+Preferred: `scripts/install-stack.sh` (10 phases, idempotent). Phase 2
+pre-pulls every registry image via `scripts/preload-images.sh` so
+corporate-MITM TLS failures surface as one clear error up-front instead
+of an ImagePullBackOff mid-install. The image list lives in the `IMAGES`
+array at the top of `preload-images.sh` — update it whenever a version
+is bumped in install-stack.sh or a chart's values.yaml.
+`--image-manifest-only` prints the list (air-gap / security review);
+`--skip-image-preload` bypasses the phase on clean networks.
+
+Manual equivalent:
+
 ```sh
 # 0. One-time RD bump (default 2 CPU / 6 GB is too small for the full stack)
 rdctl set --virtual-machine.memory-in-gb=16 --virtual-machine.number-cpus=8
+
+# 0.5. Pre-pull all registry images (surfaces corporate-MITM failures early)
+scripts/preload-images.sh
 
 # 1. MetalLB + IP pool (for the Valkey LoadBalancer)
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml

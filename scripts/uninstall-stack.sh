@@ -184,7 +184,7 @@ fi
 rm -f "$REPO_ROOT/dumps/haproxy-vm-ip" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 4. Mac-side networking (mirrors install-stack.sh Phase 8)
+# 4. Mac-side networking (mirrors install-stack.sh Phase 9)
 # ---------------------------------------------------------------------------
 if [[ $KEEP_HOST_SETUP -eq 0 ]]; then
     if [[ $WILL_TOUCH_ROUTES -eq 1 ]]; then

@@ -175,27 +175,36 @@ cd debugging_java_springboot_k8s
 scripts/install-stack.sh
 ```
 
-What this does (9 phases; Phase 8 prompts for `sudo` once):
+What this does (10 phases; Phase 9 prompts for `sudo` once):
 
 1. **Prereq check** — verifies `rdctl`, `kubectl`, `helm`, `docker`, `curl`, `python3`, `limactl` are on PATH; the VM is Running; CPU/memory meet the minimum.
-2. **MetalLB + nginx-ingress** — MetalLB pool `192.168.64.50-60` (used for Valkey per-pod LBs), and installs nginx-ingress with **`hostNetwork=true`** so its pod binds directly to the RD node's :80 (Pattern D).
-3. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min).
-4. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
-5. **App chart** — installs `debug-demo-app` with ClusterIP Service + Ingress (no direct LoadBalancer).
-6. **HAProxy F5 stand-in** — provisions a second Lima VM (`debug-demo-haproxy`) with HAProxy on Lima's `shared` subnet (192.168.105.x). The VM plays the F5 role: it fronts the RD node's :80. First boot pulls a small Alpine cloudinit image (~2-3 min).
-7. **Post-install validation** — in-cluster actuator/health, Valkey cluster state, `hostNetwork=true` on ingress-nginx pod, HAProxy VM → app end-to-end reachability.
-8. **Host-side setup** (sudo) — static routes for the Valkey IPs, `/etc/hosts` entry `<HAProxy VM IP> debug-demo.local`, and `sysctl net.inet.ip.forwarding=1` (so the HAProxy VM can route to the RD VM via the Mac). Idempotent.
-9. **End-to-end smoke test** — runs `scripts/smoke-test.sh` (in-cluster + external + explicit MOVED tests for GET/SET, XADD, SPUBLISH).
+2. **Image preload** — `scripts/preload-images.sh` pulls every registry image the stack needs (MetalLB, ingress-nginx, Oracle, MQ, Valkey, Artifactory, Postgres, plus the app's builder/runtime base images) into RD's moby up-front. Exists so **corporate-MITM TLS failures** surface here as one clear error naming the image and registry, instead of as an `ImagePullBackOff` twenty minutes in. Idempotent (skips cached images); fails fast on the first bad pull.
+3. **MetalLB + nginx-ingress** — MetalLB pool `192.168.64.50-60` (used for Valkey per-pod LBs), and installs nginx-ingress with **`hostNetwork=true`** so its pod binds directly to the RD node's :80 (Pattern D).
+4. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min).
+5. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
+6. **App chart** — installs `debug-demo-app` with ClusterIP Service + Ingress (no direct LoadBalancer).
+7. **HAProxy F5 stand-in** — provisions a second Lima VM (`debug-demo-haproxy`) with HAProxy on Lima's `shared` subnet (192.168.105.x). The VM plays the F5 role: it fronts the RD node's :80. First boot pulls a small Alpine cloudinit image (~2-3 min).
+8. **Post-install validation** — in-cluster actuator/health, Valkey cluster state, `hostNetwork=true` on ingress-nginx pod, HAProxy VM → app end-to-end reachability.
+9. **Host-side setup** (sudo) — static routes for the Valkey IPs, `/etc/hosts` entry `<HAProxy VM IP> debug-demo.local`, and `sysctl net.inet.ip.forwarding=1` (so the HAProxy VM can route to the RD VM via the Mac). Idempotent.
+10. **End-to-end smoke test** — runs `scripts/smoke-test.sh` (in-cluster + external + explicit MOVED tests for GET/SET, XADD, SPUBLISH).
 
 Faster variants (use during iteration, not on a clean install):
 ```sh
-scripts/install-stack.sh --skip-artifactory   # skip ~3-5 min Artifactory bootstrap
-scripts/install-stack.sh --skip-build         # reuse an existing debug-demo-app:dev image
-scripts/install-stack.sh --skip-haproxy-vm    # skip the F5 stand-in; hit RD node IP directly
-scripts/install-stack.sh --skip-host-setup    # don't touch routes / /etc/hosts (no sudo)
-scripts/install-stack.sh --skip-smoke         # don't run the final smoke-test
-scripts/install-stack.sh --check              # just print what's installed; install nothing
+scripts/install-stack.sh --skip-artifactory     # skip ~3-5 min Artifactory bootstrap
+scripts/install-stack.sh --skip-build           # reuse an existing debug-demo-app:dev image
+scripts/install-stack.sh --skip-image-preload   # skip up-front pulls (clean networks; lazy pulls instead)
+scripts/install-stack.sh --image-manifest-only  # print the image list Phase 2 would pull, then exit
+scripts/install-stack.sh --skip-haproxy-vm      # skip the F5 stand-in; hit RD node IP directly
+scripts/install-stack.sh --skip-host-setup      # don't touch routes / /etc/hosts (no sudo)
+scripts/install-stack.sh --skip-smoke           # don't run the final smoke-test
+scripts/install-stack.sh --check                # just print what's installed; install nothing
 ```
+
+The image list lives in one place — the `IMAGES` array at the top of
+`scripts/preload-images.sh`, grouped by the phase that consumes each
+image. When you bump a version in `install-stack.sh` or a chart's
+`values.yaml`, update the matching line there. `--image-manifest-only`
+prints the list for security review or air-gap mirror prep.
 
 Expected tail of the output:
 ```
@@ -211,7 +220,7 @@ Expected tail of the output:
 
 ### 5. Legacy: manual host-side setup (only if you passed `--skip-host-setup`)
 
-install-stack.sh Phase 8 handles this automatically. If you deferred
+install-stack.sh Phase 9 handles this automatically. If you deferred
 it with `--skip-host-setup`, run these by hand.
 
 #### 5a. Required — install Mac-side static routes (so Valkey IPs reach the cluster)
