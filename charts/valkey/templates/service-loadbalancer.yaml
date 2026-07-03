@@ -12,12 +12,13 @@
   primary-1 pod. Per-shard addressability comes from the PORT; the address is a
   hostname → VIP (no MetalLB, no per-pod IPs, no allow-shared-ip).
 
-  Only the CLIENT port is exposed. The cluster bus (gossip) stays fully
-  in-cluster: pods announce their pod IP + container bus port and reach each
-  other's bus directly on the CNI network — so no bus port is published here,
-  and there is no gossip hairpin through the VIP.
+  Both the CLIENT and BUS ports are exposed. The cluster bus (gossip) and
+  intra-cluster client connections dial announceIP:port = VIP:port; klipper
+  forwards VIP:6380 → pod:6379 (client) and VIP:16380 → pod:16379 (bus). Pods
+  reach the VIP directly on k3s (shared L2), so this needs no shim.
 */}}
 {{- $cbase := int .Values.loadBalancer.basePorts.client }}
+{{- $bbase := int .Values.loadBalancer.basePorts.bus }}
 {{- $n := int .Values.replicaCount }}
 {{- range $i := until $n }}
 ---
@@ -31,6 +32,7 @@ spec:
   type: LoadBalancer
   ports:
     - {name: client, port: {{ add $cbase $i }}, targetPort: client}
+    - {name: bus,    port: {{ add $bbase $i }}, targetPort: bus}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-primary-{{ $i }}
 {{- end }}
@@ -47,6 +49,7 @@ spec:
   type: LoadBalancer
   ports:
     - {name: client, port: {{ add $cbase $idx }}, targetPort: client}
+    - {name: bus,    port: {{ add $bbase $idx }}, targetPort: bus}
   selector:
     statefulset.kubernetes.io/pod-name: valkey-secondary-{{ $i }}
 {{- end }}

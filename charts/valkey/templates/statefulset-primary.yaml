@@ -27,23 +27,24 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              # TWO planes, deliberately split:
-              #  - GOSSIP (node↔node): announce the POD IP + container bus port.
-              #    Pods reach each other's bus directly on the CNI network — no
-              #    VIP, no hairpin. Re-announced from $POD_IP on every (re)start.
-              #  - CLIENT (what MOVED/CLUSTER SHARDS hand out): announce the
-              #    per-pod external PORT; the HOSTNAME + preferred-endpoint-type
-              #    come from valkey.conf (same for all pods). Clients resolve the
-              #    hostname → VIP and dial that port; klipper routes to this pod.
-              ANNOUNCE_IP="$POD_IP"
-              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
+              # Announce the SHARED VIP + this pod's UNIQUE ports. Everything —
+              # clients, the cluster bus, and intra-cluster connections (a
+              # replica syncing from its master) — dials announceIP:port, and
+              # klipper remaps VIP:6380 → pod:6379 (client) / VIP:16380 →
+              # pod:16379 (bus). The hostname (for MOVED/CLUSTER SHARDS) comes
+              # from valkey.conf. announcing the pod IP instead would break
+              # replication, since the pod listens on 6379 not the announced port.
               {{- if .Values.loadBalancer.enabled }}
               IDX=$((ORDINAL + ORDINAL_OFFSET))
-              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))    # external client port via VIP
+              ANNOUNCE_IP="$ANNOUNCE_VIP"
+              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
+              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
               {{- else }}
+              ANNOUNCE_IP="$POD_IP"
               ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- end }}
-              echo "valkey-primary-${ORDINAL}: gossip ${ANNOUNCE_IP}:${ANNOUNCE_BUS_PORT}, client port ${ANNOUNCE_PORT}"
+              echo "valkey-primary-${ORDINAL}: announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
               exec valkey-server /etc/valkey/valkey.conf \
                 --cluster-announce-ip "$ANNOUNCE_IP" \
                 --cluster-announce-port "$ANNOUNCE_PORT" \
@@ -54,8 +55,12 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
             {{- if .Values.loadBalancer.enabled }}
+            - name: ANNOUNCE_VIP
+              value: {{ .Values.loadBalancer.announceIP | quote }}
             - name: BASE_CLIENT_PORT
               value: {{ .Values.loadBalancer.basePorts.client | quote }}
+            - name: BASE_BUS_PORT
+              value: {{ .Values.loadBalancer.basePorts.bus | quote }}
             - name: ORDINAL_OFFSET
               value: "0"      # primaries occupy idx 0..replicaCount-1
             {{- end }}

@@ -127,9 +127,26 @@ diagnostic constraint.
   Mac `/etc/resolver`, CoreDNS stub zone. `scripts/k3s-net.sh`.
 - [x] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
   namespaces, storage (local-path). Verify VIP failover + hostname resolution.
-- [ ] **P3 — charts**: strip MetalLB/shim from `charts/valkey`; hostname
-  announce; Oracle/MQ/Artifactory unchanged but `imagePullPolicy: Never`;
-  app ingress host = `debug-demo.local`.
+- [~] **P3 — charts**: DONE — MetalLB/shim stripped, Oracle/MQ/app install
+  offline, app Ingress on debug-demo.local, Valkey announces the VIP + hostname.
+  VALIDATED LIVE: 3 masters form, `CLUSTER SHARDS` returns
+  `valkey.debug-demo.local` (hostnames, not IPs), and a client on the Mac
+  hitting the VIP gets hostname-based metadata. OPEN ITEM below.
+  - **Open: replica join over the klipper VIP bus.** With `announce-ip = VIP`
+    and port separation, the cluster bus flows pod → VIP → klipper svclb → pod.
+    Master↔master gossip converges fine, but 2 of 3 replica joins hang in the
+    bidirectional bus handshake through klipper's proxy (svclb SNATs the source,
+    which seems to stall the persistent bus link). The network path itself is
+    reachable (pods can `nc` every VIP bus port).
+  - **The clean fix (next):** make each pod LISTEN on its unique port
+    (`--port 6379+idx --cluster-port 16379+idx`) and announce `pod-ip` +
+    that unique port. Then GOSSIP is direct pod-to-pod on the CNI network (no
+    VIP, no klipper in the bus path), while CLIENTS still get
+    `valkey.debug-demo.local:port` → VIP → klipper → pod (the Service targetPort
+    becomes the pod's unique port). This removes the VIP entirely from the
+    cluster bus and keeps the hostname client model. Touches: configmap (drop
+    fixed `port`), both entrypoints (`--port`/`--cluster-port` + announce
+    pod-ip), Service `targetPort`, and the readiness probe port.
 - [ ] **P4 — installer**: `scripts/k3s-install.sh` orchestrates P0-P3 +
   smoke; `scripts/k3s-uninstall.sh` (delete VMs, resolver, kubeconfig).
 - [ ] **P5 — tests**: convert smoke / cluster-tests / api-tour / chaos /

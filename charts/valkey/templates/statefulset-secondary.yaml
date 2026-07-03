@@ -27,19 +27,20 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              # See statefulset-primary.yaml for the two-plane rationale. Gossip
-              # uses the pod IP + container bus port; the client endpoint is the
-              # per-pod external port + the hostname/preferred-endpoint from
-              # valkey.conf. Secondaries occupy idx replicaCount..2*replicaCount-1.
-              ANNOUNCE_IP="$POD_IP"
-              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
+              # See statefulset-primary.yaml. Announce the shared VIP + this
+              # pod's unique ports; klipper remaps to the pod. Secondaries occupy
+              # idx replicaCount..2*replicaCount-1.
               {{- if .Values.loadBalancer.enabled }}
               IDX=$((ORDINAL + ORDINAL_OFFSET))
+              ANNOUNCE_IP="$ANNOUNCE_VIP"
               ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
+              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
               {{- else }}
+              ANNOUNCE_IP="$POD_IP"
               ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- end }}
-              echo "valkey-secondary-${ORDINAL}: gossip ${ANNOUNCE_IP}:${ANNOUNCE_BUS_PORT}, client port ${ANNOUNCE_PORT}"
+              echo "valkey-secondary-${ORDINAL}: announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
               exec valkey-server /etc/valkey/valkey.conf \
                 --cluster-announce-ip "$ANNOUNCE_IP" \
                 --cluster-announce-port "$ANNOUNCE_PORT" \
@@ -50,8 +51,12 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
             {{- if .Values.loadBalancer.enabled }}
+            - name: ANNOUNCE_VIP
+              value: {{ .Values.loadBalancer.announceIP | quote }}
             - name: BASE_CLIENT_PORT
               value: {{ .Values.loadBalancer.basePorts.client | quote }}
+            - name: BASE_BUS_PORT
+              value: {{ .Values.loadBalancer.basePorts.bus | quote }}
             - name: ORDINAL_OFFSET
               value: {{ .Values.replicaCount | quote }}   # secondaries follow the primaries
             {{- end }}

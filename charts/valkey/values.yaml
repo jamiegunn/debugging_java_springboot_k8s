@@ -50,11 +50,26 @@ storage:
 # Rancher-Desktop setup needed is simply gone.
 loadBalancer:
   enabled: true
-  # The hostname pods advertise as their client endpoint. Must resolve to the
-  # keepalived VIP from BOTH the Mac (/etc/resolver) and pods (CoreDNS stub).
+  # Each pod announces the SHARED VIP (an IP, required for the cluster bus)
+  # plus a UNIQUE port. announceIP is the keepalived VIP — set by k3s-charts.sh
+  # to K3S_VIP. It must be an IP; the client-facing HOSTNAME is announced
+  # separately (announceHostname + cluster-preferred-endpoint-type hostname in
+  # the configmap), so CLUSTER SHARDS/MOVED return the name while the cluster
+  # bus and intra-cluster connections use VIP:port.
+  #
+  # Why the VIP (not the pod IP) is the announce IP: intra-cluster connections
+  # (a replica syncing from its master, MIGRATE, etc.) dial announceIP:
+  # announcePort. With port separation the pod listens on ports.client (6379)
+  # but announces 6380 — so the address MUST remap the port, which klipper does
+  # (VIP:6380 → pod:6379). Announcing the pod IP would send those to
+  # pod-ip:6380 where nothing listens, and replicas could never join. On k3s
+  # the VIP is directly reachable from pods (shared L2), so gossip flows through
+  # it with no shim — the thing Rancher Desktop needed is simply gone.
+  announceIP: ""                 # set to the VIP by k3s-charts.sh
   announceHostname: "valkey.debug-demo.local"
   basePorts:
     client: 6379           # primary-0 → 6379, primary-1 → 6380, ... secondary-2 → 6384
+    bus: 16379             # bus = client + 10000, same +idx offsets
 
 config:
   # Extra raw lines appended to valkey.conf. Useful for tuning maxmemory etc.

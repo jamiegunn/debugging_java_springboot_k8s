@@ -44,6 +44,7 @@ install_valkey() {
     # Bootstrap Job welds the cluster; give it headroom on a cold cluster.
     helm_kc upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
         --set image.pullPolicy=IfNotPresent \
+        --set loadBalancer.announceIP="$K3S_VIP" \
         --set loadBalancer.announceHostname="$VALKEY_HOST" \
         --timeout 15m >/dev/null 2>&1
 }
