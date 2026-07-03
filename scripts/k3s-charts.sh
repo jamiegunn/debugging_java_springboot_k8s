@@ -57,7 +57,6 @@ install_app() {
         --set replicaCount=1 \
         --set resources.requests.cpu=50m \
         --set resources.requests.memory=512Mi \
-        --set externalService.enabled=false \
         --set ingress.enabled=true \
         --set ingress.className=nginx \
         --set "ingress.hosts[0].host=${APP_HOST}" \
@@ -98,7 +97,7 @@ cmd_up() {
     wait_ready debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 300
 
     echo
-    info "charts installed. Validate: scripts/k3s-charts.sh status  then  scripts/smoke-test.sh"
+    info "charts installed. Validate: scripts/k3s-charts.sh status  then  scripts/k3s-smoke.sh"
 }
 
 cmd_down() {

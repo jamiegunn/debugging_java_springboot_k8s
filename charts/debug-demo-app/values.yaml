@@ -11,14 +11,8 @@ service:
   type: ClusterIP
   port: 8080
 
-# Second Service of type LoadBalancer for external clients (Postman, etc.).
-# Keeps the in-cluster ClusterIP Service above untouched. Pinned IP via
-# MetalLB so the external endpoint is stable across redeploys.
-externalService:
-  enabled: true
-  pool: bridge-pool
-  loadBalancerIP: "192.168.64.50"
-  port: 8080
+# External access is via the Ingress (below) → keepalived VIP → ingress-nginx.
+# No per-app LoadBalancer Service is needed on k3s.
 
 resources:
   requests:

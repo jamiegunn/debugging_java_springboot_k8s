@@ -8,7 +8,7 @@
 # Use this when you want a comprehensive snapshot: topology, every op type
 # the chart wires up, MOVED redirect behavior, latency, slow queries, big
 # keys, memory. Output is informational — no pass/fail. For pass/fail
-# checks, see scripts/smoke-test.sh.
+# checks, see scripts/k3s-smoke.sh.
 #
 # Prereqs:
 #   - a healthy k3s stack (scripts/k3s-doctor.sh) — valkey-cli runs in-cluster,

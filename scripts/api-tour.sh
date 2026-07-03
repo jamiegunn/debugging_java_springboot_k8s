@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # api-tour.sh — a narrated, runnable tour of the debug-demo API from the
-# outside (your Mac), through the full Pattern D path: HAProxy F5 stand-in →
-# hostNetwork ingress-nginx → app. Every step PRINTS the exact command before
-# running it, so the tour doubles as a copy-paste cookbook.
+# outside (your Mac), through the k3s path: keepalived VIP → ingress-nginx →
+# app, all by hostname (debug-demo.local via curl --resolve). Every step PRINTS
+# the exact command before running it, so the tour doubles as a copy-paste
+# cookbook.
 #
 # Stops (pass one as an arg to jump straight there):
 #   health      actuator health + per-subsystem detail
@@ -179,7 +180,7 @@ fi
 
 echo
 bold "Tour done. Next stops:"
-echo "  scripts/smoke-test.sh             full 44-check verification"
+echo "  scripts/k3s-smoke.sh              full 14-check verification"
 echo "  scripts/valkey-cluster-tests.sh   MOVED / ASK / failover semantics"
 echo "  scripts/chaos.sh                  break things on purpose and watch"
 echo "  scripts/valkey-tour.sh            the Valkey cluster from the outside"
