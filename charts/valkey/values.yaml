@@ -27,17 +27,38 @@ storage:
   size: 1Gi
   storageClassName: ""
 
-# External access via MetalLB — one LoadBalancer Service per pod, each pinned
-# to a specific IP. Each pod announces its own external IP via
-# cluster-announce-ip so MOVED redirects from CLUSTER SHARDS / CLUSTER NODES
-# point at externally-reachable endpoints (not pod IPs).
+# External access via MetalLB — one LoadBalancer Service per pod. MOVED
+# redirects from CLUSTER SHARDS / CLUSTER NODES must resolve to externally-
+# reachable per-shard endpoints, so each pod announces its own external
+# address via cluster-announce-{ip,port,bus-port}.
 #
-# This matches the production-shape topology: clients hit a VIP/LB → each
-# Valkey node has its own externally-reachable endpoint → cluster gossip and
-# slot redirects all use those endpoints.
+# Two ways to shape those endpoints:
+#
+#   sharedIP-perPort (default) — ONE LoadBalancer IP shared by all 6
+#     Services (MetalLB `allow-shared-ip`); each node is distinguished by
+#     a unique EXTERNAL port: basePorts.client+idx / basePorts.bus+idx,
+#     where idx = ordinal for primaries and ordinal+replicaCount for
+#     secondaries. Matches enterprise "one VIP per app" allocation — the
+#     same shape as an F5 VIP with port-based pool members. Pods still
+#     listen on ports.client/ports.bus internally; only the Service port
+#     and the announce values differ per pod.
+#     NOTE: this mode uses externalTrafficPolicy: Cluster. MetalLB only
+#     lets Local-policy Services share an IP when their pod selectors are
+#     identical, and ours select one pod each — Local + shared IP is
+#     rejected by the controller.
+#
+#   perPodIP (legacy) — one pinned LoadBalancer IP per pod, every node on
+#     the same port. Needs 6 IPs from the pool + 6 host routes in dev.
 loadBalancer:
   enabled: true
   pool: bridge-pool        # MetalLB IPAddressPool name (annotation)
+  mode: sharedIP-perPort   # sharedIP-perPort | perPodIP
+  # --- sharedIP-perPort mode ---
+  sharedIP: "192.168.64.51"
+  basePorts:
+    client: 6379           # primary-0 ext 6379, primary-1 6380, ... secondary-2 6384
+    bus: 16379             # same +idx offsets as client
+  # --- perPodIP mode (legacy) ---
   # IPs are assigned by ordinal: primaryIPs[0] -> valkey-primary-0, etc.
   # Lists must be exactly `replicaCount` long.
   primaryIPs:

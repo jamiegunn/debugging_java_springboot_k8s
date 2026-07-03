@@ -40,8 +40,13 @@ fi
 APP_HOST="${APP_HOST:-$APP_HOST_DEFAULT}"
 APP_VIA="${APP_VIA:-$APP_VIA_DEFAULT}"
 APP_INGRESS_HOST="${APP_INGRESS_HOST:-debug-demo.local}"
-SEED_IP="${SEED_IP:-192.168.64.51}"
-SEED_PORT="${SEED_PORT:-6379}"
+# Valkey seed: discover primary-0's external endpoint from its Service so this
+# works in both endpoint modes (sharedIP-perPort: one IP, ports 6379-6384;
+# legacy perPodIP: six IPs, one port). SEED_IP/SEED_PORT env vars override.
+SEED_IP_DEFAULT="$(kubectl -n valkey get svc valkey-primary-0-ext -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+SEED_PORT_DEFAULT="$(kubectl -n valkey get svc valkey-primary-0-ext -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null || true)"
+SEED_IP="${SEED_IP:-${SEED_IP_DEFAULT:-192.168.64.51}}"
+SEED_PORT="${SEED_PORT:-${SEED_PORT_DEFAULT:-6379}}"
 
 VALKEY_CLI="$(command -v valkey-cli || command -v redis-cli || true)"
 PASS="$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)"

@@ -10,12 +10,13 @@ data:
     port {{ .Values.ports.client }}
     protected-mode no
 
-    # Cluster mode
+    # Cluster mode. cluster-announce-{ip,port,bus-port} are NOT set here —
+    # they're per-pod (sharedIP-perPort mode announces a different port per
+    # ordinal), so the StatefulSet entrypoint computes them and passes them
+    # as valkey-server CLI flags.
     cluster-enabled yes
     cluster-config-file /data/nodes.conf
     cluster-node-timeout 5000
-    cluster-announce-port {{ .Values.ports.client }}
-    cluster-announce-bus-port {{ .Values.ports.bus }}
 
     # Persistence — AOF is mandatory for cluster mode if you want durability
     appendonly yes

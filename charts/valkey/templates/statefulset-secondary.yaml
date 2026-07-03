@@ -27,20 +27,42 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              {{- if .Values.loadBalancer.enabled }}
+              {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
+              # Shared external IP; per-shard addressability comes from the
+              # port. Secondaries occupy idx replicaCount..2*replicaCount-1.
+              IDX=$((ORDINAL + ORDINAL_OFFSET))
+              ANNOUNCE_IP="$SHARED_IP"
+              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
+              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
+              {{- else if .Values.loadBalancer.enabled }}
               ANNOUNCE_IP=$(echo "$ANNOUNCE_IPS" | cut -d',' -f$((ORDINAL+1)))
+              ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- else }}
               ANNOUNCE_IP="$POD_IP"
+              ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- end }}
-              echo "valkey-secondary-${ORDINAL}: cluster-announce-ip=${ANNOUNCE_IP}"
+              echo "valkey-secondary-${ORDINAL}: cluster-announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
               exec valkey-server /etc/valkey/valkey.conf \
-                --cluster-announce-ip "$ANNOUNCE_IP"
+                --cluster-announce-ip "$ANNOUNCE_IP" \
+                --cluster-announce-port "$ANNOUNCE_PORT" \
+                --cluster-announce-bus-port "$ANNOUNCE_BUS_PORT"
           env:
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- if .Values.loadBalancer.enabled }}
+            {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
+            - name: SHARED_IP
+              value: {{ .Values.loadBalancer.sharedIP | quote }}
+            - name: BASE_CLIENT_PORT
+              value: {{ .Values.loadBalancer.basePorts.client | quote }}
+            - name: BASE_BUS_PORT
+              value: {{ .Values.loadBalancer.basePorts.bus | quote }}
+            - name: ORDINAL_OFFSET
+              value: {{ .Values.replicaCount | quote }}   # secondaries follow the primaries
+            {{- else if .Values.loadBalancer.enabled }}
             - name: ANNOUNCE_IPS
               value: {{ join "," .Values.loadBalancer.secondaryIPs | quote }}
             {{- end }}

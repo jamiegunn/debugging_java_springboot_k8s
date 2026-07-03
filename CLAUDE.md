@@ -54,7 +54,7 @@ metrics (Micrometer/Prometheus).
    │ (gvenzl)    │      │ (amd64,     │  │  primary-{0,1,2}         │
    │ + Postgres- │      │  Rosetta)   │  │  secondary-{0,1,2}       │
    │   style PVC │      │             │  │ LoadBalancer via MetalLB │
-   │   seeding   │      │             │  │  pool 192.168.5.200-220  │
+   │   seeding   │      │             │  │  one shared IP :6379-84  │
    └─────────────┘      └─────────────┘  └──────────────────────────┘
 
   artifactory namespace                  metallb-system namespace
@@ -81,11 +81,16 @@ fulfillment models:
   binds directly to port 80 on the k8s node. An external L4 LB
   (F5 in production; an HAProxy-on-Lima-VM stand-in here) fronts
   the node IPs. No MetalLB in this path.
-- **Valkey → Layer 4 (MetalLB direct, per-pod LBs)**. Each Valkey
-  pod has its own `LoadBalancer` Service with a pinned IP from
-  MetalLB. No proxy in the middle — the Valkey wire protocol is
-  TCP and stateful (MOVED redirects must resolve to externally-
-  reachable per-shard endpoints).
+- **Valkey → Layer 4 (MetalLB direct, per-pod Services)**. Each
+  Valkey pod has its own `LoadBalancer` Service. By default all six
+  Services SHARE one MetalLB IP (`allow-shared-ip`) and are split by
+  port — client 6379-6384, bus 16379-16384 — the same shape as an F5
+  VIP with port-based pool members. No proxy in the middle — the
+  Valkey wire protocol is TCP and stateful (MOVED redirects must
+  resolve to externally-reachable per-shard endpoints; here the
+  endpoint is distinguished by port, not IP). Legacy `perPodIP` mode
+  (six pinned IPs, one port) is kept behind
+  `--set loadBalancer.mode=perPodIP`.
 
 ```
                               External clients
@@ -96,10 +101,10 @@ fulfillment models:
             ┌───────────────────────┼─────────────────────────────────┐
             │ HTTP (L7)             │ TCP (L4)                        │
             ▼                       ▼                                 │
-   HAProxy VM :80              MetalLB pool 192.168.64.51-56          │
-   backend → RD VM :80         valkey-primary-{0,1,2}-ext             │
-            │                  valkey-secondary-{0,1,2}-ext           │
-            │                  (per-pod LoadBalancer Services)        │
+   HAProxy VM :80              MetalLB shared IP 192.168.64.51        │
+   backend → RD VM :80         valkey-primary-{0,1,2}-ext   :6379-81  │
+            │                  valkey-secondary-{0,1,2}-ext :6382-84  │
+            │                  (per-pod Services, allow-shared-ip)    │
             ▼                       │                                 │
    RD VM 192.168.64.2 :80           │                                 │
    ingress-nginx-controller         │ TCP, no proxy                   │
@@ -109,8 +114,8 @@ fulfillment models:
             │ Ingress rules    valkey-secondary-0 ... -2              │
             │ host: debug-demo.local                                  │
             ▼                       │                                 │
-   app-debug-demo-app               │ cluster-announce-ip =           │
-   (ClusterIP, port 8080)           │ its own LB IP                   │
+   app-debug-demo-app               │ cluster-announce =              │
+   (ClusterIP, port 8080)           │ shared IP + its own ext port    │
                                     │ (so MOVED redirects point ext.) │
             ────────────────────────┴─────────────────────────────────┘
 ```
@@ -133,20 +138,34 @@ the node's port 80 directly with no Service in front of it.
   nginx-ingress for any other (Traefik, Contour, Envoy) is a
   controller swap, not an app-config change.
 
-### Why per-pod LB (no proxy) for Valkey
+### Why per-pod Services (no proxy) for Valkey
 
 - Valkey cluster mode sends `MOVED <slot> <ip>:<port>` redirects.
-  External clients must be able to dial those addresses directly.
-  A single shared LB IP would round-robin across nodes and break
-  `MULTI`/`EXEC`, `WAIT`, sharded `SSUBSCRIBE`/`SPUBLISH`.
-- Each pod announces its own external IP via `cluster-announce-ip`
-  (derived from pod ordinal at startup — see
-  `statefulset-primary.yaml` entrypoint). `CLUSTER NODES` /
-  `CLUSTER SHARDS` therefore return externally-resolvable
-  endpoints.
-- We modeled this earlier when discussing "MetalLB instead of nginx"
-  for Valkey — that decision still holds. Nginx-ingress is **only**
-  for HTTP traffic.
+  External clients must be able to dial those addresses directly, and
+  each address must land on exactly ONE node. A single ip:port that
+  round-robins across nodes would break `MULTI`/`EXEC`, `WAIT`,
+  sharded `SSUBSCRIBE`/`SPUBLISH`. What's non-negotiable is per-shard
+  ADDRESSABILITY — six distinct Services — not six distinct IPs.
+- Default mode (`sharedIP-perPort`): all six Services pin the same
+  MetalLB IP via `metallb.universe.tf/allow-shared-ip`; each exposes
+  a unique external port pair (client 6379-6384, bus 16379-16384).
+  Each pod announces the shared IP plus its own ports via
+  `cluster-announce-{ip,port,bus-port}` (derived from pod ordinal at
+  startup — see `statefulset-primary.yaml` entrypoint; secondaries
+  offset by replicaCount). `CLUSTER NODES` / `CLUSTER SHARDS`
+  therefore return externally-resolvable endpoints where the PORT
+  identifies the shard. Matches enterprise "one VIP per app, pool
+  members by port" F5 allocations.
+- Shared-IP constraint: `externalTrafficPolicy` must be `Cluster` —
+  MetalLB only lets Local-policy Services share an IP when their pod
+  selectors are identical, and ours select one pod each. Cluster
+  policy loses source-IP preservation, which Valkey doesn't need.
+- Legacy mode (`perPodIP`): one pinned IP per pod (.51-.56), one
+  port. Same MOVED semantics, distinguished by IP instead of port.
+- Bus ports are exposed externally too: peers gossip using announced
+  addresses, so shared-IP:bus-port must route to the right pod.
+- Nginx-ingress is **only** for HTTP traffic; no L7 proxy can sit in
+  the Valkey path.
 
 ### Why MetalLB hands out the IPs (and what replaces it elsewhere)
 
@@ -323,12 +342,14 @@ between F5 and node subnets." The k8s side is identical.
 ### Why the dev `sudo route` hop exists (still needed for Valkey)
 
 Rancher Desktop's vz-NAT mode only ARP-responds for the VM's own
-IP (`192.168.64.2`). MetalLB advertises the per-pod Valkey IPs
-(192.168.64.51-56) in the bridge subnet via gratuitous ARP, but
-those ARP responses don't pass through the NAT to the host. The
-static routes tell macOS to use the RD VM as next-hop for each
-MetalLB IP; the VM's kube-proxy iptables then DNATs to the right
-pod.
+IP (`192.168.64.2`). MetalLB advertises the Valkey LB IP(s) —
+one shared IP (192.168.64.51) in the default mode, six
+(192.168.64.51-56) in perPodIP mode — in the bridge subnet via
+gratuitous ARP, but those ARP responses don't pass through the NAT
+to the host. The static routes tell macOS to use the RD VM as
+next-hop for each MetalLB IP; the VM's kube-proxy iptables then
+DNATs to the right pod (in shared mode the destination PORT selects
+the pod).
 
 **This hop is no longer needed for HTTP** — the HAProxy VM is on
 its own Lima-managed subnet (`192.168.105.x`) that the Mac talks
@@ -338,7 +359,7 @@ install-stack.sh). So:
 
 - HTTP (`http://debug-demo.local`) → goes through HAProxy VM, no
   host-route needed
-- Valkey (`192.168.64.51-56:6379`) → still goes through host-routes
+- Valkey (`192.168.64.51:6379-6384` default; `.51-.56:6379` in perPodIP mode) → still goes through host-routes
 
 In production neither hop exists — F5 sits on the corporate LAN,
 clients dial its VIP directly. The "VM next-hop" trick is only
@@ -446,7 +467,7 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/debug-demo-app/` | The app, with HPA (1→10 @ 20% CPU), Valkey/Oracle/MQ wiring. **ClusterIP Service + Ingress** — external traffic arrives via nginx-ingress in hostNetwork mode (Pattern D). |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
-| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-service-per-pod LoadBalancer** with `cluster-announce-ip` from pod ordinal. |
+| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-service-per-pod LoadBalancer**; default = ONE shared LB IP split by port (client 6379-6384, `allow-shared-ip`), each pod announcing shared-IP:its-port via `cluster-announce-{ip,port,bus-port}` from pod ordinal; legacy `perPodIP` mode = six pinned IPs. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
 | `scripts/` | `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `local-ci.sh`, `host-routes.sh` (dev VIP stand-in), `test-external-access.sh` |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
@@ -877,7 +898,10 @@ routable from this Mac), and `valkey-cli` is on PATH
 
 ```sh
 PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
-SEED=192.168.64.51        # any of .51 .52 .53 (primaries) — secondaries .54-.56 also work for reads
+SEED=192.168.64.51        # shared LB IP (default sharedIP-perPort mode)
+# Client ports by node: primary-0/1/2 = 6379/6380/6381, secondary-0/1/2 = 6382/6383/6384.
+# Primaries take writes; secondaries also work for reads. (In legacy perPodIP
+# mode the ports are all 6379 and the IPs are .51-.56 instead.)
 ```
 
 The cluster-aware `-c` flag makes `valkey-cli` follow MOVED redirects;
@@ -907,10 +931,10 @@ valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes            # id, role, addr, 
 valkey-cli -h $SEED -p 6379 -a $PASS cluster shards           # slot ranges → primary id
 valkey-cli -h $SEED -p 6379 -a $PASS cluster slots            # legacy form
 
-# Per-node role / uptime sweep
-for ip in 192.168.64.51 192.168.64.52 192.168.64.53 192.168.64.54 192.168.64.55 192.168.64.56; do
-  echo "=== $ip ==="
-  valkey-cli -h $ip -p 6379 -a $PASS info replication | grep -E '^role|^connected_slaves|^master_host'
+# Per-node role / uptime sweep — one IP, six ports (default mode)
+for port in 6379 6380 6381 6382 6383 6384; do
+  echo "=== $SEED:$port ==="
+  valkey-cli -h $SEED -p $port -a $PASS info replication | grep -E '^role|^connected_slaves|^master_host'
 done
 ```
 
@@ -924,14 +948,15 @@ echo "key=$KEY -> slot=$SLOT"
 valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes | awk -v s=$SLOT '
   /master/ { for(i=9;i<=NF;i++) if(match($i,/([0-9]+)-([0-9]+)/,m) && s>=m[1] && s<=m[2]) print $2 }'
 
-# Now SET that key WITHOUT -c, hitting a node that doesn't own it.
-# You should get back: (error) MOVED <slot> <ip>:<port>
-WRONG_NODE=192.168.64.53        # change if .53 happens to own this slot
-valkey-cli -h $WRONG_NODE -p 6379 -a $PASS set $KEY bar
+# Now SET that key WITHOUT -c, hitting a node that doesn't own it. In the
+# default shared-IP mode "the wrong node" means the wrong PORT.
+# You should get back: (error) MOVED <slot> <ip>:<owner-port>
+WRONG_PORT=6381                 # primary-2; change if it happens to own this slot
+valkey-cli -h $SEED -p $WRONG_PORT -a $PASS set $KEY bar
 
 # With -c, the cli follows the redirect transparently.
-valkey-cli -c -h $WRONG_NODE -p 6379 -a $PASS set $KEY bar    # → OK
-valkey-cli -c -h $WRONG_NODE -p 6379 -a $PASS get $KEY        # → "bar"
+valkey-cli -c -h $SEED -p $WRONG_PORT -a $PASS set $KEY bar    # → OK
+valkey-cli -c -h $SEED -p $WRONG_PORT -a $PASS get $KEY        # → "bar"
 ```
 
 ### Exercise each op type directly
@@ -975,7 +1000,7 @@ Classic pub/sub: messages broadcast across all nodes via cluster bus,
 so any seed works as the subscribe endpoint.
 
 ```sh
-# Terminal 1 — subscribe
+# Terminal 1 — subscribe (any node; classic pub/sub broadcasts on the cluster bus)
 valkey-cli -h 192.168.64.51 -p 6379 -a $PASS subscribe orders:notifications
 # leave running
 
@@ -984,7 +1009,7 @@ curl -X POST http://debug-demo.local/api/orders \
   -H 'Content-Type: application/json' \
   -d '{"customerId":1,"amount":1.00}'
 # OR direct:
-valkey-cli -h 192.168.64.52 -p 6379 -a $PASS publish orders:notifications "hello from outside"
+valkey-cli -h 192.168.64.51 -p 6380 -a $PASS publish orders:notifications "hello from outside"
 ```
 
 Sharded pub/sub: messages stay on the shard owning the channel name's
@@ -1006,10 +1031,10 @@ curl -X POST 'http://debug-demo.local/api/valkey/pubsub/spublish?msg=hello-shard
 ### Memory + performance probes
 
 ```sh
-# Memory snapshot per node
-for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
-  echo "=== $ip ==="
-  valkey-cli -h $ip -p 6379 -a $PASS info memory | grep -E '^(used_memory_human|used_memory_peak_human|used_memory_rss_human|mem_fragmentation_ratio|maxmemory_human|maxmemory_policy|evicted_keys)'
+# Memory snapshot per primary — one IP, per-node ports (default mode)
+for port in 6379 6380 6381; do
+  echo "=== $SEED:$port ==="
+  valkey-cli -h $SEED -p $port -a $PASS info memory | grep -E '^(used_memory_human|used_memory_peak_human|used_memory_rss_human|mem_fragmentation_ratio|maxmemory_human|maxmemory_policy|evicted_keys)'
 done
 
 # Latency monitor (this seed only) — 5 seconds of pings, distribution at the end
@@ -1046,27 +1071,28 @@ valkey-cli -h $SEED -p 6379 -a $PASS info keyspace
 Promotes a replica to take over its primary's slots.
 
 ```sh
-# Pick a primary
+# Pick a primary. In the default shared-IP mode nodes are addressed by PORT:
+# primary-1 = $SEED:6380, its by-index replica secondary-1 = $SEED:6383.
 PRIMARY=valkey-primary-1
-PRIMARY_IP=192.168.64.52
+PRIMARY_PORT=6380
 SECONDARY=valkey-secondary-1     # the replica that backs it (chart pairing is by-index)
-SECONDARY_IP=192.168.64.55
+SECONDARY_PORT=6383
 
 # Before — confirm topology
-valkey-cli -h $PRIMARY_IP -p 6379 -a $PASS info replication
+valkey-cli -h $SEED -p $PRIMARY_PORT -a $PASS info replication
 
 # Take the primary offline (cleanest way: kubectl delete pod — the StatefulSet recreates it)
 kubectl -n valkey delete pod $PRIMARY
 
 # Within a few seconds the secondary should promote itself.
 # Watch from any other primary:
-watch "valkey-cli -h 192.168.64.51 -p 6379 -a $PASS cluster nodes | grep -E 'master|slave'"
-# You should see $SECONDARY_IP flip from 'slave' to 'master'.
+watch "valkey-cli -h $SEED -p 6379 -a $PASS cluster nodes | grep -E 'master|slave'"
+# You should see the $SEED:$SECONDARY_PORT entry flip from 'slave' to 'master'.
 
 # When the StatefulSet recreates the original primary pod, it comes back as a replica.
 # Verify:
 sleep 30
-valkey-cli -h $PRIMARY_IP -p 6379 -a $PASS info replication | grep -E '^role|^master_host'
+valkey-cli -h $SEED -p $PRIMARY_PORT -a $PASS info replication | grep -E '^role|^master_host'
 ```
 
 ### When something looks wrong

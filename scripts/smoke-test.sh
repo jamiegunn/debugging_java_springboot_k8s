@@ -3,14 +3,17 @@
 # smoke-test.sh — end-to-end verification of the full stack.
 #
 # Runs both in-cluster checks (via `kubectl exec`) AND external-path checks
-# (from the Mac, through the HAProxy VM for L7 and the MetalLB per-pod LB
-# IPs for L4). External tests always run — if the HAProxy VM isn't up or
-# the Valkey routes aren't installed, those tests fail with clear signal.
+# (from the Mac, through the HAProxy VM for L7 and the MetalLB LoadBalancer
+# endpoints for L4). External tests always run — if the HAProxy VM isn't up
+# or the Valkey routes aren't installed, those tests fail with clear signal.
 # There is no opt-out flag; the whole point is to verify the whole path.
 #
 # The Valkey L4 section explicitly exercises MOVED redirect semantics for
 # GET/SET, XADD (streams), and SPUBLISH (sharded pub/sub), because that's
-# the specific behavior our per-pod-LB topology exists to make work.
+# the specific behavior our per-pod-Service topology exists to make work.
+# Endpoints are discovered from the valkey-*-ext Services, so the tests work
+# in both endpoint modes: sharedIP-perPort (one IP, ports 6379-6384) and
+# legacy perPodIP (six IPs, one port).
 #
 # Each check prints [PASS]/[FAIL] with detail. Exit code = number of failures.
 #
@@ -242,11 +245,36 @@ check "Valkey cluster_state = ok with 6 known nodes" \
         echo "$out" | grep -q "cluster_state:ok" && echo "$out" | grep -q "cluster_known_nodes:6"
     '
 
-check "Valkey cluster-announce-ip points at external LB IPs (not pod IPs)" \
+# Discover the external endpoints from the valkey-*-ext LoadBalancer Services.
+# In sharedIP-perPort mode this yields one IP with 6 distinct client ports;
+# in perPodIP mode, 6 IPs with the same port. Everything downstream (announce
+# check here, section 7 MOVED tests) keys off these ip:port pairs, so the
+# tests are endpoint-shape agnostic.
+VK_ALL_EPS=""       # all 6 nodes,     "ip:port ip:port ..."
+VK_PRIMARY_EPS=""   # primaries only,  same format
+for role in primary secondary; do
+    for i in 0 1 2; do
+        ip=$(kubectl -n valkey get svc "valkey-${role}-${i}-ext" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+        port=$(kubectl -n valkey get svc "valkey-${role}-${i}-ext" -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null)
+        [[ -n "$ip" && -n "$port" ]] || continue
+        VK_ALL_EPS="${VK_ALL_EPS:+$VK_ALL_EPS }${ip}:${port}"
+        [[ "$role" == "primary" ]] && VK_PRIMARY_EPS="${VK_PRIMARY_EPS:+$VK_PRIMARY_EPS }${ip}:${port}"
+    done
+done
+export VK_ALL_EPS VK_PRIMARY_EPS
+
+check "Valkey ext Services: 6 LoadBalancer endpoints assigned by MetalLB" \
+    bash -c 'n=$(echo "$VK_ALL_EPS" | wc -w | tr -d " "); [[ "$n" == "6" ]] || { echo "have: $VK_ALL_EPS"; exit 1; }'
+
+check "Valkey cluster-announce address of every node is an external LB endpoint (not a pod IP)" \
     bash -c '
-        ips=$(kubectl -n valkey exec valkey-primary-0 -- valkey-cli -a "'"$VK_PASS"'" cluster nodes 2>/dev/null | grep -v Warning | awk "{print \$2}" | cut -d: -f1)
-        # all 6 IPs should match 192.168.64.5x
-        echo "$ips" | grep -cE "^192\.168\.64\.5[1-6]$" | grep -qx 6
+        addrs=$(kubectl -n valkey exec valkey-primary-0 -- valkey-cli -a "'"$VK_PASS"'" cluster nodes 2>/dev/null | grep -v Warning | awk "{split(\$2,a,\"@\"); print a[1]}")
+        for addr in $addrs; do
+            case " $VK_ALL_EPS " in
+                *" $addr "*) ;;
+                *) echo "node announces $addr — not one of: $VK_ALL_EPS"; exit 1 ;;
+            esac
+        done
     '
 
 # ----------------------------------------------------------------------------
@@ -286,7 +314,7 @@ else
 fi
 export HTTP_ENTRY_IP
 echo "    L7 path: http://debug-demo.local  →  ${HTTP_ENTRY_IP} (${HTTP_ENTRY_VIA})  →  ingress-nginx → app"
-echo "    L4 path: 192.168.64.51-56:6379    →  Valkey per-pod LBs (MetalLB)"
+echo "    L4 path: ${VK_ALL_EPS:-<no valkey LB endpoints assigned>}  →  Valkey per-pod Services (MetalLB)"
 
 # Pattern D check — ingress-nginx pod must be hostNetwork=true
 check "Pattern D — ingress-nginx pod runs with hostNetwork=true" \
@@ -341,12 +369,14 @@ check "Ingress resource bound to nginx ingress class" \
     bash -c 'kubectl -n debug-demo get ingress app-debug-demo-app -o jsonpath="{.spec.ingressClassName}" | grep -q nginx'
 
 # ----------------------------------------------------------------------------
-# Section 7: Valkey MOVED semantics via L4 per-pod LBs
+# Section 7: Valkey MOVED semantics via L4 LoadBalancer endpoints
 # ----------------------------------------------------------------------------
-# This is the whole point of the per-pod LoadBalancer topology + cluster-
-# announce-ip — external clients receive MOVED redirects that point at
-# externally-reachable per-shard IPs. We verify explicitly for each op type
-# that gets MOVED (GET/SET, XADD, SPUBLISH), and confirm classic PUBLISH
+# This is the whole point of the per-pod-Service topology + cluster-announce —
+# external clients receive MOVED redirects that point at externally-reachable
+# per-shard endpoints. In sharedIP-perPort mode the redirect target differs by
+# PORT (same IP); in perPodIP mode it differs by IP (same port). Either way,
+# the ip:port must land on exactly one node. We verify explicitly for each op
+# type that gets MOVED (GET/SET, XADD, SPUBLISH), and confirm classic PUBLISH
 # does NOT (it broadcasts on the cluster bus).
 # ----------------------------------------------------------------------------
 echo
@@ -356,58 +386,66 @@ if ! command -v valkey-cli >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 
     echo "[SKIP] no valkey-cli/redis-cli on PATH (install with: brew install valkey)"
     FAIL_COUNT=$((FAIL_COUNT+1))
     FAIL_LINES+=("valkey-cli/redis-cli not on PATH — cannot run L4 MOVED tests")
+elif [[ -z "$VK_PRIMARY_EPS" ]]; then
+    echo "[SKIP] no valkey LB endpoints assigned — cannot run L4 MOVED tests"
+    FAIL_COUNT=$((FAIL_COUNT+1))
+    FAIL_LINES+=("valkey-*-ext Services have no LoadBalancer IPs — MetalLB not fulfilling them?")
 else
     CLI=$(command -v valkey-cli || command -v redis-cli)
-    export CLI VK_PASS
+    SEED_EP="${VK_PRIMARY_EPS%% *}"
+    SEED_HOST="${SEED_EP%%:*}"
+    SEED_PORT="${SEED_EP##*:}"
+    export CLI VK_PASS SEED_EP SEED_HOST SEED_PORT
 
     # Basic reachability first — if this fails, all downstream tests will fail
     # for the same reason (routes missing / MetalLB IP not reachable) and the
     # signal is more useful up front.
-    check "Valkey PONG via L4 — 192.168.64.51:6379 (MetalLB per-pod LB)" \
-        bash -c '"$CLI" -h 192.168.64.51 -p 6379 -a "$VK_PASS" --no-auth-warning ping 2>&1 | grep -q PONG'
+    check "Valkey PONG via L4 — ${SEED_EP} (MetalLB LB endpoint)" \
+        bash -c '"$CLI" -h "$SEED_HOST" -p "$SEED_PORT" -a "$VK_PASS" --no-auth-warning ping 2>&1 | grep -q PONG'
 
-    # cluster-announce-ip check: every primary must announce a 192.168.64.5x IP
-    # (the external MetalLB LB), not its internal pod IP — otherwise MOVED
-    # redirects would point at unreachable addresses.
-    check "Valkey cluster-announce-ip is the external LB IP (not the pod IP) for every primary" \
+    # Announce check from the OUTSIDE: every primary must announce one of the
+    # external LB endpoints, not its internal pod IP:port — otherwise MOVED
+    # redirects would point at addresses external clients can't dial.
+    check "Every primary announces an external LB endpoint (seen from outside the cluster)" \
         bash -c '
-            ips=$("$CLI" -h 192.168.64.51 -p 6379 -a "$VK_PASS" --no-auth-warning cluster nodes 2>&1 \
-                | awk "/master/ { split(\$2, a, \":\"); print a[1] }")
-            for ip in $ips; do
-                case "$ip" in
-                    192.168.64.5[1-6]) ;;
-                    *) echo "primary announces unexpected IP: $ip"; exit 1 ;;
+            addrs=$("$CLI" -h "$SEED_HOST" -p "$SEED_PORT" -a "$VK_PASS" --no-auth-warning cluster nodes 2>&1 \
+                | awk "/master/ { split(\$2, a, \"@\"); print a[1] }")
+            for addr in $addrs; do
+                case " $VK_ALL_EPS " in
+                    *" $addr "*) ;;
+                    *) echo "primary announces $addr — not one of: $VK_ALL_EPS"; exit 1 ;;
                 esac
             done
         '
 
     # ------------------------------------------------------------------------
-    # Helper: compute (OWNER_IP, WRONG_IP) for a given key/channel/stream name.
-    # OWNER_IP is the primary that owns the slot; WRONG_IP is any OTHER primary.
-    # Both are exported so `bash -c` subshells see them.
+    # Helper: compute (OWNER, WRONG) endpoints for a given key/channel/stream.
+    # OWNER is the ip:port of the primary that owns the slot; WRONG is any
+    # OTHER primary's endpoint. All exported so `bash -c` subshells see them.
     # ------------------------------------------------------------------------
     moved_setup() {
         local key="$1"
-        local seed="${2:-192.168.64.51}"
         local slot
-        slot=$("$CLI" -h "$seed" -p 6379 -a "$VK_PASS" --no-auth-warning cluster keyslot "$key")
-        OWNER_IP=$("$CLI" -h "$seed" -p 6379 -a "$VK_PASS" --no-auth-warning cluster nodes 2>/dev/null \
+        slot=$("$CLI" -h "$SEED_HOST" -p "$SEED_PORT" -a "$VK_PASS" --no-auth-warning cluster keyslot "$key")
+        OWNER_EP=$("$CLI" -h "$SEED_HOST" -p "$SEED_PORT" -a "$VK_PASS" --no-auth-warning cluster nodes 2>/dev/null \
             | awk -v s="$slot" '
                 /master/ {
                     for (i=9; i<=NF; i++) {
                         split($i, r, "-")
                         if (r[1]+0 <= s+0 && r[2]+0 >= s+0) {
-                            split($2, addr, /[:@]/)
+                            split($2, addr, "@")
                             print addr[1]
                             exit
                         }
                     }
                 }')
-        WRONG_IP=""
-        for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
-            if [[ "$ip" != "$OWNER_IP" ]]; then WRONG_IP=$ip; break; fi
+        WRONG_EP=""
+        for ep in $VK_PRIMARY_EPS; do
+            if [[ "$ep" != "$OWNER_EP" ]]; then WRONG_EP=$ep; break; fi
         done
-        export OWNER_IP WRONG_IP
+        OWNER_HOST="${OWNER_EP%%:*}"; OWNER_PORT="${OWNER_EP##*:}"
+        WRONG_HOST="${WRONG_EP%%:*}"; WRONG_PORT="${WRONG_EP##*:}"
+        export OWNER_EP OWNER_HOST OWNER_PORT WRONG_EP WRONG_HOST WRONG_PORT
     }
 
     # Fixed per-run suffix so every check sees the same key/channel/stream name.
@@ -423,25 +461,29 @@ else
     export MOVED_KEY
     check "MOVED-GET/SET: raw MOVED response when hitting the wrong node (no -c flag)" \
         bash -c '
-            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" v 2>&1)
-            # Expect: "(error) MOVED <slot> <owner-ip>:<port>"
+            out=$("$CLI" -h "$WRONG_HOST" -p "$WRONG_PORT" -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" v 2>&1)
+            # Expect: "(error) MOVED <slot> <owner-ip>:<owner-port>"
             if [[ "$out" != *"MOVED"* ]]; then
                 echo "expected MOVED in response, got: $out"; exit 1
             fi
-            if [[ "$out" != *"$OWNER_IP"* ]]; then
-                echo "MOVED did not point at expected owner $OWNER_IP: $out"; exit 1
+            if [[ "$out" != *"$OWNER_EP"* ]]; then
+                echo "MOVED did not point at expected owner $OWNER_EP: $out"; exit 1
             fi
         '
     check "MOVED-GET/SET: with -c the client follows MOVED to the owner and SET succeeds" \
         bash -c '
-            "$CLI" -c -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" hello 2>&1 | grep -q OK
+            "$CLI" -c -h "$WRONG_HOST" -p "$WRONG_PORT" -a "$VK_PASS" --no-auth-warning set "$MOVED_KEY" hello 2>&1 | grep -q OK
         '
     check "MOVED-GET/SET: GET from ANOTHER wrong node also -c-follows and returns the value" \
         bash -c '
-            # Use a different seed to prove the client can chase MOVED from any node
-            SEED=192.168.64.53
-            [[ "$SEED" == "$OWNER_IP" ]] && SEED=192.168.64.52
-            v=$("$CLI" -c -h "$SEED" -p 6379 -a "$VK_PASS" --no-auth-warning get "$MOVED_KEY" 2>&1 | tail -1)
+            # Use a different non-owner seed to prove the client can chase
+            # MOVED from any node (3 primaries -> at least 2 non-owners).
+            SEED2=""
+            for ep in $VK_PRIMARY_EPS; do
+                [[ "$ep" != "$OWNER_EP" && "$ep" != "$WRONG_EP" ]] && { SEED2=$ep; break; }
+            done
+            [[ -n "$SEED2" ]] || SEED2=$WRONG_EP
+            v=$("$CLI" -c -h "${SEED2%%:*}" -p "${SEED2##*:}" -a "$VK_PASS" --no-auth-warning get "$MOVED_KEY" 2>&1 | tail -1)
             [[ "$v" == "hello" ]] || { echo "expected hello, got: $v"; exit 1; }
         '
 
@@ -451,16 +493,16 @@ else
     export MOVED_STREAM
     check "MOVED-XADD: raw MOVED response when adding to a stream from the wrong node" \
         bash -c '
-            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" k v 2>&1)
+            out=$("$CLI" -h "$WRONG_HOST" -p "$WRONG_PORT" -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" k v 2>&1)
             if [[ "$out" != *"MOVED"* ]]; then
                 echo "expected MOVED, got: $out"; exit 1
             fi
-            [[ "$out" == *"$OWNER_IP"* ]] || { echo "MOVED did not point at owner $OWNER_IP: $out"; exit 1; }
+            [[ "$out" == *"$OWNER_EP"* ]] || { echo "MOVED did not point at owner $OWNER_EP: $out"; exit 1; }
         '
     check "MOVED-XADD: with -c the client follows MOVED, XADD lands, XLEN=1 at owner" \
         bash -c '
-            "$CLI" -c -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" event smoke 2>&1 | grep -qE "[0-9]+-[0-9]+"
-            n=$("$CLI" -h "$OWNER_IP" -p 6379 -a "$VK_PASS" --no-auth-warning xlen "$MOVED_STREAM" 2>&1 | tail -1)
+            "$CLI" -c -h "$WRONG_HOST" -p "$WRONG_PORT" -a "$VK_PASS" --no-auth-warning xadd "$MOVED_STREAM" "*" event smoke 2>&1 | grep -qE "[0-9]+-[0-9]+"
+            n=$("$CLI" -h "$OWNER_HOST" -p "$OWNER_PORT" -a "$VK_PASS" --no-auth-warning xlen "$MOVED_STREAM" 2>&1 | tail -1)
             [[ "$n" == "1" ]] || { echo "expected XLEN=1 at owner, got: $n"; exit 1; }
         '
 
@@ -473,15 +515,15 @@ else
     export MOVED_CH
     check "MOVED-SPUBLISH: raw MOVED response when publishing to a sharded channel from wrong node" \
         bash -c '
-            out=$("$CLI" -h "$WRONG_IP" -p 6379 -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1)
+            out=$("$CLI" -h "$WRONG_HOST" -p "$WRONG_PORT" -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1)
             if [[ "$out" != *"MOVED"* ]]; then
                 echo "expected MOVED, got: $out"; exit 1
             fi
-            [[ "$out" == *"$OWNER_IP"* ]] || { echo "MOVED did not point at owner $OWNER_IP: $out"; exit 1; }
+            [[ "$out" == *"$OWNER_EP"* ]] || { echo "MOVED did not point at owner $OWNER_EP: $out"; exit 1; }
         '
     check "MOVED-SPUBLISH: publishing directly to the owning shard succeeds (returns subscriber count)" \
         bash -c '
-            out=$("$CLI" -h "$OWNER_IP" -p 6379 -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1 | tail -1)
+            out=$("$CLI" -h "$OWNER_HOST" -p "$OWNER_PORT" -a "$VK_PASS" --no-auth-warning spublish "$MOVED_CH" hello 2>&1 | tail -1)
             # SPUBLISH returns the number of receiving subscribers as an integer
             [[ "$out" =~ ^[0-9]+$ ]] || { echo "expected integer, got: $out"; exit 1; }
         '
@@ -492,10 +534,10 @@ else
     # without hash-tagged channels — every subscriber on every node sees it.
     check "Classic PUBLISH: NO MOVED — any node accepts and returns a subscriber count" \
         bash -c '
-            for ip in 192.168.64.51 192.168.64.52 192.168.64.53; do
-                out=$("$CLI" -h "$ip" -p 6379 -a "$VK_PASS" --no-auth-warning publish orders:notifications hi 2>&1 | tail -1)
-                if [[ "$out" == *"MOVED"* ]]; then echo "classic PUBLISH got MOVED on $ip: $out"; exit 1; fi
-                [[ "$out" =~ ^[0-9]+$ ]] || { echo "expected int from PUBLISH on $ip, got: $out"; exit 1; }
+            for ep in $VK_PRIMARY_EPS; do
+                out=$("$CLI" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning publish orders:notifications hi 2>&1 | tail -1)
+                if [[ "$out" == *"MOVED"* ]]; then echo "classic PUBLISH got MOVED on $ep: $out"; exit 1; fi
+                [[ "$out" =~ ^[0-9]+$ ]] || { echo "expected int from PUBLISH on $ep, got: $out"; exit 1; }
             done
         '
 fi

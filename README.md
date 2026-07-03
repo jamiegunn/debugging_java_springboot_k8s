@@ -15,7 +15,7 @@ without restarting the pod.
 | `charts/oracle/` | Helm chart for Oracle Database Free. |
 | `charts/ibm-mq/` | Helm chart for IBM MQ. |
 | `charts/artifactory/` | Helm chart for JFrog Artifactory OSS (local Docker + Helm registry). |
-| `charts/valkey/` | Valkey 8 — 6-node cluster (3 primaries + 3 secondaries) with **per-service-per-pod LoadBalancer** topology via MetalLB; each pod announces its own external IP via `cluster-announce-ip`. |
+| `charts/valkey/` | Valkey 8 — 6-node cluster (3 primaries + 3 secondaries) with **per-service-per-pod LoadBalancer** topology via MetalLB. Default: all 6 Services share ONE LB IP, split by port (6379-6384); each pod announces its shared IP + unique port via `cluster-announce-{ip,port,bus-port}`. Legacy `perPodIP` mode (6 IPs, one port) still available. |
 | `scripts/` | Debug + ops tools — see `scripts/` directory. Includes `host-routes.sh` (Mac-side stand-in for the production VIP layer) and `test-external-access.sh` (end-to-end check). |
 | `load/sample-data/` | Tiny seed CSV; expand to millions for stress runs (see below). |
 | `.github/workflows/` | CI: PR validation + main build → JFrog Artifactory. |
@@ -179,7 +179,7 @@ What this does (10 phases; Phase 9 prompts for `sudo` once):
 
 1. **Prereq check** — verifies `rdctl`, `kubectl`, `helm`, `docker`, `curl`, `python3`, `limactl` are on PATH; the VM is Running; CPU/memory meet the minimum.
 2. **Image preload** — `scripts/preload-images.sh` pulls every registry image the stack needs (MetalLB, ingress-nginx, Oracle, MQ, Valkey, Artifactory, Postgres, plus the app's builder/runtime base images) into RD's moby up-front. Exists so **corporate-MITM TLS failures** surface here as one clear error naming the image and registry, instead of as an `ImagePullBackOff` twenty minutes in. Idempotent (skips cached images); fails fast on the first bad pull.
-3. **MetalLB + nginx-ingress** — MetalLB pool `192.168.64.50-60` (used for Valkey per-pod LBs), and installs nginx-ingress with **`hostNetwork=true`** so its pod binds directly to the RD node's :80 (Pattern D).
+3. **MetalLB + nginx-ingress** — MetalLB pool `192.168.64.50-60` (Valkey's shared LB IP comes from here; only `.51` is used in the default sharedIP-perPort mode), and installs nginx-ingress with **`hostNetwork=true`** so its pod binds directly to the RD node's :80 (Pattern D).
 4. **Integration charts** — installs Oracle, IBM MQ, Valkey, and Artifactory in parallel; waits for all pods to be Ready (~3-5 min).
 5. **App image** — `docker build` into Rancher Desktop's local moby (no registry needed).
 6. **App chart** — installs `debug-demo-app` with ClusterIP Service + Ingress (no direct LoadBalancer).
@@ -213,9 +213,9 @@ Expected tail of the output:
     http://debug-demo.local/  →  HAProxy VM @ 192.168.105.15  →  RD node :80  →  ingress-nginx → app
     HAProxy stats UI:   http://192.168.105.15:8404/
 
-  L4 (TCP) entry — MetalLB per-pod LBs (Valkey only):
-    valkey/valkey-primary-{0,1,2}-ext:   192.168.64.51-53
-    valkey/valkey-secondary-{0,1,2}-ext: 192.168.64.54-56
+  L4 (TCP) entry — MetalLB per-pod Services (Valkey only; default = one shared IP, unique client port per node):
+    valkey/valkey-primary-{0,1,2}-ext:   192.168.64.51:{6379,6380,6381}
+    valkey/valkey-secondary-{0,1,2}-ext: 192.168.64.51:{6382,6383,6384}
 ```
 
 ### 5. Legacy: manual host-side setup (only if you passed `--skip-host-setup`)
@@ -230,7 +230,7 @@ scripts/host-routes.sh add        # prompts for your sudo password once
 ```
 
 What this does: adds 6 entries to your macOS routing table that say
-"to reach `192.168.64.51-56`, send via the Rancher Desktop VM
+"to reach the Valkey LB IP(s), send via the Rancher Desktop VM
 (`192.168.64.2`)". The VM's kube-proxy iptables then DNATs each
 incoming connection to the right Valkey pod. Without this step,
 MetalLB-assigned Valkey IPs aren't reachable from your Mac because
@@ -259,8 +259,10 @@ clusters (Rancher Desktop, kind, minikube), there's no such
 controller by default and the Service sits in `<pending>` forever.
 **MetalLB is the bare-metal implementation of that contract.**
 
-In this POC MetalLB only handles the **Valkey** per-pod LBs
-(192.168.64.51-56) — six `LoadBalancer` Services, six IPs. The
+In this POC MetalLB only handles the **Valkey** per-pod LBs —
+six `LoadBalancer` Services which by default share ONE IP
+(192.168.64.51, split by port 6379-6384 via MetalLB's
+`allow-shared-ip`; legacy perPodIP mode uses .51-.56). The
 HTTP path uses Pattern D (see below): ingress-nginx runs with
 `hostNetwork=true` and an HAProxy VM (F5 stand-in) fronts the
 node, so MetalLB is *not* in the HTTP path at all.
@@ -617,28 +619,48 @@ deployment strategy must be `RollingUpdate` (not `Recreate`) for HPA to
 add pods without taking the existing one down — the chart defaults to
 the right setting.
 
-## External access (per-service-per-pod LB)
+## External access (per-service-per-pod LB, one shared IP split by port)
 
-Production-shape topology. MetalLB allocates one pinned IP per
-externally-reachable endpoint; each Valkey pod announces its own LB IP
-via `cluster-announce-ip` so `CLUSTER SHARDS`/`CLUSTER NODES` return
-externally-resolvable endpoints (not pod IPs).
+Production-shape topology. Every Valkey pod has its own `LoadBalancer`
+Service (per-shard addressability is non-negotiable — MOVED redirects
+must land on exactly one node), but by default all six Services **share
+a single MetalLB IP** (`metallb.universe.tf/allow-shared-ip`) and are
+distinguished by **port**: client `6379-6384`, bus `16379-16384`. Each
+pod announces its shared IP + unique port via
+`cluster-announce-{ip,port,bus-port}`, so `CLUSTER SHARDS`/`CLUSTER
+NODES` return externally-resolvable endpoints (not pod IPs). This is
+the same shape as an enterprise F5 setup where the security team
+allocates **one VIP per app** and the pool members differ by port.
 
-| Endpoint | IP | Backed by |
+| Endpoint | Address (default `sharedIP-perPort` mode) | Backed by |
 |---|---|---|
 | App (HTTP for Postman, anything) | `http://debug-demo.local/` | HAProxy VM (Lima, 192.168.105.x) → hostNetwork ingress-nginx on RD node :80 → app ClusterIP |
 | Valkey primary-0 | `192.168.64.51:6379` | `valkey-primary-0-ext` Service → just that pod |
-| Valkey primary-1 | `192.168.64.52:6379` | `valkey-primary-1-ext` |
-| Valkey primary-2 | `192.168.64.53:6379` | `valkey-primary-2-ext` |
-| Valkey secondary-0 | `192.168.64.54:6379` | `valkey-secondary-0-ext` |
-| Valkey secondary-1 | `192.168.64.55:6379` | `valkey-secondary-1-ext` |
-| Valkey secondary-2 | `192.168.64.56:6379` | `valkey-secondary-2-ext` |
+| Valkey primary-1 | `192.168.64.51:6380` | `valkey-primary-1-ext` |
+| Valkey primary-2 | `192.168.64.51:6381` | `valkey-primary-2-ext` |
+| Valkey secondary-0 | `192.168.64.51:6382` | `valkey-secondary-0-ext` |
+| Valkey secondary-1 | `192.168.64.51:6383` | `valkey-secondary-1-ext` |
+| Valkey secondary-2 | `192.168.64.51:6384` | `valkey-secondary-2-ext` |
 
-In a real environment those IPs are reached through a VIP/LB layer
+The legacy shape — one pinned IP per pod (`192.168.64.51-56`, all on
+`:6379`) — is still available via
+`--set loadBalancer.mode=perPodIP` on the valkey chart. Two caveats
+specific to the shared-IP mode:
+
+- **`externalTrafficPolicy` must be `Cluster`.** MetalLB only lets
+  `Local`-policy Services share an IP when their pod selectors are
+  identical; ours deliberately select one pod each. `Cluster` policy
+  costs source-IP preservation, which doesn't matter for Valkey.
+- **Ports are Service-level, not pod-level.** Every pod still listens
+  on 6379/16379 internally; the per-Service external port maps back to
+  the same targetPort. Only the announce values differ per pod.
+
+In a real environment the shared IP is reached through a VIP/LB layer
 (F5/HAProxy/cloud NLB). On Rancher Desktop's vz-NAT, the dev-Mac
-stand-in for that VIP is a one-time `sudo route add` per IP. The
-`scripts/host-routes.sh add` helper installs them by discovering the
-LB-assigned IPs at runtime; `scripts/host-routes.sh remove` tears down.
+stand-in for that VIP is a one-time `sudo route add` (one route in
+shared mode, six in perPodIP mode). The `scripts/host-routes.sh add`
+helper installs them by discovering the LB-assigned IPs at runtime and
+deduplicating; `scripts/host-routes.sh remove` tears down.
 **The cluster config doesn't change between dev and prod** — only the
 routing layer in front of it.
 

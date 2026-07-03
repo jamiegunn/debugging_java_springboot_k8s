@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
 # valkey-tour.sh — read-only investigation of the running Valkey cluster
-# from outside the k8s cluster, via the per-pod LoadBalancer IPs.
+# from outside the k8s cluster, via the per-pod LoadBalancer endpoints.
+# Endpoints are discovered from the valkey-*-ext Services, so the tour works
+# in both endpoint modes: sharedIP-perPort (one IP, client ports 6379-6384)
+# and legacy perPodIP (six IPs, one port).
 #
 # Use this when you want a comprehensive snapshot: topology, every op type
 # the chart wires up, MOVED redirect behavior, latency, slow queries, big
@@ -9,13 +12,13 @@
 # checks, see scripts/smoke-test.sh.
 #
 # Prereqs:
-#   - scripts/host-routes.sh add   (Mac can route to 192.168.64.51-56)
+#   - scripts/host-routes.sh add   (Mac can route to the LB IP(s))
 #   - valkey-cli or redis-cli on PATH (brew install valkey)
 #
 # Usage:
 #   ./valkey-tour.sh                   # full tour
-#   ./valkey-tour.sh --seed 192.168.64.52     # use a different seed node
-#   ./valkey-tour.sh --section topology       # just one section
+#   ./valkey-tour.sh --seed 192.168.64.51:6380   # use a different seed (ip[:port])
+#   ./valkey-tour.sh --section topology          # just one section
 #       sections: topology, strings, hash, list, zset, stream, pubsub, info, latency
 
 set -uo pipefail
@@ -23,8 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-SEED="192.168.64.51"
-PORT=6379
+SEED=""
+PORT=""
 SECTIONS=""
 for ((i=1; i<=$#; i++)); do
     case "${!i}" in
@@ -33,6 +36,31 @@ for ((i=1; i<=$#; i++)); do
         -h|--help)  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     esac
 done
+# --seed accepts "ip" or "ip:port"
+if [[ "$SEED" == *:* ]]; then
+    PORT="${SEED##*:}"
+    SEED="${SEED%%:*}"
+fi
+
+# Discover the 6 external endpoints from the Services (works in both
+# sharedIP-perPort and perPodIP modes). ALL_EPS drives per-node sweeps.
+ALL_EPS=()
+for role in primary secondary; do
+    for n in 0 1 2; do
+        ep_ip=$(kubectl -n valkey get svc "valkey-${role}-${n}-ext" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+        ep_port=$(kubectl -n valkey get svc "valkey-${role}-${n}-ext" -o jsonpath='{.spec.ports[?(@.name=="client")].port}' 2>/dev/null || true)
+        [[ -n "$ep_ip" && -n "$ep_port" ]] && ALL_EPS+=("${ep_ip}:${ep_port}")
+    done
+done
+if [[ -z "$SEED" ]]; then
+    if [[ ${#ALL_EPS[@]} -gt 0 ]]; then
+        SEED="${ALL_EPS[0]%%:*}"
+        : "${PORT:=${ALL_EPS[0]##*:}}"
+    else
+        SEED="192.168.64.51"
+    fi
+fi
+: "${PORT:=6379}"
 
 CLI="$(command -v valkey-cli || command -v redis-cli || true)"
 if [[ -z "$CLI" ]]; then
@@ -78,10 +106,11 @@ section topology && {
     vk_pin cluster shards 2>/dev/null | sed 's/^/  /' || vk_pin cluster slots | sed 's/^/  /'
     echo
     echo "─ Per-node uptime + role ─"
-    for ip in 192.168.64.51 192.168.64.52 192.168.64.53 192.168.64.54 192.168.64.55 192.168.64.56; do
-        role=$("$CLI" -h "$ip" -p "$PORT" -a "$PASS" --no-auth-warning info replication 2>/dev/null | grep -E '^role:' | tr -d '\r' | cut -d: -f2)
-        up=$("$CLI" -h "$ip" -p "$PORT" -a "$PASS" --no-auth-warning info server 2>/dev/null | grep -E '^uptime_in_seconds:' | tr -d '\r' | cut -d: -f2)
-        printf "  %-15s role=%-7s uptime=%ss\n" "$ip" "$role" "$up"
+    for ep in ${ALL_EPS[@]+"${ALL_EPS[@]}"}; do    # empty-array-safe under set -u / bash 3.2
+        ep_ip="${ep%%:*}"; ep_port="${ep##*:}"
+        role=$("$CLI" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info replication 2>/dev/null | grep -E '^role:' | tr -d '\r' | cut -d: -f2)
+        up=$("$CLI" -h "$ep_ip" -p "$ep_port" -a "$PASS" --no-auth-warning info server 2>/dev/null | grep -E '^uptime_in_seconds:' | tr -d '\r' | cut -d: -f2)
+        printf "  %-21s role=%-7s uptime=%ss\n" "$ep" "$role" "$up"
     done
 }
 

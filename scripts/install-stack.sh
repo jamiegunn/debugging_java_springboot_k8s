@@ -23,7 +23,8 @@
 #                                  nginx-ingress runs with hostNetwork=true bound
 #                                  to the RD node's :80 — Pattern D)
 #   4. Integration charts         (oracle, ibm-mq, valkey, [artifactory]) in parallel
-#                                  Valkey's per-pod LBs claim 192.168.64.51-56
+#                                  Valkey default: 6 per-pod Services SHARE one
+#                                  LB IP (192.168.64.51), split by port 6379-6384
 #   5. App image build            (docker build into RD's moby)
 #   6. App chart install          (ClusterIP Service + Ingress; no direct LB)
 #   7. HAProxy F5 stand-in        (second Lima VM with HAProxy on 192.168.105.x;
@@ -87,7 +88,8 @@ for a in "$@"; do
 done
 
 METALLB_VERSION="v0.14.8"
-METALLB_POOL_RANGE="192.168.64.50-192.168.64.60"    # 51-56 feed Valkey; 50 unused now
+METALLB_POOL_RANGE="192.168.64.50-192.168.64.60"    # Valkey default (sharedIP-perPort) uses only .51;
+                                                    # legacy perPodIP mode claims .51-.56
 NGINX_INGRESS_VERSION="4.11.3"          # controller v1.11.3 (now hostNetwork-mode)
 APP_INGRESS_HOST="debug-demo.local"     # /etc/hosts entry → HAProxy VM IP
 HAPROXY_VM_IP_FILE="$REPO_ROOT/dumps/haproxy-vm-ip"  # written by install-haproxy-vm.sh
@@ -171,8 +173,8 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
         info "    $(printf '%-16s' "${rel}:") ${st}"
     done
     echo
-    info "  LoadBalancer IPs (MetalLB — Valkey per-pod only in Pattern D):"
-    kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}    {.metadata.namespace}/{.metadata.name}: {.status.loadBalancer.ingress[0].ip}{"\n"}{end}' 2>/dev/null | sort
+    info "  LoadBalancer endpoints (MetalLB — Valkey per-pod Services only in Pattern D):"
+    kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}    {.metadata.namespace}/{.metadata.name}: {.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}{"\n"}{end}' 2>/dev/null | sort
     echo
     info "  HAProxy F5 stand-in:"
     # Capture limactl output into a variable first — piping directly into
@@ -590,8 +592,8 @@ else
     info "    http://${APP_INGRESS_HOST}/  →  RD node ${RD_NODE_IP}:80  →  ingress-nginx → app   (no F5 stand-in)"
 fi
 info ""
-info "  L4 (TCP) entry — MetalLB per-pod LBs (Valkey only):"
-kubectl get svc -n valkey -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}    {.metadata.name}: {.status.loadBalancer.ingress[0].ip}{"\n"}{end}' \
+info "  L4 (TCP) entry — MetalLB per-pod Services (Valkey only; default = one shared IP, unique client port per node):"
+kubectl get svc -n valkey -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}    {.metadata.name}: {.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}{"\n"}{end}' \
     | sort
 echo
 info "  Host-side setup state:"

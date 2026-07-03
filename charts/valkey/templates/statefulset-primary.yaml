@@ -27,24 +27,47 @@ spec:
             - |
               set -e
               ORDINAL=$(echo "$HOSTNAME" | grep -oE '[0-9]+$')
-              {{- if .Values.loadBalancer.enabled }}
-              # External topology: announce the LB IP assigned to this pod's
-              # dedicated Service so MOVED redirects to other clients point at
-              # externally-reachable endpoints.
+              {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
+              # Shared external IP; per-shard addressability comes from the
+              # port. This pod's external port pair is base+idx, where idx
+              # counts primaries first (offset 0) then secondaries.
+              IDX=$((ORDINAL + ORDINAL_OFFSET))
+              ANNOUNCE_IP="$SHARED_IP"
+              ANNOUNCE_PORT=$((BASE_CLIENT_PORT + IDX))
+              ANNOUNCE_BUS_PORT=$((BASE_BUS_PORT + IDX))
+              {{- else if .Values.loadBalancer.enabled }}
+              # perPodIP: announce the LB IP assigned to this pod's dedicated
+              # Service so MOVED redirects point at externally-reachable
+              # endpoints. Ports are the same on every node.
               ANNOUNCE_IP=$(echo "$ANNOUNCE_IPS" | cut -d',' -f$((ORDINAL+1)))
+              ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- else }}
               # In-cluster only: announce the pod IP.
               ANNOUNCE_IP="$POD_IP"
+              ANNOUNCE_PORT={{ .Values.ports.client }}
+              ANNOUNCE_BUS_PORT={{ .Values.ports.bus }}
               {{- end }}
-              echo "valkey-primary-${ORDINAL}: cluster-announce-ip=${ANNOUNCE_IP}"
+              echo "valkey-primary-${ORDINAL}: cluster-announce ${ANNOUNCE_IP}:${ANNOUNCE_PORT} (bus ${ANNOUNCE_BUS_PORT})"
               exec valkey-server /etc/valkey/valkey.conf \
-                --cluster-announce-ip "$ANNOUNCE_IP"
+                --cluster-announce-ip "$ANNOUNCE_IP" \
+                --cluster-announce-port "$ANNOUNCE_PORT" \
+                --cluster-announce-bus-port "$ANNOUNCE_BUS_PORT"
           env:
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- if .Values.loadBalancer.enabled }}
+            {{- if and .Values.loadBalancer.enabled (eq .Values.loadBalancer.mode "sharedIP-perPort") }}
+            - name: SHARED_IP
+              value: {{ .Values.loadBalancer.sharedIP | quote }}
+            - name: BASE_CLIENT_PORT
+              value: {{ .Values.loadBalancer.basePorts.client | quote }}
+            - name: BASE_BUS_PORT
+              value: {{ .Values.loadBalancer.basePorts.bus | quote }}
+            - name: ORDINAL_OFFSET
+              value: "0"      # primaries occupy idx 0..replicaCount-1
+            {{- else if .Values.loadBalancer.enabled }}
             - name: ANNOUNCE_IPS
               value: {{ join "," .Values.loadBalancer.primaryIPs | quote }}
             {{- end }}

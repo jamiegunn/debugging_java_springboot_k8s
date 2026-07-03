@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
 # host-routes.sh — add or remove macOS static routes that point Valkey's
-# MetalLB per-pod LoadBalancer IPs (192.168.64.51-56) at the Rancher Desktop VM.
+# MetalLB LoadBalancer IP(s) at the Rancher Desktop VM. In the default
+# sharedIP-perPort mode that's ONE IP (192.168.64.51, all 6 nodes behind it
+# on ports 6379-6384); in legacy perPodIP mode it's six (192.168.64.51-56).
+# Either way the IPs are discovered from the cluster's LoadBalancer
+# Services, deduplicated, and routed.
 #
 # Purpose: Rancher Desktop's vz-NAT networking doesn't pass L2 ARP for
 # non-VM IPs through to the host, so we tell macOS to use the VM
@@ -40,10 +44,20 @@ discover_ips() {
         | awk -F'\t' '$2 ~ /^192\.168\.64\./ {print}'
 }
 
+# One line per unique IP, services that share it collapsed into one label.
+# In sharedIP-perPort mode all 6 Valkey Services pin the same IP — the host
+# needs exactly one route for it, not six attempts at the same route.
+discover_unique_ips() {
+    discover_ips | awk -F'\t' '
+        { if (svcs[$2] == "") svcs[$2] = $1; else svcs[$2] = svcs[$2] "," $1 }
+        END { for (ip in svcs) printf "%s\t%s\n", svcs[ip], ip }
+    ' | sort -t$'\t' -k2
+}
+
 cmd_add() {
     info "VM gateway: $VM_IP"
     info "discovering MetalLB-assigned IPs..."
-    discover_ips | while IFS=$'\t' read -r svc ip; do
+    discover_unique_ips | while IFS=$'\t' read -r svc ip; do
         if [[ -z "$ip" ]]; then continue; fi
         info "  + $ip  ($svc)"
         sudo route -nv add -host "$ip" "$VM_IP" 2>&1 | tail -1 || true
@@ -52,7 +66,7 @@ cmd_add() {
 
 cmd_remove() {
     info "removing static routes for MetalLB IPs"
-    discover_ips | while IFS=$'\t' read -r svc ip; do
+    discover_unique_ips | while IFS=$'\t' read -r svc ip; do
         if [[ -z "$ip" ]]; then continue; fi
         info "  - $ip  ($svc)"
         sudo route -nv delete "$ip" 2>&1 | tail -1 || true
@@ -61,12 +75,12 @@ cmd_remove() {
 
 cmd_list() {
     info "current routes for MetalLB-assigned IPs:"
-    discover_ips | while IFS=$'\t' read -r svc ip; do
+    discover_unique_ips | while IFS=$'\t' read -r svc ip; do
         if [[ -z "$ip" ]]; then continue; fi
         local gw iface
         gw="$(route -n get "$ip" 2>/dev/null | awk '/gateway/ {print $2}' | head -1)"
         iface="$(route -n get "$ip" 2>/dev/null | awk '/interface/ {print $2}' | head -1)"
-        printf "  %-22s %-15s gw=%-18s iface=%s\n" "$svc" "$ip" "${gw:-<none>}" "${iface:-<none>}"
+        printf "  %-15s gw=%-18s iface=%-10s %s\n" "$ip" "${gw:-<none>}" "${iface:-<none>}" "$svc"
     done
 }
 
