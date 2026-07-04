@@ -47,6 +47,7 @@ case "$cmd" in
     lb)         exec "$D/k3s-lb.sh" "$@" ;;        # the LB tier: keepalived VIP + HAProxy
     doctor)     exec "$D/k3s-doctor.sh" "$@" ;;
     smoke)      exec "$D/k3s-smoke.sh" "$@" ;;
+    docs-verify) exec "$D/docs-verify.sh" "$@" ;;
     status)     exec "$D/k3s-chaos.sh" status ;;
     chaos)      exec "$D/k3s-chaos.sh" "$@" ;;
     tour)       exec "$D/api-tour.sh" "$@" ;;
