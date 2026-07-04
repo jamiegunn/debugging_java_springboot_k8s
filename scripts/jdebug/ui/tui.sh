@@ -46,6 +46,12 @@ header() {
     printf '           container  %s%s%s\n' "$GN" "$APP_CONTAINER" "$OFF"
     printf '  %skubeconfig%s %s\n' "$B" "$OFF" "${KUBECONFIG:-"(default context)"}"
     printf '  %sCapture tiers: 1 actuator (default) → 2 jattach → 3 ephemeral JDK.%s\n' "$DIM" "$OFF"
+    printf '  %sExamples (non-interactive):%s\n' "$DIM" "$OFF"
+    printf '  %s  jdebug health                        health + per-subsystem status%s\n'  "$DIM" "$OFF"
+    printf '  %s  jdebug -n prod -l app=web memory     RSS vs heap/non-heap on any pod%s\n' "$DIM" "$OFF"
+    printf '  %s  jdebug threads --via jattach         thread dump (actuator|jattach|jdk)%s\n' "$DIM" "$OFF"
+    printf '  %s  jdebug jcmd "GC.heap_info"           any jcmd via jattach%s\n' "$DIM" "$OFF"
+    printf '  %s  jdebug snapshot --heap               offline bundle (pauses the JVM)%s\n' "$DIM" "$OFF"
     hr
 }
 
