@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # k3s-chaos.sh — chaos for the multi-node k3s stack. Beyond the single-node
-# failures the old chaos.sh could do, this adds the things a REAL cluster
-# exposes: kill a whole node and watch the keepalived VIP fail over + pods
-# reschedule. Break one thing at a time, LEAVE it broken, get debug + heal
-# commands; nothing auto-heals unless it self-heals by design.
+# failures a single node could show, this drills a REAL cluster: kill a whole
+# worker node and watch its pods reschedule; drop the LB VM and watch the VIP
+# + external access go down. Break one thing at a time, LEAVE it broken, get
+# debug + heal commands; nothing auto-heals unless it self-heals by design.
 #
 # Scenarios:
 #   node-down <agent>   stop an agent VM → its pods reschedule onto the others
@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/k3s-env.sh
 source "$SCRIPT_DIR/lib/k3s-env.sh"
-set +e
+set +e +o pipefail   # +o pipefail: `limactl ... | grep -q` SIGPIPEs limactl (early grep exit); pipefail would misread the guard
 
 require_cmd kubectl limactl curl
 export VK_PASS="$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)"

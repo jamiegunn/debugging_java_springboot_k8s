@@ -8,9 +8,9 @@
 #
 # Layers checked:
 #   1 tooling + kubeconfig      limactl/kubectl/curl, k3s kubeconfig present
-#   2 VMs                       all 3 Lima VMs Running
+#   2 VMs                       all 4 Lima VMs Running (3 k3s + ddk3s-lb)
 #   3 k3s nodes                 all 3 Ready
-#   4 VIP                       a node holds it; reachable from the Mac
+#   4 LB tier                   ddk3s-lb holds the VIP + HAProxy; VIP reachable
 #   5 DNS                       Mac resolver + CoreDNS stub → names resolve
 #   6 platform                  ingress DaemonSet serving; HTTP on the VIP
 #   7 workloads                 oracle/mq/valkey/app pods Ready; no ImagePull*
@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/k3s-env.sh
 source "$SCRIPT_DIR/lib/k3s-env.sh"
-set +e
+set +e +o pipefail   # +o pipefail: `limactl ... | grep -q` SIGPIPEs limactl (early grep exit); pipefail would misread the guard
 
 QUIET=0
 for a in "$@"; do case "$a" in --quiet) QUIET=1;; -h|--help) sed -n '2,/^$/p' "$0"|sed 's/^# \{0,1\}//'; exit 0;; esac; done

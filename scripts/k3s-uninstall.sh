@@ -20,7 +20,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/k3s-env.sh
 source "$SCRIPT_DIR/lib/k3s-env.sh"
-set +e
+# Disable BOTH -e and pipefail: the VM-existence guards below are
+# `limactl list | grep -qx`, and grep -q exits on first match, closing the
+# pipe. With many Lima instances, limactl is still writing → it dies with
+# SIGPIPE → under pipefail the guard reads as "failed" and every VM gets
+# skipped (a silent no-op "uninstall complete" that leaves the VMs running).
+set +e +o pipefail
 
 PURGE_BUNDLE=0
 ASSUME_YES=0

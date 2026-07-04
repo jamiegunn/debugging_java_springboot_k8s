@@ -21,7 +21,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/k3s-env.sh
 source "$SCRIPT_DIR/lib/k3s-env.sh"
-set +e
+set +e +o pipefail   # +o pipefail: `limactl ... | grep -q` SIGPIPEs limactl (early grep exit); pipefail would misread the guard
 
 require_cmd limactl
 LIMA_TEMPLATE="$REPO_ROOT/k3s/lima-node.yaml"
