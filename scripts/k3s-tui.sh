@@ -79,14 +79,15 @@ menu() {
     cat <<EOF
   ${B}${CY}▶ d${OFF}  ${B}JVM DEBUG KIT${OFF} ${DIM}— dumps · memory · logs · snapshot (the core diagnostics workflow)${OFF}
 
-  ${B}GET RUNNING${OFF}              ${B}CHECK${OFF}                    ${B}EXPLORE / BREAK${OFF}
-   ${GN}0${OFF} preflight ${DIM}(deps)${OFF}      ${GN}4${OFF} doctor  ${DIM}(start here)${OFF}     ${GN}8${OFF}  api tour
-   ${GN}1${OFF} install               ${GN}5${OFF} smoke   ${DIM}(14 checks)${OFF}      ${GN}9${OFF}  valkey tour
-   ${GN}2${OFF} bundle                ${GN}6${OFF} status                  ${GN}10${OFF} chaos …
-   ${GN}3${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}7${OFF} valkey validation       ${GN}12${OFF} lb ${DIM}(LB tier status)${OFF}
+  ${B}GET RUNNING${OFF}              ${B}CHECK / DIAGNOSE${OFF}         ${B}EXPLORE / BREAK${OFF}
+   ${GN}1${OFF} preflight ${DIM}(deps)${OFF}      ${GN}5${OFF} doctor  ${DIM}(start here)${OFF}    ${GN}10${OFF} api tour
+   ${GN}2${OFF} install               ${GN}6${OFF} status                 ${GN}11${OFF} valkey tour
+   ${GN}3${OFF} bundle                ${GN}7${OFF} smoke   ${DIM}(14 checks)${OFF}    ${GN}12${OFF} chaos …
+   ${GN}4${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}8${OFF} valkey validation
+                            ${GN}9${OFF} lb ${DIM}(LB tier status)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
-   ${GN}11${OFF} uninstall            ${GN}h${OFF} --help   ${GN}k${OFF} KUBECONFIG export   ${GN}s${OFF} shell   ${GN}q${OFF} quit
+   ${GN}13${OFF} uninstall            ${GN}h${OFF} --help   ${GN}k${OFF} KUBECONFIG export   ${GN}s${OFF} shell   ${GN}q${OFF} quit
 EOF
     printf '\n  %s> %s' "$B" "$OFF"
 }
@@ -154,20 +155,20 @@ while true; do
     menu
     read -r choice || exit 0
     case "$choice" in
-        0)  run "$K3S" preflight ;;
-        1)  confirm "Full install (builds VMs, ~15 min the first time) — proceed?" && run "$K3S" install ;;
-        2)  run "$K3S" bundle ;;
-        3)  confirm "Write /etc/resolver/${BASE_DOMAIN:-debug-demo.local} (needs sudo) — proceed?" && run "$K3S" resolver ;;
-        4)  run "$K3S" doctor ;;
-        5)  run "$K3S" smoke ;;
+        1)  run "$K3S" preflight ;;
+        2)  confirm "Full install (builds VMs, ~15 min the first time) — proceed?" && run "$K3S" install ;;
+        3)  run "$K3S" bundle ;;
+        4)  confirm "Write /etc/resolver/${BASE_DOMAIN:-debug-demo.local} (needs sudo) — proceed?" && run "$K3S" resolver ;;
+        5)  run "$K3S" doctor ;;
         6)  run "$K3S" status ;;
-        7)  printf '  full suite, or skip the slow failover section? [F=full / s=skip]: '
+        7)  run "$K3S" smoke ;;
+        8)  printf '  full suite, or skip the slow failover section? [F=full / s=skip]: '
             read -r m; case "$m" in s|S) run "$SCRIPT_DIR/valkey-cluster-tests.sh" --skip-failover ;; *) run "$SCRIPT_DIR/valkey-cluster-tests.sh" ;; esac ;;
-        8)  run "$K3S" tour ;;
-        9)  run "$K3S" valkey ;;
-        10) chaos_menu; continue ;;
-        11) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
-        12) run "$K3S" lb status ;;
+        9)  run "$K3S" lb status ;;
+        10) run "$K3S" tour ;;
+        11) run "$K3S" valkey ;;
+        12) chaos_menu; continue ;;
+        13) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
         d|D) "$SCRIPT_DIR/debug-tui.sh"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;

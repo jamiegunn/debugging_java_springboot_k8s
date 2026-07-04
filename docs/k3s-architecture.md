@@ -166,7 +166,7 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   workloads → Valkey cluster → end-to-end), and for anything broken prints the
   exact fix command. It counts passes dynamically; the only expected ✘ on a
   healthy stack is the optional Mac resolver (cleared by `./tui resolver`). `./tui` (root launcher) / `scripts/k3s.sh` is the single front
-  door: bare `./tui` opens an interactive menu (option 0 = preflight, 12 = lb);
+  door: bare `./tui` opens an interactive menu (option 1 = preflight, 9 = lb);
   subcommands are **preflight** / bundle / install / resolver / **lb** / doctor
   / smoke / status / chaos / tour / valkey / uninstall. `k3s-doctor.sh`
   section 4 now checks the **LB VM's** VIP + HAProxy (not the k3s nodes);
