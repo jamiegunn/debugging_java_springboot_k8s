@@ -18,7 +18,6 @@
 #   ./k3s-net.sh down        # stop them, remove the Mac resolver
 #   ./k3s-net.sh status      # who owns the VIP, is DNS answering
 #   ./k3s-net.sh verify      # resolve + reach the VIP by hostname, end to end
-#   ./k3s-net.sh --track ingress   # (P2) retarget keepalived's health check at :80
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,16 +30,6 @@ set +e   # common.sh enables set -e; these scripts do their own error handling
 
 require_cmd limactl kubectl
 
-TRACK="k3s"     # k3s | ingress  (what keepalived's health check probes)
-ARGS=()
-for a in "$@"; do
-    case "$a" in
-        --track) TRACK="__next__" ;;
-        *) if [[ "$TRACK" == "__next__" ]]; then TRACK="$a"; else ARGS+=("$a"); fi ;;
-    esac
-done
-set -- "${ARGS[@]}"
-
 vsh() { limactl shell "$1" -- sudo sh -c "$2"; }
 
 # the VM's interface on the shared subnet (keepalived binds VRRP to it)
@@ -49,31 +38,17 @@ shared_iface() {
         | awk -v n="$LIMA_SHARED_SUBNET" '$4 ~ ("^" n "\\.") {print $2; exit}'
 }
 
-# The health check keepalived runs. k3s: kubelet healthz (up on every node once
-# k3s runs). ingress: the node's :80 (P2, once the ingress DaemonSet is up) so
-# the VIP only lives where HTTP is actually served.
-track_script_body() {
-    if [[ "$TRACK" == "ingress" ]]; then
-        echo 'curl -sf -o /dev/null --max-time 2 http://127.0.0.1/healthz || curl -sf -o /dev/null --max-time 2 http://127.0.0.1:80/'
-    else
-        echo 'curl -sf -o /dev/null --max-time 2 http://127.0.0.1:10248/healthz'
-    fi
-}
-
 configure_keepalived() {
     local vm="$1" state="$2" prio="$3" iface; iface="$(shared_iface "$vm")"
     [[ -n "$iface" ]] || { err "  $vm: no interface on $LIMA_SHARED_SUBNET"; return 1; }
-    info "  $vm: keepalived $state (prio $prio) on $iface, VIP $K3S_VIP, track=$TRACK"
-    local check; check="$(track_script_body)"
+    info "  $vm: keepalived $state (prio $prio) on $iface, VIP $K3S_VIP"
+    # No vrrp_script/track: the VIP is held by VRRP priority and fails over on
+    # NODE death (adverts stop). A health-track (ingress/kubelet :80) proved
+    # fragile — script-security stuck-FAULT + ingress hostPort flapping left the
+    # VIP down even on a healthy cluster; the doctor checks ingress/app health
+    # separately, so a bare priority VIP is the robust choice here.
     vsh "$vm" "mkdir -p /etc/keepalived
 cat > /etc/keepalived/keepalived.conf <<'EOF'
-vrrp_script chk_node {
-    script \"$check\"
-    interval 2
-    fall 2
-    rise 2
-    timeout 3
-}
 vrrp_instance VI_1 {
     state $state
     interface $iface
@@ -87,13 +62,19 @@ vrrp_instance VI_1 {
     virtual_ipaddress {
         $K3S_VIP/24 dev $iface
     }
-    track_script {
-        chk_node
-    }
 }
 EOF
     rc-update add keepalived default 2>/dev/null || true
-    rc-service keepalived restart"
+    # Start keepalived SELF-DAEMONIZING. The packaged openrc service launches it
+    # with --dont-fork + command_background, which dies inside the transient
+    # install shell (writes its pidfiles, then exits within ~2s); letting
+    # keepalived daemonize itself detaches cleanly and survives. Clear any stale
+    # instance/pidfile first so the start doesn't hit 'daemon is already running'.
+    rc-service keepalived stop 2>/dev/null || true
+    pkill -9 -x keepalived 2>/dev/null || true
+    rm -f /run/keepalived*.pid /run/keepalived/*.pid 2>/dev/null || true
+    sleep 1
+    keepalived --use-file=/etc/keepalived/keepalived.conf"
 }
 
 configure_dnsmasq() {
@@ -289,7 +270,6 @@ case "${1:-}" in
     down)   cmd_down ;;
     status) cmd_status ;;
     verify) cmd_verify ;;
-    retrack) cmd_up ;;   # re-run up with a different --track
     -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
     *) err "unknown command: $1"; exit 64 ;;
 esac

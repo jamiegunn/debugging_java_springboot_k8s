@@ -8,7 +8,7 @@
 #   2  VIP + DNS         scripts/k3s-net.sh up      (keepalived + dnsmasq + resolvers)
 #   3  platform          scripts/k3s-platform.sh up (ingress-nginx DaemonSet)
 #   4  charts            scripts/k3s-charts.sh up   (oracle, mq, valkey, app)
-#   5  keepalived retrack + smoke                    (VIP tracks ingress :80; verify)
+#   5  verify + smoke                                 (VIP + DNS reachable by hostname)
 #
 # Everything is air-gapped and hostname-native. Replaces the Rancher Desktop
 # install-stack.sh end to end.
@@ -74,9 +74,8 @@ info "[3/5] platform (ingress-nginx)..."
 info "[4/5] charts (oracle, mq, valkey, app)..."
 "$SCRIPT_DIR/k3s-charts.sh" up || { err "chart install failed"; exit 1; }
 
-# --- 5. retrack + smoke -----------------------------------------------------
-info "[5/5] retarget keepalived at ingress :80, then verify..."
-"$SCRIPT_DIR/k3s-net.sh" --track ingress up >/dev/null 2>&1
+# --- 5. verify --------------------------------------------------------------
+info "[5/5] verify VIP + DNS..."
 "$SCRIPT_DIR/k3s-net.sh" verify
 
 if [[ $SKIP_SMOKE -eq 0 ]]; then
