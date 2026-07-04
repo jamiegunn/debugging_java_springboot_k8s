@@ -44,6 +44,7 @@ header() {
     printf '  %starget%s   namespace  %s%s%s\n' "$B" "$OFF" "$GN" "$NAMESPACE" "$OFF"
     printf '           selector   %s%s%s\n' "$GN" "$SELECTOR" "$OFF"
     printf '           container  %s%s%s\n' "$GN" "$APP_CONTAINER" "$OFF"
+    printf '           %s↳ press %st%s%s to change any of these%s\n' "$DIM" "$OFF$GN" "$OFF" "$DIM" "$OFF"
     printf '  %skubeconfig%s %s\n' "$B" "$OFF" "${KUBECONFIG:-"(default context)"}"
     printf '  %sCapture tiers: 1 actuator (default) → 2 jattach → 3 ephemeral JDK.%s\n' "$DIM" "$OFF"
     printf '  %sExamples (non-interactive):%s\n' "$DIM" "$OFF"
@@ -82,7 +83,7 @@ menu() {
 
   ${B}SNAPSHOT${OFF}                    ${B}UTILITIES${OFF}
    ${GN}10${OFF} incident snapshot        ${GN}i${OFF}  pre-stage jattach in pod
-      ${DIM}(offline bundle)${OFF}          ${GN}t${OFF}  change target (ns/selector)
+      ${DIM}(offline bundle)${OFF}          ${GN}t${OFF}  change target (ns/sel/container)
                                 ${GN}q${OFF}  quit
 EOF
     printf '\n  %s> %s' "$B" "$OFF"
