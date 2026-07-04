@@ -18,15 +18,6 @@ if [[ -z "${KUBECONFIG:-}" && -s "$REPO/dumps/k3s.kubeconfig" ]]; then
     export KUBECONFIG="$REPO/dumps/k3s.kubeconfig"
 fi
 
-# Announce the target so a `./jdebug <cmd>` run is never ambiguous about which
-# pod it hits (stderr, so it never pollutes stdout). The bare menu shows this in
-# its own header, so skip it there.
-if [[ $# -gt 0 ]]; then
-    _d=""; _o=""; [[ -t 2 && -z "${NO_COLOR:-}" ]] && { _d=$'\033[2m'; _o=$'\033[0m'; }
-    printf '%sjdebug → namespace=%s  selector=%s  container=%s%s%s\n' \
-        "$_d" "$JDEBUG_NAMESPACE" "$JDEBUG_SELECTOR" "$JDEBUG_CONTAINER" \
-        "${KUBECONFIG:+  kubeconfig=$KUBECONFIG}" "$_o" >&2
-    printf '%s        override per run with -n/-l/--container, or JDEBUG_NAMESPACE/SELECTOR/CONTAINER%s\n' "$_d" "$_o" >&2
-fi
-
+# (The kit itself announces the resolved target on each command — see
+# jdebug/lib/common.sh. This adapter just navigates into it.)
 exec "$REPO/scripts/jdebug/jdebug" "$@"

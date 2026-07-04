@@ -34,9 +34,22 @@ usage() {
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+# announce_target — print the resolved target to stderr so every command makes
+# clear which pod it will hit. Once per process tree (the guard is exported, so a
+# tool that shells out to another jdebug tool doesn't repeat it). Silence with
+# JDEBUG_QUIET=1; respects NO_COLOR.
+announce_target() {
+    [[ -n "${JDEBUG_TARGET_ANNOUNCED:-}" || -n "${JDEBUG_QUIET:-}" ]] && return 0
+    export JDEBUG_TARGET_ANNOUNCED=1
+    local d="" o=""; [[ -t 2 && -z "${NO_COLOR:-}" ]] && { d=$'\033[2m'; o=$'\033[0m'; }
+    printf '%sjdebug → namespace=%s  selector=%s  container=%s%s%s\n' \
+        "$d" "$NAMESPACE" "${SELECTOR:-<any pod>}" "$APP_CONTAINER" \
+        "${KUBECONFIG:+  kubeconfig=$KUBECONFIG}" "$o" >&2
+}
+
 # parse_common_args <args...> — consumes -n/--namespace, -l/--selector,
 # --container, and -h/--help. Sets NAMESPACE/SELECTOR/APP_CONTAINER; leaves the
-# rest in REMAINING_ARGS.
+# rest in REMAINING_ARGS. Announces the resolved target once it has parsed them.
 parse_common_args() {
     REMAINING_ARGS=()
     while [[ $# -gt 0 ]]; do
@@ -49,6 +62,7 @@ parse_common_args() {
             *)  REMAINING_ARGS+=("$1"); shift ;;
         esac
     done
+    announce_target
 }
 
 # show_cmd <words...> — echo the exact command a tool is about to run, so every
