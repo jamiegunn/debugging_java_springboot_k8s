@@ -6,10 +6,13 @@ of the repo is the **debug tooling layer** in `scripts/` — kubectl-driven
 tools for grabbing thread/heap dumps and toggling Logback levels at
 runtime without restarting the pod.
 
-The stack runs on a **purpose-built 3-node k3s cluster on Lima VMs**,
-fronted by a **keepalived VIP**, addressed entirely **by hostname**, and
-fed from a **fully air-gapped image bundle** (nothing pulls from inside a
-VM or pod). The full design reference is
+The stack runs on a **purpose-built 3-node k3s cluster on Lima VMs**
+(1 tainted control-plane server + 2 worker agents), fronted by a
+**dedicated load-balancer VM** (`ddk3s-lb`, the F5/NetScaler stand-in)
+that owns a **keepalived VIP** and HAProxy-pools to the workers. The
+stack is addressed entirely **by hostname** and fed from a **fully
+air-gapped image bundle** (nothing pulls from inside a VM or pod). The
+full design reference is
 [`docs/k3s-architecture.md`](docs/k3s-architecture.md); the front door is
 `scripts/k3s.sh`.
 
@@ -152,9 +155,20 @@ through the outage while pods rescheduled.
 ## Getting started (from a clean macOS install)
 
 This section assumes **nothing**: no Homebrew, no cluster running. The
-whole stack is built and installed from the Mac; the 3 k3s VMs and their
+whole stack is built and installed from the Mac; the k3s VMs and their
 pods never reach the internet (air-gapped), so the Mac (which has internet
 or a corporate mirror) builds an image bundle first, then hands it in.
+
+`./tui install` runs a **pre-flight** (`scripts/k3s-preflight.sh`) as its
+very first step, so you can realistically just run `./tui install` on a
+clean Mac. Pre-flight is idempotent and checks + auto-fixes the Mac
+prerequisites — Homebrew, the CLI tools (`limactl`/`kubectl`/`helm`/
+`curl`), **`socket_vmnet`** (the backend for Lima's `shared` network),
+the **Lima sudoers** entry (`/etc/sudoers.d/lima`, so the shared network
+starts without a password prompt), Docker (only to build the bundle), and
+RAM — printing the exact fix command for anything it can't safely do
+itself. socket_vmnet + Lima sudoers used to be a manual step; pre-flight
+now handles them. Run it standalone any time with `./tui preflight`.
 
 ### 0. macOS prereqs
 
@@ -172,8 +186,11 @@ xcode-select --install   # opens a GUI dialog; click "Install"
 
 ### 1. Install the toolchain
 
-The install needs `limactl` (VMs), `kubectl`, `helm`, `docker` (only to
-build the air-gap bundle), and `curl`:
+You can skip this section — `./tui install`'s pre-flight installs these for
+you (via Homebrew) and configures socket_vmnet + Lima sudoers. It's listed
+here so you know what the stack depends on. The install needs `limactl`
+(VMs), `kubectl`, `helm`, `docker` (only to build the air-gap bundle), and
+`curl`:
 
 ```sh
 brew install lima kubernetes-cli helm curl
@@ -201,9 +218,10 @@ cd debugging_java_springboot_k8s
 
 `scripts/k3s.sh` is the single front door (or run **`./tui`** from the repo
 root for an interactive menu over everything — bare `./tui` opens the menu,
-`./tui <cmd>` forwards to the same commands below). One command builds the
-air-gap bundle, creates the VMs, installs k3s, wires the VIP + DNS, deploys
-ingress-nginx and every chart, and smoke-tests it:
+`./tui <cmd>` forwards to the same commands below). One command pre-flights
+the Mac, builds the air-gap bundle, creates the VMs, installs k3s, wires DNS,
+deploys ingress-nginx and every chart, stands up the LB tier, and
+smoke-tests it:
 
 ```sh
 ./tui install            # or: scripts/k3s.sh install
@@ -211,6 +229,9 @@ ingress-nginx and every chart, and smoke-tests it:
 
 What `install` chains (orchestrated by `scripts/k3s-install.sh`):
 
+0. **Pre-flight** — `scripts/k3s-preflight.sh` checks + auto-fixes the Mac
+   prerequisites (Homebrew, CLI tools, socket_vmnet, Lima sudoers, Docker,
+   RAM) so the install can't fail obscurely deep inside VM creation.
 1. **Bundle** — `scripts/bundle-images.sh` runs on the Mac: `docker pull`
    + `docker save` every third-party image (list = `K3S_IMAGES` in
    `scripts/lib/k3s-env.sh`), builds + saves the app image, and downloads
@@ -221,17 +242,24 @@ What `install` chains (orchestrated by `scripts/k3s-install.sh`):
    `ddk3s-agent-1`, `ddk3s-agent-2`) on Lima's `shared` network
    (`192.168.105.0/24`), copies the bundle into each, installs k3s
    v1.31.5 with `INSTALL_K3S_SKIP_DOWNLOAD=true`, and
-   `k3s ctr images import`s every tar into containerd. A pod that tried to
-   pull would fail — which is the point.
-3. **VIP + DNS** (`k3s-net.sh`) — keepalived (VRRP VIP
-   `192.168.105.100`), dnsmasq on the server node for `*.debug-demo.local`,
-   and a CoreDNS stub so pods resolve the same hostnames.
+   `k3s ctr images import`s every tar into containerd. The server is
+   installed with `--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule`,
+   so all workloads land on the two agents. A pod that tried to pull would
+   fail — which is the point.
+3. **DNS** (`k3s-net.sh`) — dnsmasq on the server node for
+   `*.debug-demo.local`, a CoreDNS stub so pods resolve the same
+   hostnames, and the Mac `/etc/resolver` — all answering to the VIP.
+   This script is DNS-only; the VIP itself is served by the LB tier below.
 4. **Platform** (`k3s-platform.sh`) — ingress-nginx as a hostPort
-   DaemonSet behind the VIP, namespaces, and `local-path` storage.
+   DaemonSet (on the agents), namespaces, and `local-path` storage.
 5. **Charts** (`k3s-charts.sh`) — Oracle, IBM MQ, Valkey, and the app
    (Artifactory is optional — only for the `scripts/local-ci.sh`
    in-cluster registry loop — and is skipped by default).
-6. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
+6. **LB tier** (`k3s-lb.sh`) — creates the `ddk3s-lb` VM running keepalived
+   (owns the VIP `192.168.105.100`) + HAProxy (pools HTTP `:80` to the
+   agents' ingress and Valkey TCP `:6379-6384` to the agents' klipper).
+   Runs last, since it pools to the ingress + Valkey that must already exist.
+7. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
 
 The kubeconfig is written to `dumps/k3s.kubeconfig`;
 `scripts/lib/common.sh` auto-points every script's `kubectl` at it, so
@@ -241,8 +269,10 @@ Other `scripts/k3s.sh` subcommands (all also reachable as `./tui <cmd>`):
 
 ```sh
 scripts/k3s.sh              # (no args) open the interactive TUI — same as ./tui
+scripts/k3s.sh preflight    # check + auto-fix Mac prerequisites (socket_vmnet, sudoers, tools, RAM)
 scripts/k3s.sh bundle       # (re)build the air-gap image bundle on the Mac
-scripts/k3s.sh install      # full install (bundle → VMs → k3s → VIP/DNS → ingress → charts → smoke)
+scripts/k3s.sh install      # full install (preflight → bundle → VMs → k3s → DNS → ingress → charts → LB → smoke)
+scripts/k3s.sh lb           # the LB tier VM (ddk3s-lb): keepalived VIP + HAProxy (up/down/status)
 scripts/k3s.sh resolver     # write the Mac /etc/resolver so hostnames resolve (sudo; optional)
 scripts/k3s.sh doctor       # one-shot health check across EVERY layer (start here if broken)
 scripts/k3s.sh smoke        # 14-check end-to-end verification, all by hostname
@@ -256,9 +286,9 @@ scripts/k3s.sh uninstall    # delete the VMs, resolver, kubeconfig
 #### If the VIP is already taken
 
 The VIP defaults to `192.168.105.100`, which lives inside the Lima shared
-network's DHCP range — it is **not reserved**. Install pre-flights it: if
-another device on the segment already holds it, `k3s-net.sh` aborts with the
-exact fix. Pick a free address and install with it — the value **persists**
+network's DHCP range — it is **not reserved**. The LB tier pre-flights it:
+if another device on the segment already holds it, `k3s-lb.sh` aborts with
+the exact fix. Pick a free address and install with it — the value **persists**
 (to `dumps/k3s-vip`) so every later `doctor`/`smoke`/`tui`/chart command agrees
 on it without re-exporting:
 
@@ -306,7 +336,8 @@ from step 4.)
 ### 6. Use it
 
 ```sh
-# From the Mac — HTTP enters through the VIP → ingress-nginx → app.
+# From the Mac — HTTP enters through the VIP (on ddk3s-lb) → HAProxy →
+# the agents' ingress-nginx → app.
 # With the /etc/resolver entry (step 4) plain curl works:
 BASE=http://debug-demo.local
 curl $BASE/actuator/health
@@ -329,7 +360,7 @@ runbook (logs, memory triage, dump capture without JDK tools).
 ### 7. Tear down
 
 ```sh
-scripts/k3s.sh uninstall    # delete the 3 VMs, the Mac /etc/resolver entry, and the kubeconfig
+scripts/k3s.sh uninstall    # delete all 4 VMs (3 k3s + ddk3s-lb), the Mac /etc/resolver entry, and the kubeconfig
 ```
 
 ### Troubleshooting
@@ -338,7 +369,7 @@ scripts/k3s.sh uninstall    # delete the 3 VMs, the Mac /etc/resolver entry, and
 |---|---|
 | Anything looks broken | Run `scripts/k3s.sh doctor` first — it pinpoints the failing layer and prints the fix command |
 | `kubectl` can't reach the cluster | Kubeconfig is at `dumps/k3s.kubeconfig`; the scripts auto-target it. For raw `kubectl`, `export KUBECONFIG=$PWD/dumps/k3s.kubeconfig` |
-| VMs won't start / wrong sizes | `limactl list` shows the 3 `ddk3s-*` VMs; sizes come from `scripts/lib/k3s-env.sh` |
+| VMs won't start / wrong sizes | `limactl list` shows the 4 `ddk3s-*` VMs (server, agent-1, agent-2, lb); sizes come from `scripts/lib/k3s-env.sh` |
 | `curl http://debug-demo.local/...` fails from the Mac | Missing resolver — either run `scripts/k3s.sh resolver` or use `curl --resolve debug-demo.local:80:192.168.105.100 ...` |
 | A pod is `ImagePullBackOff` | The air-gap bundle is missing that image — rebuild with `scripts/k3s.sh bundle` (add the ref to `K3S_IMAGES` in `scripts/lib/k3s-env.sh` if new) |
 | Stale `/etc/hosts` line for `debug-demo.local` | Left over from an older setup — remove it by hand; the k3s flow does not write `/etc/hosts` |
@@ -346,48 +377,64 @@ scripts/k3s.sh uninstall    # delete the 3 VMs, the Mac /etc/resolver entry, and
 
 ## Architecture
 
-### Cluster topology (3 VMs, one L2 segment)
+### Cluster topology (4 VMs, one L2 segment)
 
 ```
                           Mac (192.168.105.1 on the shared subnet)
                                      │  resolves *.debug-demo.local via dnsmasq
                                      │  reaches the VIP directly (same L2)
-        ┌────────────────────────────┼────────────────────────────┐
-        │                keepalived VRRP VIP 192.168.105.100        │
-        │                 (floats to whichever node is MASTER)      │
-   ┌────┴─────────┐      ┌───────────────────┐     ┌───────────────┐
+                                     ▼
+                    ┌──────────────────────────────────┐
+                    │ ddk3s-lb   (1 cpu / 1 GiB)        │  ← F5/NetScaler stand-in
+                    │ keepalived  — owns VIP .100       │
+                    │ HAProxy     — :80 → agents' ingress
+                    │               :6379-6384 → klipper│
+                    └──────────────┬───────────────────┘
+                                   │  pools to the WORKER agents only
+        ┌──────────────────────────┼──────────────────────────┐
+   ┌────┴─────────┐      ┌──────────┴────────┐     ┌───────────┴───┐
    │ ddk3s-server │      │  ddk3s-agent-1    │     │ ddk3s-agent-2 │
    │ k3s server   │      │  k3s agent        │     │ k3s agent     │
-   │ keepalived   │      │  keepalived       │     │ keepalived    │
-   │  (MASTER)    │      │  (BACKUP)         │     │ (BACKUP)      │
-   │ dnsmasq      │      │                   │     │               │
+   │ control-plane│      │  worker           │     │ worker        │
+   │ TAINTED —    │      │  ingress, klipper,│     │ ingress, klipper,
+   │ NoSchedule   │      │  app, Oracle, MQ, │     │ app, Oracle, MQ,
+   │ dnsmasq      │      │  Valkey           │     │ Valkey        │
    │ 3 GB / 2 cpu │      │  7 GB / 3 cpu     │     │ 7 GB / 3 cpu  │
    └──────────────┘      └───────────────────┘     └───────────────┘
-        ▲                        ▲                        ▲
-   ingress-nginx DaemonSet (hostPort 80/443) on every node — the VIP always
-   lands on a node that answers HTTP. Valkey per-pod LoadBalancer Services
-   are fulfilled by klipper (k3s servicelb); keepalived floats the VIP.
 ```
 
-All 3 VMs **and the Mac** sit on Lima's `shared` network (socket_vmnet,
+All 4 VMs **and the Mac** sit on Lima's `shared` network (socket_vmnet,
 `192.168.105.0/24`) — one L2 segment. That directness is the whole point:
 the VIP is reachable from the Mac and from every pod with no NAT, no
-static routes, and no proxy VM. See
+static routes. See
 [`docs/k3s-architecture.md`](docs/k3s-architecture.md) for the full
 rationale.
 
 Key pieces:
 
-- **keepalived** runs as a host service on all three nodes. One VRRP
-  instance, priority server(150) > agents(100); a `track_script` pings
-  the local ingress `:80/healthz` so the VIP only lives on a node whose
-  ingress is actually serving.
+- **The LB tier is a separate VM** (`ddk3s-lb`, managed by
+  `scripts/k3s-lb.sh up/down/status`) — the "external VIP → backend pool
+  of cluster nodes" model. **keepalived** owns the VIP
+  `192.168.105.100` here, **independent of cluster-node health**: a
+  thrashing k3s node can't drag the VIP down with it (the outage that
+  drove this change). It self-daemonizes (`keepalived --use-file=...`)
+  and holds the VIP by VRRP priority — no ingress health-track script.
+  **HAProxy** fronts HTTP (`:80`, health-checked, so it routes around a
+  starved/down node) and Valkey TCP (`:6379-6384`). Both pool to the
+  **worker agents only** — the control-plane node is tainted, so ingress
+  and klipper don't run there.
+- **The control-plane server is tainted** (`node-role.kubernetes.io/control-plane=true:NoSchedule`),
+  so ALL workloads (app, Oracle, MQ, Valkey, ingress-nginx DaemonSet,
+  klipper svclb) run on the two worker agents; the small 3 GiB server
+  runs only in-process k3s components. Without the taint the app JVM
+  starved the server.
 - **flannel host-gw** backend (not VXLAN — VXLAN's tx-checksum-offload bug
   drops UDP on nested VMs and breaks cluster DNS), pinned with
   `--flannel-iface=lima0`.
 - **klipper (k3s servicelb)** fulfills `type: LoadBalancer` Services (this
-  replaces MetalLB from the old single-node setup). keepalived (floating
-  VIP) and klipper (port→pod forwarding) are complementary.
+  replaces MetalLB from the old single-node setup) on the agents; HAProxy
+  on the LB tier is what actually forwards external traffic to those
+  klipper ports.
 
 ### DNS — everything is a hostname
 
@@ -407,14 +454,16 @@ no `/etc/hosts` writes are involved.
 ### HTTP path
 
 ```
-client → debug-demo.local → VIP 192.168.105.100 → ingress-nginx
-       (hostPort DaemonSet) → app ClusterIP → app pod
+client → debug-demo.local → VIP 192.168.105.100 (on ddk3s-lb)
+       → HAProxy :80 → agents' ingress-nginx (hostPort DaemonSet)
+       → app ClusterIP → app pod
 ```
 
 The ingress-nginx controller runs as a DaemonSet with
 `controller.hostPort.enabled` and `service.type=ClusterIP`, so exactly one
-pod per node binds :80/:443 on the host. keepalived keeps the VIP on a node
-whose ingress is serving, so the VIP is always a live front door.
+pod per agent binds :80/:443 on the host. HAProxy on the LB VM
+health-checks the agents' ingress and routes around a down/starved one, so
+the VIP (held by keepalived on that same LB VM) is always a live front door.
 
 ### Air-gap: no image ever pulled inside a VM or pod
 
@@ -536,11 +585,25 @@ curl -X POST "http://localhost:8080/api/batch/customers/load?file=/data/customer
 
 ## Horizontal pod autoscaling
 
-The app chart ships an HPA enabled by default: 1 → 10 replicas, target 20%
+The app chart ships an HPA enabled by default: 1 → N replicas, target 20%
 CPU utilization (relative to the `requests.cpu` of 50m, so it scales out as
-soon as a pod is doing ~10 millicores of work). Scale-up is aggressive — up
-to 4 new pods per minute or 100% of current count, whichever is greater.
-Scale-down has a 180s stabilization window to avoid thrashing.
+soon as a pod is doing ~10 millicores of work). The chart default is
+`maxReplicas: 10`, but on this two-agent footprint `k3s-charts.sh` **caps it
+at 4** (via `--set`) so the fleet fits the two 7 GiB agents; bump it back up
+on a bigger cluster. Scale-up is aggressive — up to 4 new pods per minute or
+100% of current count, whichever is greater. Scale-down has a 180s
+stabilization window to avoid thrashing.
+
+Two tuning notes for the small footprint: the pods carry a soft
+**pod-anti-affinity** (`spreadAcrossNodes`, on by default) so replicas spread
+across the agents, and a **`startupProbe`** (≈200s: 40 × 5s) gates
+liveness/readiness so a slow JVM boot under CPU contention isn't
+liveness-killed into a CrashLoop.
+
+On heap sizing: the app sets `resources.limits.memory: 1Gi`, and
+`-XX:MaxRAMPercentage=75` (with `-XX:+UseContainerSupport`) sizes the heap
+to ~0.73 GiB **against that container limit, not the node** — the JVM reads
+the cgroup limit, so the node's total RAM is irrelevant here.
 
 ```sh
 kubectl -n debug-demo get hpa app-debug-demo-app -w

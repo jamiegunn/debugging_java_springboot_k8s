@@ -35,9 +35,10 @@ metrics (Micrometer/Prometheus).
 
 ## Architecture
 
-The workloads run on a **purpose-built 3-node k3s cluster on Lima VMs**
-(see `docs/k3s-architecture.md` for the full design). Each box below is
-a separate Helm chart in `charts/`; charts have no inter-dependencies —
+The workloads run on a **purpose-built 3-node k3s cluster on Lima VMs**,
+fronted by a **separate load-balancer VM** that holds the VIP (see
+`docs/k3s-architecture.md` for the full design). Each box below is a
+separate Helm chart in `charts/`; charts have no inter-dependencies —
 install order is whatever fits the user's flow.
 
 ```
@@ -73,29 +74,47 @@ install order is whatever fits the user's flow.
    └─────────────────────┘
 ```
 
-Cluster infrastructure — 3 Lima VMs on one shared L2 segment
-(`192.168.105.0/24`, socket_vmnet), a floating keepalived VIP, and
-air-gapped images:
+Cluster infrastructure — **4 Lima VMs** on one shared L2 segment
+(`192.168.105.0/24`, socket_vmnet): a dedicated LB VM holding the VIP,
+one tainted control-plane node, two worker agents, and air-gapped
+images:
 
 ```
                      Mac (192.168.105.1)  — resolves *.debug-demo.local,
                                             reaches the VIP directly (same L2)
                                     │
-        ┌───────── keepalived VRRP VIP 192.168.105.100 ──────────┐
-        │            (floats to whichever node is MASTER)         │
-   ┌────┴─────────┐      ┌───────────────────┐     ┌───────────────┐
+              keepalived VIP 192.168.105.100  (lives on the LB VM)
+                                    │
+                     ┌──────────────┴───────────────┐
+                     │  ddk3s-lb   (1 cpu / 1 GiB)   │  ← F5/NetScaler stand-in
+                     │  keepalived (MASTER, prio 150)│
+                     │  HAProxy:                     │
+                     │   :80        → agents' ingress (httpchk /healthz)
+                     │   :6379-6384 → agents' klipper (Valkey, per-port)
+                     └──────────────┬───────────────┘
+                                    │ backend pool = the WORKER AGENTS only
+        ┌───────────────────────────┼───────────────────────────┐
+   ┌────┴─────────┐      ┌──────────┴────────┐     ┌─────────────┴─┐
    │ ddk3s-server │      │  ddk3s-agent-1    │     │ ddk3s-agent-2 │
    │ k3s server   │      │  k3s agent        │     │ k3s agent     │
-   │ keepalived   │      │  keepalived       │     │ keepalived    │
-   │  (MASTER,    │      │  (BACKUP, 100)    │     │ (BACKUP, 100) │
-   │   prio 150)  │      │                   │     │               │
-   │ dnsmasq      │      │  7 GB / 3 cpu     │     │ 7 GB / 3 cpu  │
-   │ 3 GB / 2 cpu │      └───────────────────┘     └───────────────┘
-   └──────────────┘
-   ingress-nginx DaemonSet (hostPort 80/443) on every node — the VIP
-   always lands on a node that answers HTTP (keepalived track_script
-   pings the local ingress :80/healthz). klipper (k3s servicelb)
-   fulfills type=LoadBalancer for the per-pod Valkey Services.
+   │ control-plane│      │  worker           │     │ worker        │
+   │ TAINTED      │      │  ingress, klipper,│     │ ingress,      │
+   │ NoSchedule   │      │  app, Oracle, MQ, │     │ klipper, app, │
+   │ (no workloads)      │  Valkey           │     │ Oracle, MQ,   │
+   │ dnsmasq      │      │  7 GB / 3 cpu     │     │ Valkey        │
+   │ 3 GB / 2 cpu │      └───────────────────┘     │ 7 GB / 3 cpu  │
+   └──────────────┘                                └───────────────┘
+   The VIP lives on the LB VM, INDEPENDENT of cluster-node health — a
+   thrashing k3s node can't take it down (the outage that drove this
+   design). HAProxy health-checks the agents and routes around a
+   down/starved one. The control-plane node is tainted
+   `node-role.kubernetes.io/control-plane=true:NoSchedule`, so all
+   workloads — app, Oracle, MQ, Valkey, ingress-nginx DaemonSet, klipper
+   svclb — run on the two agents only; HAProxy pools to the agents
+   accordingly. ingress-nginx is a DaemonSet on hostPort 80/443; klipper
+   (k3s servicelb) fulfills type=LoadBalancer for the per-pod Valkey
+   Services. keepalived self-daemonizes (`keepalived --use-file=...`),
+   holding the VIP by VRRP priority — no ingress health-track script.
 ```
 
 k3s v1.31.5 on Alpine 3.23. flannel uses the **host-gw** backend (NOT
@@ -104,21 +123,22 @@ breaks cluster DNS), pinned with `--flannel-iface=lima0`.
 
 ## External access — VIP + hostnames
 
-Everything is addressed **by hostname → the keepalived VIP**; no static
-routes, no per-service external IPs. Two config values in
-`scripts/lib/k3s-env.sh` name the entry points:
+Everything is addressed **by hostname → the VIP** (held by keepalived on
+the LB VM); no static routes, no per-service external IPs. Two config
+values in `scripts/lib/k3s-env.sh` name the entry points:
 `APP_HOST=debug-demo.local` and `VALKEY_HOST=valkey.debug-demo.local`,
 both resolving to `K3S_VIP=192.168.105.100`.
 
-- **HTTP** — `client → debug-demo.local → VIP → ingress-nginx → app
-  ClusterIP → app pod`. ingress-nginx runs as a **DaemonSet on hostPort
-  80/443** (`controller.kind=DaemonSet`, `controller.hostPort.enabled`,
-  `service.type=ClusterIP`), so whichever node the VIP lands on answers
-  HTTP. keepalived fronts the single VIP; `Ingress`/`IngressClass` do
-  host/path routing (`host: debug-demo.local`).
-- **Valkey** — `client → valkey.debug-demo.local:<port> → VIP →
-  klipper → owning pod`. Client TCP only; the cluster **bus is
-  pod-to-pod** on the CNI network (see below).
+- **HTTP** — `client → debug-demo.local → VIP (LB VM) → HAProxy → agent
+  ingress-nginx → app ClusterIP → app pod`. ingress-nginx runs as a
+  **DaemonSet on hostPort 80/443** (`controller.kind=DaemonSet`,
+  `controller.hostPort.enabled`, `service.type=ClusterIP`) on the two
+  worker agents; HAProxy on the LB VM pools `:80` to the agents (health-
+  checked `/healthz`) and routes around a down one. `Ingress`/
+  `IngressClass` do host/path routing (`host: debug-demo.local`).
+- **Valkey** — `client → valkey.debug-demo.local:<port> → VIP (LB VM) →
+  HAProxy TCP → agent klipper → owning pod`. Client TCP only; the
+  cluster **bus is pod-to-pod** on the CNI network (see below).
 
 Who resolves what:
 
@@ -146,27 +166,34 @@ pod→node-shared-IP UDP fails on this topology.
   nginx-ingress for another (Traefik, Contour, Envoy) is a controller
   swap, not an app-config change.
 
-### keepalived + klipper: who fulfills `type=LoadBalancer`
+### LB tier + klipper: who fulfills `type=LoadBalancer`
 
 A `Service type=LoadBalancer` is *a request*, not an implementation.
 On cloud k8s (EKS/GKE/AKS) the cloud-controller-manager fulfills it by
 provisioning an ELB/NLB/GLB and writing the IP back. Here there is no
-cloud controller, so two host-level components split the job:
+cloud controller, so the job is split between an external LB tier and
+an in-cluster component:
 
 - **klipper (k3s servicelb)** fulfills `type: LoadBalancer` — it runs
-  one `svclb` pod per node that forwards each Service's port to the
+  one `svclb` pod per **agent** that forwards each Service's port to the
   backing pod. This is the on-prem/dev stand-in for the cloud LB (it
-  replaces what MetalLB did in the old single-node setup).
-- **keepalived (VRRP)** floats **one stable VIP** across the three
-  nodes so clients always have a single address to dial. One VRRP
-  instance, `virtual_router_id 51`, priority server(150) > agents(100);
-  a `track_script` pings the local ingress `:80/healthz` so the VIP
-  only lives on a node whose ingress is serving.
+  replaces what MetalLB did in the old single-node setup). It does not
+  run on the tainted control-plane node.
+- **The LB VM (`ddk3s-lb`)** is the external "F5/NetScaler" tier —
+  `scripts/k3s-lb.sh` provisions it. **keepalived (VRRP)** owns **one
+  stable VIP** so clients always have a single address to dial; the VIP
+  lives on the LB VM, INDEPENDENT of cluster-node health (a thrashing
+  k3s node can't take it down). **HAProxy** on the same VM is the
+  backend-pool: `:80` → the agents' ingress (health-checked `/healthz`,
+  so a down/starved node is dropped), TCP `:6379-6384` → the agents'
+  klipper LBs (per-shard by port; MOVED-by-hostname preserved). This is
+  the classic "external VIP → backend pool of cluster nodes" model.
 
 They are **complementary, not either/or**: klipper does port→pod
-forwarding on every node, keepalived picks which node's IP is live.
-The Helm charts don't change moving to a real cloud LB — the Valkey
-per-pod Services stay `type: LoadBalancer`; only the fulfiller differs.
+forwarding on every agent, the LB VM's HAProxy pools across agents and
+keepalived pins the single dialable VIP. The Helm charts don't change
+moving to a real cloud LB — the Valkey per-pod Services stay
+`type: LoadBalancer`; only the fulfiller differs.
 
 ### Valkey networking — unique listen ports, pod-IP gossip, hostname endpoints
 
@@ -286,17 +313,17 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 |------|---------|
 | `app/` | Spring Boot service (Maven, single module). The "patient" under test. |
 | `app/.../valkey/` | Valkey ops package — streams, pub/sub, hash, zset, list + `ValkeyPlaygroundController` for direct testing |
-| `charts/debug-demo-app/` | The app, with HPA (1→10 @ 20% CPU), Valkey/Oracle/MQ wiring. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
+| `charts/debug-demo-app/` | The app, with HPA (chart default 1→10 @ 20% CPU; **capped to `maxReplicas: 4`** for this two-agent footprint via `k3s-charts.sh --set`), Valkey/Oracle/MQ wiring. Soft **pod-anti-affinity** (`spreadAcrossNodes`, default on) spreads replicas across the two agents; `affinity`/`tolerations` hooks override. A **`startupProbe`** (40 × 5s ≈ 200s, gates liveness/readiness) keeps a slow JVM boot under CPU contention from being liveness-killed into a CrashLoop. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (klipper). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → klipper → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
-| `./tui` (root) + `scripts/k3s.sh` | Single front door: `tui` / `bundle` / `install` / `resolver` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu; `./tui <cmd>` forwards to the same commands. |
-| `scripts/k3s-*.sh` | Phase scripts: `k3s-install.sh` (orchestrator), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import), `k3s-net.sh` (keepalived VIP **pre-flight** + dnsmasq + CoreDNS stub), `k3s-platform.sh` (ingress-nginx + namespaces + storage), `k3s-charts.sh` (the five charts), `k3s-uninstall.sh` (verifies VM deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
+| `./tui` (root) + `scripts/k3s.sh` | Single front door: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 0 = preflight, 12 = lb); `./tui <cmd>` forwards to the same commands. |
+| `scripts/k3s-*.sh` | Phase scripts, in install order: `k3s-preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `k3s-install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `k3s-net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `k3s-platform.sh` (ingress-nginx + namespaces + storage), `k3s-charts.sh` (the five charts; caps the app HPA at 4), `k3s-lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents; `up`/`down`/`status`), `k3s-uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
 | `scripts/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
 | `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `run-unit-tests.sh`, `local-ci.sh` |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
-| `docs/k3s-architecture.md` | Full 3-node k3s design: topology, keepalived/klipper, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
+| `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, klipper, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
 | `.github/workflows/` | CI: PR validation + main build → Artifactory. |
 | `~/.claude/projects/.../memory/k8s_gotchas.md` | Non-obvious workarounds — read this first when something breaks. |
@@ -316,10 +343,23 @@ fail — which is the point (it proves nothing reaches out).
 
 Preferred: **`scripts/k3s.sh install`** (or `./tui install`; bare `./tui`
 opens an interactive menu over everything) — one command runs the full
-flow (Lima VMs → k3s → keepalived VIP + dnsmasq/CoreDNS → ingress-nginx
-→ namespaces/storage → the five charts → smoke test). It is idempotent.
-The `install` phase orchestrates the `k3s-*.sh` scripts; the air-gap
-bundle is built by `scripts/k3s.sh bundle` (or on demand by `install`).
+flow in order: **pre-flight (step 0) → air-gap bundle → cluster (Lima
+VMs + k3s) → DNS (dnsmasq + CoreDNS stub) → platform (ingress-nginx) →
+the five charts → LB tier (`ddk3s-lb`: keepalived VIP + HAProxy) →
+verify + smoke test**. The LB tier is last because HAProxy pools to the
+ingress + Valkey Services, which must exist first. It is idempotent. The
+`install` phase orchestrates the `k3s-*.sh` scripts; the air-gap bundle
+is built by `scripts/k3s.sh bundle` (or on demand by `install`).
+
+**Pre-flight is step 0** — `scripts/k3s-preflight.sh` (also `./tui
+preflight`) checks and auto-fixes the Mac prerequisites so `./tui
+install` works even if you never opened the README: Homebrew, CLI tools
+(limactl/kubectl/helm/curl), **socket_vmnet** (the Lima shared-network
+backend), **Lima sudoers** (`limactl sudoers | sudo tee
+/etc/sudoers.d/lima`), Docker (only to build the bundle), and RAM. It is
+idempotent and prints the exact fix command for anything it can't
+auto-fix. (socket_vmnet + Lima sudoers used to be an undocumented manual
+step; preflight now handles both.)
 
 **VIP is overridable + persistent.** `K3S_VIP` defaults to `.100`, which
 sits inside the Lima shared-network DHCP range (not reserved). `k3s-net.sh`
@@ -346,16 +386,20 @@ scripts/k3s.sh doctor
 scripts/k3s.sh smoke
 ```
 
-Prereqs: `limactl`, `kubectl`, `helm`, `docker` (for the bundle build),
-`curl`. Lima creates the three VMs (`ddk3s-server`, `ddk3s-agent-1`,
-`ddk3s-agent-2`) — there is no separate VM-provisioning step. The
-kubeconfig is written to `dumps/k3s.kubeconfig`; `scripts/lib/common.sh`
-auto-points every script's `kubectl` at it, so no `KUBECONFIG` export is
-needed. Config overrides (VIP, hostnames, memory/cpu, image list) all
-live in `scripts/lib/k3s-env.sh`.
+Prereqs (all checked/auto-installed by pre-flight): `limactl`,
+`kubectl`, `helm`, `docker` (for the bundle build), `curl`,
+`socket_vmnet` + Lima sudoers. Lima creates **four VMs** — the three
+cluster nodes (`ddk3s-server` control-plane, `ddk3s-agent-1`,
+`ddk3s-agent-2` workers) plus the LB VM (`ddk3s-lb`) — with no separate
+VM-provisioning step. The kubeconfig is written to
+`dumps/k3s.kubeconfig`; `scripts/lib/common.sh` auto-points every
+script's `kubectl` at it, so no `KUBECONFIG` export is needed. Config
+overrides (VIP, hostnames, memory/cpu, image list) all live in
+`scripts/lib/k3s-env.sh`.
 
-Tear down with `scripts/k3s.sh uninstall` (deletes the VMs, the Mac
-resolver, and the kubeconfig).
+Tear down with `scripts/k3s.sh uninstall` (deletes the four VMs
+including `ddk3s-lb`, the Mac resolver, and the kubeconfig; verifies VM
+deletion).
 
 Local CI loop (push image + charts to in-cluster Artifactory): see
 `scripts/local-ci.sh` and the README — needs a one-time daemon.json
@@ -981,6 +1025,18 @@ out for node-to-node connections.
 - **Resource requests:** the app deliberately uses a tiny CPU request
   (50m) so HPA percentage math is meaningful at 20% target. Don't
   bump unless you also adjust the HPA target.
+- **Heap sizing:** the Dockerfile sets `-XX:+UseContainerSupport
+  -XX:MaxRAMPercentage=75.0`, and the chart sets
+  `resources.limits.memory: 1Gi`. With a limit present, the percentage
+  sizes the heap against the **container LIMIT, not the node** — so the
+  heap caps at ~0.73 GiB regardless of how much RAM the 7 GiB agent has.
+  (Percentage-of-node only applies when NO limit is set.)
+- **HPA cap on this footprint:** the chart default is `maxReplicas: 10`
+  (for bigger clusters), but `k3s-charts.sh` caps it at **4** via
+  `--set autoscaling.maxReplicas=4` so the fleet fits the two 7 GiB
+  agents. A `startupProbe` (40 × 5s ≈ 200s) gates liveness/readiness so
+  a slow JVM boot under CPU contention isn't liveness-killed into a
+  CrashLoop.
 - **Deployment strategy:** `RollingUpdate`, not `Recreate`. Recreate
   is mutually exclusive with HPA scale-out.
 
