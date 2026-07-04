@@ -87,15 +87,25 @@ cmd_health() {
 cmd_threads() {
     need_http
     # jstack-format (text/plain) to stdout — redirect to a file, or feed fastthread.io
-    HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump" || actuator_fail "Thread.print -l"
+    if HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump"; then return 0; fi
+    err "⚠ actuator threaddump unreachable at $ACTUATOR_BASE — auto-falling back to jattach…"
+    if [ -x "$JATTACH_BIN" ]; then "$JATTACH_BIN" "$(jvm_pid)" jcmd "Thread.print -l"
+    else actuator_fail "Thread.print -l"; fi
 }
 
 cmd_heap() {
     need_http
     [ "${1:-}" = "--confirm" ] || { err "heap dump PAUSES the JVM (destructive in prod). Re-run: jdebug-local heap --confirm"; exit 2; }
     out="$OUT_DIR/heap-$(ts).hprof"
-    http_get "$ACTUATOR_BASE/heapdump" "$out" || actuator_fail "GC.heap_dump $out"
-    echo "wrote $out  ($(wc -c <"$out" 2>/dev/null || echo '?') bytes) — pull it out with: kubectl cp <pod>:$out ./"
+    if http_get "$ACTUATOR_BASE/heapdump" "$out"; then
+        echo "wrote $out  ($(wc -c <"$out" 2>/dev/null || echo '?') bytes) — pull it out with: kubectl cp <pod>:$out ./"
+        return 0
+    fi
+    err "⚠ actuator heapdump unreachable at $ACTUATOR_BASE — auto-falling back to jattach…"
+    if [ -x "$JATTACH_BIN" ]; then
+        "$JATTACH_BIN" "$(jvm_pid)" jcmd "GC.heap_dump $out"
+        echo "wrote $out (via jattach) — pull it out with: kubectl cp <pod>:$out ./"
+    else actuator_fail "GC.heap_dump $out"; fi
 }
 
 cmd_memory() {
@@ -119,9 +129,14 @@ cmd_memory() {
         printf '  live threads      : %8s        (~1 MiB stack each)\n' "${threads:-?}"
         echo "  (heap < limit but OOMKilled? look at non-heap, direct buffers, threads — jcmd VM.native_memory)"
     else
-        echo "  JVM heap/non-heap : unavailable — actuator metrics not reachable at $ACTUATOR_BASE"
-        echo "  (RSS above is straight from cgroup and is still valid. For JVM detail without"
-        echo "   actuator, use jattach:  jdebug-local jcmd \"GC.heap_info\"  /  jcmd \"VM.native_memory summary\")"
+        echo "  JVM heap/non-heap : actuator metrics unreachable at $ACTUATOR_BASE"
+        if [ -x "$JATTACH_BIN" ]; then
+            echo "  → auto-falling back to jattach GC.heap_info (RSS above is cgroup-real):"
+            "$JATTACH_BIN" "$(jvm_pid)" jcmd "GC.heap_info" 2>&1 | sed 's/^/      /'
+        else
+            echo "  (RSS above is straight from cgroup and still valid. For JVM detail without"
+            echo "   actuator, stage jattach then: jdebug-local jcmd \"GC.heap_info\")"
+        fi
     fi
 }
 
@@ -171,13 +186,17 @@ jdebug-local — JVM diagnostics from INSIDE the pod (no kubectl, no JDK, one fi
   and a JRE-only image.
 
 USAGE
-  jdebug-local <command> [args]
+  jdebug-local [-a <actuator-url>] <command> [args]
   jdebug-local help [command]      # this screen, or detailed help for one command
+
+  -a, --actuator-base <url>   override the actuator URL (default below) when the
+                              app uses a custom management port or base-path
+  --jattach-bin <path>        override the jattach binary path
 
 COMMANDS
   health              actuator health, per subsystem (db, redis, jms, ...)
-  threads             thread dump in jstack format (via actuator) → stdout
-  heap [--confirm]    heap dump (hprof) via actuator — PAUSES the JVM
+  threads             thread dump (actuator → auto-falls back to jattach) → stdout
+  heap [--confirm]    heap dump (actuator → auto-falls back to jattach) — PAUSES JVM
   memory              container RSS vs JVM heap / non-heap (cgroup + actuator)
   metrics [name]      list JVM/process/system metrics, or print one metric
   jcmd <command>      any jcmd via jattach, e.g. "GC.heap_info"     [needs jattach]
@@ -273,6 +292,14 @@ EOF
 }
 
 # --- dispatch ---------------------------------------------------------------
+# Global options before the command: -a/--actuator-base <url>, --jattach-bin <path>.
+while [ $# -gt 0 ]; do
+    case "${1:-}" in
+        -a|--actuator-base) ACTUATOR_BASE="$2"; shift 2 ;;
+        --jattach-bin)      JATTACH_BIN="$2";   shift 2 ;;
+        *) break ;;
+    esac
+done
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 # `<cmd> --help` / `<cmd> -h` → per-command help
 case "${1:-}" in -h|--help) help_cmd "$cmd"; exit 0 ;; esac

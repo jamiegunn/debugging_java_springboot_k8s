@@ -58,7 +58,8 @@ header_remote() {
     printf '  %starget%s    namespace  %s%s%s\n' "$B" "$OFF" "$GN" "$NAMESPACE" "$OFF"
     printf '            selector   %s%s%s\n' "$GN" "$SELECTOR" "$OFF"
     printf '            container  %s%s%s\n' "$GN" "$APP_CONTAINER" "$OFF"
-    printf '            %s↳ press %st%s%s to change target · %sm%s%s to switch mode%s\n' "$DIM" "$OFF$GN" "$OFF" "$DIM" "$GN" "$OFF" "$DIM" "$OFF"
+    printf '  %sactuator%s  %s%s%s\n' "$B" "$OFF" "$GN" "$ACTUATOR_BASE" "$OFF"
+    printf '            %s↳ press %st%s%s to change target/actuator · %sm%s%s to switch mode%s\n' "$DIM" "$OFF$GN" "$OFF" "$DIM" "$GN" "$OFF" "$DIM" "$OFF"
     printf '  %skubeconfig%s %s\n' "$B" "$OFF" "${KUBECONFIG:-"(default context)"}"
     printf '  %sExamples:  jdebug health · jdebug -n prod -l app=web memory · jdebug jcmd "GC.heap_info"%s\n' "$DIM" "$OFF"
     hr
@@ -76,13 +77,15 @@ header_local() {
 }
 
 # --- utilities --------------------------------------------------------------
-ask_via() { printf '  capture via [a]ctuator / [j]attach / [d] ephemeral JDK (default a): '
-    local v; read -r v; case "$v" in j|J) VIA=jattach ;; d|D) VIA=jdk ;; *) VIA=actuator ;; esac; }
+# Default (Enter) = auto: actuator → jattach → jdk. Explicit choices force one tier.
+ask_via() { printf '  tier: [Enter] auto (actuator→jattach→jdk) / [j]attach / [d] JDK / [o] actuator-only: '
+    local v; read -r v; case "$v" in j|J) VIA_FLAG="--via jattach" ;; d|D) VIA_FLAG="--via jdk" ;; o|O) VIA_FLAG="--via actuator" ;; *) VIA_FLAG="" ;; esac; }
 retarget() {
     printf '  namespace       [%s]: ' "$NAMESPACE";     local v; read -r v; [[ -n "$v" ]] && NAMESPACE="$v"
     printf '  label selector  [%s]: ' "$SELECTOR";      read -r v; [[ -n "$v" ]] && SELECTOR="$v"
     printf '  container       [%s]: ' "$APP_CONTAINER"; read -r v; [[ -n "$v" ]] && APP_CONTAINER="$v"
-    export NAMESPACE SELECTOR APP_CONTAINER
+    printf '  actuator base   [%s]: ' "$ACTUATOR_BASE"; read -r v; [[ -n "$v" ]] && ACTUATOR_BASE="$v"
+    export NAMESPACE SELECTOR APP_CONTAINER ACTUATOR_BASE
 }
 local_settings() {
     printf '  actuator base URL [%s]: ' "$ACTUATOR_BASE"; local v; read -r v; [[ -n "$v" ]] && ACTUATOR_BASE="$v"
@@ -109,7 +112,7 @@ wiz_oom() {
 wiz_slow() {
     wiz_hd "Slow / hung / high latency"
     wiz_say "Thread dump — look for threads BLOCKED on a pool (HikariCP acquire) or a deadlock."
-    run "$DBG" threads --via actuator
+    run "$DBG" threads
     wiz_say "And health — a DOWN subsystem (db/mq/redis) explains stalls:"
     run "$DBG" health
     wiz_say "Next → feed ./dumps/threads/*.txt to fastthread.io (flags deadlocks & identical stacks)."
@@ -117,8 +120,8 @@ wiz_slow() {
 wiz_cpu() {
     wiz_hd "High CPU / HPA scaling"
     wiz_say "Two thread dumps a few seconds apart — the stack RUNNABLE in both is the hot loop."
-    run "$DBG" threads --via actuator
-    run "$DBG" threads --via actuator
+    run "$DBG" threads
+    run "$DBG" threads
     run "$DBG" top
     wiz_say "Next → diff the two dumps; the persistently-RUNNABLE stack is your CPU."
     wiz_say "       or profile: jdebug jcmd \"JFR.start duration=60s filename=/tmp/r.jfr\""
@@ -208,8 +211,8 @@ dispatch_remote() {
         2)  run "$DBG" health ;;
         3)  run "$DBG" top ;;
         4)  run "$DBG" memory ;;
-        5)  ask_via; run "$DBG" threads --via "$VIA" ;;
-        6)  ask_via; confirm "heap dump PAUSES the JVM (destructive in production) — proceed?" && run "$DBG" heap --via "$VIA" --confirm ;;
+        5)  ask_via; run "$DBG" threads $VIA_FLAG ;;
+        6)  ask_via; confirm "heap dump PAUSES the JVM (destructive in production) — proceed?" && run "$DBG" heap $VIA_FLAG --confirm ;;
         7)  printf '  jcmd command (e.g. GC.heap_info, VM.native_memory summary): '; read -r jc; [[ -n "$jc" ]] && run "$DBG" jcmd "$jc" ;;
         8)  printf '  %sstreaming — Ctrl-C to stop%s\n' "$DIM" "$OFF"; run "$DBG" logs ;;
         9)  printf '  logger (e.g. com.example.debugdemo, ROOT): '; read -r lg

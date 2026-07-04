@@ -57,6 +57,7 @@ parse_common_args() {
             -n|--namespace) NAMESPACE="$2"; shift 2 ;;
             -l|--selector)  SELECTOR="$2";  shift 2 ;;
             --container)    APP_CONTAINER="$2"; shift 2 ;;
+            --actuator-base) ACTUATOR_BASE="$2"; export ACTUATOR_BASE; shift 2 ;;
             -h|--help)      usage; exit 0 ;;
             --) shift; REMAINING_ARGS+=("$@"); break ;;
             *)  REMAINING_ARGS+=("$1"); shift ;;

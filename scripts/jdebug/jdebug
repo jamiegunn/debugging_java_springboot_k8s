@@ -16,10 +16,15 @@
 #     logs          stream logs from all replicas         (tail-logs.sh)
 #     log-level     runtime logger change: log-level <logger> <LEVEL>
 #
-#   Capture (three tiers — prefer actuator, then jattach, then jdk)
-#     threads       thread dump: --via actuator (default) | jattach | jdk
-#     heap          heap dump — PAUSES THE JVM, needs --confirm; same --via
+#   Capture (three tiers — actuator, jattach, jdk)
+#     threads       thread dump. With no --via it AUTO-DEGRADES actuator → jattach
+#                   → jdk (announcing each fallback); --via <tier> forces one.
+#     heap          heap dump — PAUSES THE JVM, needs --confirm; same tiers/auto.
 #     jcmd          any jcmd command via jattach: jcmd "GC.heap_info"
+#
+#   Actuator path defaults to http://localhost:8080/actuator (in the pod).
+#   Override with --actuator-base <url> or $ACTUATOR_BASE when it differs
+#   (custom management port/base-path, e.g. --actuator-base http://localhost:9001/manage).
 #
 #   Memory / bundle (runbook steps 5–6)
 #     memory        RSS vs JVM anatomy, reconciled        (memory-report.sh)
@@ -52,12 +57,14 @@ usage_top() { sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-}"; shift 2>/dev/null || true
 
-# Extract --via <tier> (threads/heap); pass everything else through.
-VIA="actuator"
+# Extract --via <tier> (threads/heap) and --actuator-base <url>; pass the rest on.
+VIA="actuator"; VIA_EXPLICIT=0
+: "${ACTUATOR_BASE:=http://localhost:8080/actuator}"; export ACTUATOR_BASE
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --via) VIA="$2"; shift 2 ;;
+        --via)           VIA="$2"; VIA_EXPLICIT=1; shift 2 ;;
+        --actuator-base) ACTUATOR_BASE="$2"; export ACTUATOR_BASE; shift 2 ;;
         *)     ARGS+=("$1"); shift ;;
     esac
 done
@@ -65,6 +72,28 @@ done
 fwd() { "$@" ${ARGS[@]+"${ARGS[@]}"}; }
 
 triage_parse() { parse_common_args ${ARGS[@]+"${ARGS[@]}"}; }
+
+# run_tier <tier> <threads|heap> — invoke exactly one capture tier.
+run_tier() {
+    case "$1" in
+        actuator) fwd "$D/capture/actuator.sh" "$2" ;;
+        jattach)  fwd "$D/capture/jattach.sh"  "$2" ;;
+        jdk)      if [[ "$2" == threads ]]; then fwd "$D/capture/jdk-threads.sh"; else fwd "$D/capture/jdk-heap.sh"; fi ;;
+        *) err "unknown --via '$1' (actuator|jattach|jdk)"; exit 64 ;;
+    esac
+}
+# capture <threads|heap> — an explicit --via runs only that tier; otherwise DEGRADE
+# AUTOMATICALLY actuator → jattach → jdk, announcing each fallback to the terminal.
+capture() {
+    if [[ "$VIA_EXPLICIT" == 1 ]]; then run_tier "$VIA" "$1"; return $?; fi
+    if run_tier actuator "$1"; then return 0; fi
+    info "⚠ actuator tier failed — auto-falling back to jattach (needs no actuator)…"
+    if run_tier jattach "$1"; then return 0; fi
+    info "⚠ jattach tier failed — auto-falling back to an ephemeral JDK container…"
+    if run_tier jdk "$1"; then return 0; fi
+    err "all capture tiers failed (actuator → jattach → jdk); see the errors above."
+    return 1
+}
 
 case "$cmd" in
     tui|menu|"")     exec "$D/ui/tui.sh" ;;
@@ -82,15 +111,17 @@ case "$cmd" in
     health)
         triage_parse
         POD="$(resolve_one_pod "${REMAINING_ARGS[0]:-}")"
-        show_cmd kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- curl -s http://localhost:8080/actuator/health
+        # curl-or-wget in the pod, against $ACTUATOR_BASE (adjustable via --actuator-base).
+        hfetch() { kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -s '$1'; else wget -qO- '$1'; fi"; }
+        show_cmd "kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- sh -c '<curl-or-wget> $ACTUATOR_BASE/health'"
         if command -v python3 >/dev/null 2>&1; then
-            kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- curl -s http://localhost:8080/actuator/health | python3 -m json.tool
+            hfetch "$ACTUATOR_BASE/health" | python3 -m json.tool
         else
-            kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- curl -s http://localhost:8080/actuator/health; echo
+            hfetch "$ACTUATOR_BASE/health"; echo
         fi
         for probe in liveness readiness; do
             printf '%-10s: ' "$probe"
-            kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- curl -s "http://localhost:8080/actuator/health/$probe"; echo
+            hfetch "$ACTUATOR_BASE/health/$probe"; echo
         done
         ;;
 
@@ -103,21 +134,8 @@ case "$cmd" in
         kubectl -n "$NAMESPACE" get hpa 2>/dev/null || echo "  (no HPA in $NAMESPACE)"
         ;;
 
-    threads)
-        case "$VIA" in
-            actuator) fwd "$D/capture/actuator.sh" threads ;;
-            jattach)  fwd "$D/capture/jattach.sh"  threads ;;
-            jdk)      fwd "$D/capture/jdk-threads.sh" ;;
-            *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
-        esac ;;
-
-    heap)
-        case "$VIA" in
-            actuator) fwd "$D/capture/actuator.sh" heap ;;
-            jattach)  fwd "$D/capture/jattach.sh"  heap ;;
-            jdk)      fwd "$D/capture/jdk-heap.sh" ;;
-            *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
-        esac ;;
+    threads)  capture threads ;;
+    heap)     capture heap ;;
 
     jcmd)            fwd "$D/capture/jattach.sh" jcmd ;;
     memory)          fwd "$D/observe/memory-report.sh" ;;
