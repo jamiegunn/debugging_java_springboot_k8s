@@ -26,16 +26,18 @@ require_cmd kubectl helm
 helm_kc() { helm --kubeconfig "$K3S_KUBECONFIG" "$@"; }
 
 install_oracle() {
-    info "  oracle (gvenzl/oracle-free, pre-imported)..."
+    info "  oracle (gvenzl/oracle-free, pre-imported)${K3S_STATEFUL_NODE:+ → pinned to $K3S_STATEFUL_NODE}..."
     helm_kc upgrade --install oracle "$REPO_ROOT/charts/oracle" -n oracle --create-namespace \
         --set image.repository=gvenzl/oracle-free \
         --set image.tag=23-slim-faststart \
+        ${K3S_STATEFUL_NODE:+--set pinToNode=$K3S_STATEFUL_NODE} \
         --set image.pullPolicy=IfNotPresent >/dev/null 2>&1
 }
 install_mq() {
-    info "  ibm-mq (amd64 via rosetta, pre-imported)..."
+    info "  ibm-mq (amd64 via rosetta, pre-imported)${K3S_STATEFUL_NODE:+ → pinned to $K3S_STATEFUL_NODE}..."
     helm_kc upgrade --install ibm-mq "$REPO_ROOT/charts/ibm-mq" -n mq --create-namespace \
         --set image.tag=9.4.5.1-r1-amd64 \
+        ${K3S_STATEFUL_NODE:+--set pinToNode=$K3S_STATEFUL_NODE} \
         --set image.pullPolicy=IfNotPresent >/dev/null 2>&1
 }
 install_valkey() {

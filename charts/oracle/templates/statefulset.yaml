@@ -15,6 +15,12 @@ spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.pinToNode }}
+      # Pin this single-replica StatefulSet to a specific node (deterministic
+      # node-kill tests). kubernetes.io/hostname is the built-in node name.
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.pinToNode }}
+      {{- end }}
       initContainers:
         # The gvenzl/oracle-free:*-faststart images ship a 3 GB pre-built database
         # at /opt/oracle/oradata. A Kubernetes PVC mounted there hides that content;

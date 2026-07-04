@@ -5,6 +5,10 @@ image:
 
 imagePullSecrets: []
 
+# Pin this single-replica StatefulSet to a node by hostname (empty = scheduler
+# chooses). Set e.g. lima-ddk3s-agent-2 for deterministic node-kill tests.
+pinToNode: ""
+
 service:
   qmPort: 1414
   webPort: 9443

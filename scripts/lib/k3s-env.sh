@@ -21,6 +21,11 @@
 K3S_AGENT_VMS=("${K3S_VM_PREFIX}-agent-1" "${K3S_VM_PREFIX}-agent-2")
 K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 
+# Pin the single-replica stateful backends (Oracle, MQ) to ONE node so node-kill
+# tests are deterministic: kill this node → both go down; kill the other agent →
+# they survive. (k3s node names are lima-<vm>.) Empty = let the scheduler choose.
+: "${K3S_STATEFUL_NODE:=lima-${K3S_VM_PREFIX}-agent-2}"
+
 # The load-balancer tier: a SEPARATE VM (the F5/NetScaler stand-in) that runs
 # keepalived (owns the VIP) + HAProxy (pools to the k3s nodes). The VIP lives
 # here, NOT on the cluster nodes — so it's independent of cluster-node health.
