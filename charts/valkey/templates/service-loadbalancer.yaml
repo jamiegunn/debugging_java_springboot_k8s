@@ -6,25 +6,26 @@
   (basePorts.client + idx, idx counts primaries 0..n-1 then secondaries n..2n-1).
 
   On k3s these are fulfilled by MetalLB (L2/ARP mode; k3s servicelb/klipper is
-  disabled): MetalLB assigns each Service its OWN real IP from a pool and
-  announces it via ARP from the agents only. keepalived floats one VIP on the
-  ddk3s-lb VM, HAProxy maps VIP:port → that shard's MetalLB IP, and dnsmasq
-  resolves valkey.debug-demo.local → the VIP. So a client dials
-  valkey.debug-demo.local:6380 → VIP → HAProxy → <MetalLB IP for primary-1>:6380
-  → the primary-1 pod. Per-shard addressability comes from the PORT; the
-  address the client sees is a hostname → VIP. This uses MetalLB WITHOUT
-  shared-IP annotations or per-pod IPs — each shard gets its own pool IP.
+  disabled): MetalLB assigns the Services a real IP from a pool and announces it
+  via ARP from the agents only. The Services intentionally share one MetalLB IP;
+  per-shard addressability comes from the PORT, while each Service keeps its own
+  one-pod selector. keepalived floats one VIP on the ddk3s-lb VM, HAProxy maps
+  VIP:port → shared MetalLB IP:port, and dnsmasq resolves valkey.debug-demo.local
+  → the VIP. So a client dials valkey.debug-demo.local:6380 → VIP → HAProxy →
+  <shared MetalLB IP>:6380 → the primary-1 Service → the primary-1 pod.
 
   Only the CLIENT port is exposed, and its targetPort is the pod's UNIQUE
   listen port (base+idx) — the pod actually listens there, so no remap is
-  needed. Clients: valkey.debug-demo.local:6380 → VIP → HAProxy → MetalLB IP →
-  pod-1:6380. The cluster BUS is NOT here: gossip/replication go direct
+  needed. Clients: valkey.debug-demo.local:6380 → VIP → HAProxy → shared
+  MetalLB IP:6380 → pod-1:6380. The cluster BUS is NOT here: gossip/replication go direct
   pod-to-pod on the CNI network (announce = pod IP), so the VIP, HAProxy, and
   MetalLB are out of the bus path entirely — which is what lets replicas join
   reliably.
 */}}
 {{- $cbase := int .Values.loadBalancer.basePorts.client }}
 {{- $n := int .Values.replicaCount }}
+{{- $sharedIP := .Values.loadBalancer.sharedIP }}
+{{- $sharingKey := .Values.loadBalancer.sharingKey }}
 {{- range $i := until $n }}
 {{- $port := add $cbase $i }}
 ---
@@ -34,8 +35,17 @@ metadata:
   name: valkey-primary-{{ $i }}-ext
   labels: {{- include "valkey.labels" $ | nindent 4 }}
     valkey.role: primary
+  {{- if $sharedIP }}
+  annotations:
+    metallb.io/allow-shared-ip: {{ $sharingKey | quote }}
+    metallb.io/loadBalancerIPs: {{ $sharedIP | quote }}
+  {{- end }}
 spec:
   type: LoadBalancer
+  {{- if $sharedIP }}
+  loadBalancerIP: {{ $sharedIP | quote }}
+  externalTrafficPolicy: Cluster
+  {{- end }}
   ports:
     - {name: client, port: {{ $port }}, targetPort: {{ $port }}}
   selector:
@@ -50,8 +60,17 @@ metadata:
   name: valkey-secondary-{{ $i }}-ext
   labels: {{- include "valkey.labels" $ | nindent 4 }}
     valkey.role: secondary
+  {{- if $sharedIP }}
+  annotations:
+    metallb.io/allow-shared-ip: {{ $sharingKey | quote }}
+    metallb.io/loadBalancerIPs: {{ $sharedIP | quote }}
+  {{- end }}
 spec:
   type: LoadBalancer
+  {{- if $sharedIP }}
+  loadBalancerIP: {{ $sharedIP | quote }}
+  externalTrafficPolicy: Cluster
+  {{- end }}
   ports:
     - {name: client, port: {{ $port }}, targetPort: {{ $port }}}
   selector:

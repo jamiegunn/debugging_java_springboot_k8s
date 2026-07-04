@@ -92,7 +92,7 @@ images:
                      │  keepalived (MASTER, prio 150)│
                      │  HAProxy:                     │
                      │   :80        → agents' ingress (httpchk /healthz)
-                     │   :6379-6384 → shards' MetalLB IPs (Valkey, per-port)
+                     │   :6379-6384 → shared MetalLB IP (Valkey, per-port)
                      └──────────────┬───────────────┘
                                     │ backend pool = the WORKER AGENTS only
         ┌───────────────────────────┼───────────────────────────┐
@@ -113,10 +113,10 @@ images:
    `node-role.kubernetes.io/control-plane=true:NoSchedule`, so all
    workloads — app, Oracle, MQ, Valkey, ingress-nginx DaemonSet, MetalLB
    speaker — run on the two agents only; HAProxy pools to the agents
-   accordingly. ingress-nginx is a DaemonSet on hostPort 80/443; MetalLB
-   (L2/ARP mode; k3s servicelb/klipper is disabled) fulfills
-   type=LoadBalancer for the per-pod Valkey Services, each getting its
-   own pool IP announced from the agents. keepalived self-daemonizes
+  accordingly. ingress-nginx is a DaemonSet on hostPort 80/443; MetalLB
+  (L2/ARP mode; k3s servicelb/klipper is disabled) fulfills
+  type=LoadBalancer for the per-pod Valkey Services, which share one
+  pool IP announced from the agents and stay distinguished by port. keepalived self-daemonizes
    (`keepalived --use-file=...`),
    holding the VIP by VRRP priority — no ingress health-track script.
 ```
@@ -141,7 +141,7 @@ both resolving to `K3S_VIP=192.168.105.100`.
   checked `/healthz`) and routes around a down one. `Ingress`/
   `IngressClass` do host/path routing (`host: debug-demo.local`).
 - **Valkey** — `client → valkey.debug-demo.local:<port> → VIP (LB VM) →
-  HAProxy TCP → shard's MetalLB IP → owning pod`. Client TCP only; the
+  HAProxy TCP → shared MetalLB IP:<port> → owning pod`. Client TCP only; the
   cluster **bus is pod-to-pod** on the CNI network (see below).
 
 Who resolves what:
@@ -179,25 +179,25 @@ cloud controller, so the job is split between an external LB tier and
 an in-cluster component:
 
 - **MetalLB (L2/ARP mode; k3s servicelb/klipper is disabled)** fulfills
-  `type: LoadBalancer` — it assigns each Service its own IP from a pool
-  (`METALLB_POOL`, default `192.168.105.200-.209`) and ARP-announces it
-  from the agents only (an `L2Advertisement` whose `nodeSelector`
-  excludes the tainted control-plane, so Valkey client traffic never
-  lands there). No shared-IP annotations, no per-pod IPs — one pool IP
-  per shard. This is the on-prem/dev stand-in for the cloud LB.
+  `type: LoadBalancer` — the Valkey per-pod Services share one IP from
+  the pool (`METALLB_POOL`, default `192.168.105.200-.209`) and
+  ARP-announce it from the agents only (an `L2Advertisement` whose
+  `nodeSelector` excludes the tainted control-plane, so Valkey client
+  traffic never lands there). Unique ports preserve per-shard routing.
+  This is the on-prem/dev stand-in for the cloud LB.
 - **The LB VM (`ddk3s-lb`)** is the external "F5/NetScaler" tier —
   `scripts/k3s-lb.sh` provisions it. **keepalived (VRRP)** owns **one
   stable VIP** so clients always have a single address to dial; the VIP
   lives on the LB VM, INDEPENDENT of cluster-node health (a thrashing
   k3s node can't take it down). **HAProxy** on the same VM is the
   backend-pool: `:80` → the agents' ingress (health-checked `/healthz`,
-  so a down/starved node is dropped), TCP `:6379-6384` → each shard's
-  MetalLB IP (per-shard by port; MOVED-by-hostname preserved). This is
-  the classic "external VIP → backend pool of cluster nodes" model.
+  so a down/starved node is dropped), TCP `:6379-6384` → shared MetalLB
+  IP on the same port (per-shard by port; MOVED-by-hostname preserved).
+  This is the classic "external VIP → backend pool of cluster nodes" model.
 
 They are **complementary, not either/or**: MetalLB assigns and ARP-
-announces a per-shard IP on the agents, the LB VM's HAProxy maps each
-VIP port to that shard's MetalLB IP and keepalived pins the single
+announces a shared backend IP on the agents, the LB VM's HAProxy maps each
+VIP port to that same MetalLB IP and port, and keepalived pins the single
 dialable VIP. The Helm charts don't change moving to a real cloud LB —
 the Valkey per-pod Services stay `type: LoadBalancer`; only the
 fulfiller differs.
@@ -239,12 +239,12 @@ address plays are deliberately split apart:
   `UnknownHostException`).
 
 No L7 proxy can sit in the Valkey path — the wire protocol is stateful
-TCP. Retired from the chart vs. the old single-node setup: MetalLB's
-shared-IP annotations, `perPodIP` mode, the dev VIP shim, and any fixed
-announce port. MetalLB itself is back as the LoadBalancer fulfiller, but
-now each shard gets its OWN pool IP (no shared-IP annotations, no
-perPodIP), fronted by the VIP. See `docs/k3s-architecture.md` for the
-packet-level walk-through.
+TCP. Retired from the chart vs. the old single-node setup: `perPodIP`
+mode, the dev VIP shim, and any fixed announce port. MetalLB itself is
+back as the LoadBalancer fulfiller, with shared-IP annotations so the
+per-pod Services use one backend IP and stay distinguished by port,
+fronted by the VIP. See `docs/k3s-architecture.md` for the packet-level
+walk-through.
 
 ## OpenAPI / Swagger UI
 
@@ -326,7 +326,7 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/debug-demo-app/` | The app, with HPA (chart default 1→10 @ 20% CPU; **capped to `maxReplicas: 4`** for this two-agent footprint via `k3s-charts.sh --set`), Valkey/Oracle/MQ wiring. Soft **pod-anti-affinity** (`spreadAcrossNodes`, default on) spreads replicas across the two agents; `affinity`/`tolerations` hooks override. A **`startupProbe`** (40 × 5s ≈ 200s, gates liveness/readiness) keeps a slow JVM boot under CPU contention from being liveness-killed into a CrashLoop. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
-| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — each shard gets its own pool IP; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP → owning pod. |
+| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — Services share one pool IP and are distinguished by port; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP:port → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
 | `./tui` (root) + `scripts/k3s.sh` | Front door for the **cluster lifecycle**: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 1 = preflight, 9 = lb, `d` = JVM debug kit); `./tui <cmd>` forwards to the same commands. |
 | `./debug` (root) + `scripts/debug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./debug` opens `scripts/debug-tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |

@@ -6,7 +6,7 @@
 #     tier, NOT on the cluster nodes, so it's independent of cluster-node health
 #     and load (a thrashing k3s node can't take the VIP down).
 #   - HAProxy — pools HTTP :80 to the k3s ingress on every node, and forwards the
-#     Valkey client ports (6379-6384) to the per-shard IPs MetalLB assigned each
+#     Valkey client ports (6379-6384) to the MetalLB IP/port serving each
 #     Valkey LoadBalancer Service. The classic "external VIP → backend pool" model.
 #
 # Usage:
@@ -95,7 +95,7 @@ EOF
 }
 
 configure_haproxy() {
-    info "  haproxy on $K3S_LB_VM: :80 → k3s ingress; :${VC_BASE}-$((VC_BASE+VC_COUNT-1)) → Valkey MetalLB IPs"
+    info "  haproxy on $K3S_LB_VM: :80 → k3s ingress; :${VC_BASE}-$((VC_BASE+VC_COUNT-1)) → Valkey MetalLB IP:ports"
     # HTTP backend = the WORKER agents' ingress hostPort (the control-plane is
     # tainted, so ingress-nginx doesn't run there — pooling to it would be a
     # permanently-down backend).
@@ -103,8 +103,8 @@ configure_haproxy() {
     for vm in "${K3S_AGENT_VMS[@]}"; do ip="$(k3s_vm_ip "$vm")"; [[ -n "$ip" ]] && ips+=("$ip"); done
     [[ ${#ips[@]} -gt 0 ]] || { err "  no agent node IPs — is the cluster up?"; return 1; }
 
-    # Valkey backend = the per-shard IP MetalLB assigned each LoadBalancer
-    # Service (port→IP). Retry: charts just created the Services and MetalLB
+    # Valkey backend = the IP MetalLB assigned each LoadBalancer Service
+    # (port→IP; often the same shared IP for all ports). Retry: charts just created the Services and MetalLB
     # assigns quickly but not instantly.
     local jp='{range .items[?(@.spec.type=="LoadBalancer")]}{.spec.ports[0].port}{" "}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}'
     declare -A vk_ip; local tries vp vkip
@@ -151,10 +151,10 @@ HDR
     local i=1
     for ip in "${ips[@]}"; do cfg+=$'\n'"    server node$i $ip:80 check"; i=$((i+1)); done
 
-    # Valkey: one TCP frontend/backend per client port → that shard's single
-    # MetalLB IP. MetalLB (L2) announces the IP from an agent and moves it on
-    # failure; HAProxy just follows the IP:port, so per-shard addressability is
-    # preserved (the IP identifies the shard, as the port did under klipper).
+    # Valkey: one TCP frontend/backend per client port → that shard's Service
+    # IP:port. MetalLB (L2) announces the IP from an agent and moves it on
+    # failure; HAProxy follows IP:port, so per-shard addressability is preserved
+    # even when all Services share one MetalLB IP.
     local p
     for ((p=VC_BASE; p<VC_BASE+VC_COUNT; p++)); do
         cfg+=$'\n\n'"frontend valkey_${p}"$'\n'"    mode tcp"$'\n'"    bind *:${p}"$'\n'"    default_backend valkey_${p}_be"

@@ -31,7 +31,7 @@ routes or a proxy. The shared network removes that boundary entirely.)
                               │
                      ddk3s-lb  (1 cpu/1 GiB)   ← keepalived + HAProxy
                      :80 → agents' ingress
-                     :6379-6384 → shards' MetalLB IPs (Valkey)
+                     :6379-6384 → shared MetalLB IP (Valkey, port-selected)
                               │
         ┌─────────────────────┼─────────────────────┐
    ddk3s-server            ddk3s-agent-1         ddk3s-agent-2
@@ -44,12 +44,13 @@ routes or a proxy. The shared network removes that boundary entirely.)
 All 4 VMs + the Mac sit on Lima's `shared` L2 segment (socket_vmnet,
 `192.168.105.0/24`) — directly reachable from the Mac and between VMs, no NAT,
 no routes. ingress-nginx runs as a DaemonSet (hostPort 80/443) and MetalLB
-(L2/ARP mode; k3s servicelb/klipper is disabled) assigns each Valkey Service its
-own pool IP and ARP-announces it from **the two worker agents** (its
+(L2/ARP mode; k3s servicelb/klipper is disabled) assigns the Valkey Services a
+shared pool IP and ARP-announces it from **the two worker agents** (its
 `L2Advertisement` excludes the tainted server, so neither lands there); HAProxy
-on the LB VM health-checks and pools to those agents. Each Valkey Service gets
-its own MetalLB IP; the port (6379-6384, +bus 16379-16384) still selects the
-shard from the client's view, kube-proxy DNATs to the owning pod.
+on the LB VM health-checks and pools to those agents. The Valkey Services share
+one MetalLB IP but keep distinct ports (6379-6384, +bus 16379-16384), so the
+port still selects the shard from the client's view and kube-proxy DNATs to the
+owning pod.
 
 - **keepalived** runs on `ddk3s-lb` only — one VRRP instance
   (`virtual_router_id 51`), state MASTER, priority 150, holding the VIP. It is
@@ -60,8 +61,8 @@ shard from the client's view, kube-proxy DNATs to the owning pod.
 - **HAProxy** on `ddk3s-lb` is the backend-pool half of the "external VIP →
   cluster nodes" model: `:80` HTTP round-robins (with `GET /healthz` checks) to
   each agent's ingress, so it routes around a starved/down node; one TCP
-  frontend per Valkey client port maps 6379-6384 to that shard's MetalLB IP
-  (per-shard by port; MOVED-by-hostname preserved).
+  frontend per Valkey client port maps 6379-6384 to the shared MetalLB IP on
+  that same port (per-shard by port; MOVED-by-hostname preserved).
 - **dnsmasq** runs as a host service on the server node. It answers
   `debug-demo.local`, `valkey.debug-demo.local`, `*.debug-demo.local` → the
   VIP. The Mac points at it via `/etc/resolver/debug-demo.local`; the cluster
@@ -81,10 +82,10 @@ Valkey 8 supports hostname endpoints: set `cluster-announce-hostname
 valkey.debug-demo.local` and `cluster-preferred-endpoint-type hostname`. Then
 `CLUSTER SHARDS`/`CLUSTER NODES`/`MOVED` return `valkey.debug-demo.local:6380`,
 which every client (Mac or pod) resolves to the VIP and dials on that port,
-where HAProxy forwards to that shard's MetalLB IP and kube-proxy DNATs to the
-owning pod. Per-shard addressability comes from the **port** (6379-6384); the
-client-facing *address* is a single hostname→VIP, while each shard's own MetalLB
-IP stays internal behind HAProxy (no shared-IP annotations, no per-pod IPs).
+where HAProxy forwards to the shared MetalLB IP on that same port and kube-proxy
+DNATs to the owning pod. Per-shard addressability comes from the **port**
+(6379-6384); the client-facing *address* is a single hostname→VIP, while the
+MetalLB backend address is also shared across the per-pod Services.
 
 ## Air-gap: no image ever pulled inside a VM or pod
 
@@ -105,9 +106,9 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
   binary, `--disable traefik,servicelb` (we use ingress-nginx for HTTP and
   MetalLB for LoadBalancer Services), and the server node with
   `--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule` so all
-  workloads land on the agents. MetalLB (L2 mode) fulfills each LoadBalancer
-  Service by assigning it a pool IP and ARP-announcing it from the agents only;
-  HAProxy on the LB tier maps VIP:port → that shard's MetalLB IP, behind the one
+  workloads land on the agents. MetalLB (L2 mode) fulfills the Valkey
+  LoadBalancer Services by assigning them a shared pool IP and ARP-announcing it
+  from the agents only; HAProxy on the LB tier maps VIP:port → shared MetalLB IP:port, behind the one
   stable VIP (complementary, not either/or),
 - imports every app/backend image tar into containerd via
   `k3s ctr images import`.

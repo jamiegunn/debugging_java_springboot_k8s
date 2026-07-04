@@ -35,17 +35,16 @@ storage:
 #
 # How the pieces fit on k3s:
 #   - MetalLB (L2/ARP mode; k3s servicelb/klipper is disabled) fulfills each
-#     type:LoadBalancer Service: it assigns each Service its OWN real IP from a
-#     pool and announces it via ARP from the agents only. No shared-IP
-#     annotations, no per-pod IPs — one pool IP per shard.
+#     type:LoadBalancer Service. The Services share one real IP from the pool
+#     and use distinct ports; each Service still has its own one-pod selector.
 #   - keepalived floats ONE VIP on the ddk3s-lb VM → a single stable address;
-#     HAProxy maps VIP:port → that shard's MetalLB IP.
+#     HAProxy maps VIP:port → shared MetalLB IP:port.
 #   - dnsmasq resolves announceHostname → that VIP (for the Mac AND, via a
 #     CoreDNS stub, for pods).
 #   - Valkey announces the HOSTNAME (cluster-preferred-endpoint-type hostname),
 #     so CLUSTER SHARDS / CLUSTER NODES / MOVED return
 #     valkey.debug-demo.local:<port> — names, never IPs. A client resolves the
-#     name → VIP; HAProxy routes the port to that shard's MetalLB IP → the
+#     name → VIP; HAProxy routes the port to the shared MetalLB IP → the
 #     owning pod.
 #
 # The cluster BUS (gossip) is NOT exposed here: pods announce their pod IP +
@@ -53,13 +52,19 @@ storage:
 # So there is no gossip hairpin through the VIP and no proxy/shim in the bus path.
 loadBalancer:
   enabled: true
+  # Empty = let MetalLB assign each Service independently. Set this to one IP in
+  # MetalLB's pool to make all per-pod Services share the same external IP while
+  # remaining distinguished by port. This reduces corporate IP asks from one IP
+  # per Valkey pod to one backend IP for the whole cluster.
+  sharedIP: ""
+  sharingKey: "valkey-cluster"
   # Each pod LISTENS on its own unique port (basePorts.client + idx) and its own
   # bus port (basePorts.bus + idx), and announces its POD IP + those ports. So
   # the cluster bus and replication are DIRECT pod-to-pod on the CNI network —
   # no VIP, no HAProxy, no MetalLB, no shim in the gossip path (that's what makes
   # replica joins reliable). CLIENTS get the hostname below (cluster-preferred-
   # endpoint-type hostname), which resolves to the keepalived VIP and, on the
-  # announced port, is routed by HAProxy to that shard's MetalLB IP → the owning
+  # announced port, is routed by HAProxy to shared MetalLB IP:port → the owning
   # pod (Service targetPort = the pod's unique port, so no remap is needed).
   #
   # announceHostname must resolve to the VIP from BOTH the Mac (/etc/resolver)

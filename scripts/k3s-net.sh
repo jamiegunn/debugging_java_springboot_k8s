@@ -29,7 +29,15 @@ set +e   # common.sh enables set -e; these scripts do their own error handling
 
 require_cmd limactl kubectl
 
+COREDNS_CUSTOM_MANIFEST="$REPO_ROOT/k3s/manifests/coredns-custom.yaml"
+
 vsh() { limactl shell "$1" -- sudo sh -c "$2"; }
+render_coredns_custom() {
+    sed \
+        -e "s#__BASE_DOMAIN__#$BASE_DOMAIN#g" \
+        -e "s#__K3S_VIP__#$K3S_VIP#g" \
+        "$COREDNS_CUSTOM_MANIFEST"
+}
 
 configure_dnsmasq() {
     local vm="$K3S_SERVER_VM" ip; ip="$(k3s_vm_ip "$vm")"
@@ -57,24 +65,8 @@ configure_coredns() {
     # name in debug-demo.local returns the VIP. No host round-trip, no UDP hole.
     # (The Mac still uses the host dnsmasq via /etc/resolver, which works fine.)
     info "  CoreDNS: template zone $BASE_DOMAIN → $K3S_VIP (pods resolve names locally)"
-    kc -n kube-system apply -f - >/dev/null <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coredns-custom
-  namespace: kube-system
-data:
-  debug-demo.server: |
-    ${BASE_DOMAIN}:53 {
-        errors
-        template IN A {
-            answer "{{ .Name }} 60 IN A ${K3S_VIP}"
-        }
-        template IN AAAA {
-            rcode NXDOMAIN
-        }
-    }
-EOF
+    [[ -s "$COREDNS_CUSTOM_MANIFEST" ]] || { err "CoreDNS custom manifest missing: $COREDNS_CUSTOM_MANIFEST"; return 1; }
+    render_coredns_custom | kc -n kube-system apply -f - >/dev/null
     # nudge CoreDNS to reload the custom config
     kc -n kube-system rollout restart deployment/coredns >/dev/null 2>&1 || true
 }

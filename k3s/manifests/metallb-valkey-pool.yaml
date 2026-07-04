@@ -1,0 +1,18 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: valkey-pool
+  namespace: metallb-system
+spec:
+  addresses: ["__METALLB_POOL__"]
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: agents-only
+  namespace: metallb-system
+spec:
+  ipAddressPools: [valkey-pool]
+  nodeSelectors:
+    - matchExpressions:
+        - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}

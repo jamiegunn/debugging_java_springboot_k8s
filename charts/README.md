@@ -29,10 +29,10 @@ helm upgrade --install app         ./debug-demo-app -n debug-demo --create-names
 ```
 
 `type: LoadBalancer` Services (the Valkey per-pod endpoints) are fulfilled by
-**MetalLB** (L2/ARP mode; k3s's built-in klipper/servicelb is disabled) — each
-shard gets its own IP from a pool (no shared-IP annotations, no per-pod IPs).
+**MetalLB** (L2/ARP mode; k3s's built-in klipper/servicelb is disabled) — the
+per-pod Services share one IP from the pool and stay distinguished by port.
 External reach is via the **keepalived VIP `192.168.105.100`** on the LB VM,
-whose HAProxy maps each port to that shard's MetalLB IP; Valkey's per-pod
+whose HAProxy maps each port to the shared MetalLB IP; Valkey's per-pod
 Services are addressed by port and announced as `valkey.debug-demo.local:<port>`.
 
 To uninstall: `scripts/k3s.sh uninstall`, or `helm uninstall` each release. The

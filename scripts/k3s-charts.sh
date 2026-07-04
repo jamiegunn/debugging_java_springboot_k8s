@@ -41,12 +41,13 @@ install_mq() {
         --set image.pullPolicy=IfNotPresent >/dev/null 2>&1
 }
 install_valkey() {
-    info "  valkey (6-node cluster, hostname announce → $VALKEY_HOST)..."
+    info "  valkey (6-node cluster, hostname announce → $VALKEY_HOST, shared LB IP ${VALKEY_SHARED_LB_IP:-auto})..."
     # The chart already defaults loadBalancer.announceHostname to valkey.debug-demo.local.
     # Bootstrap Job welds the cluster; give it headroom on a cold cluster.
     helm_kc upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
         --set image.pullPolicy=IfNotPresent \
         --set loadBalancer.announceHostname="$VALKEY_HOST" \
+        ${VALKEY_SHARED_LB_IP:+--set loadBalancer.sharedIP=$VALKEY_SHARED_LB_IP} \
         --timeout 15m >/dev/null 2>&1
 }
 

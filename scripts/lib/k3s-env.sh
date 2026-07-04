@@ -63,12 +63,17 @@ K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 # MetalLB L2 IP pool for the Valkey LoadBalancer Services. Must avoid the VIP
 # (.100) and the VMs' DHCP leases (low addresses); a high static range is safe.
 : "${METALLB_POOL:=${LIMA_SHARED_SUBNET}.200-${LIMA_SHARED_SUBNET}.209}"
+# Valkey keeps one LoadBalancer Service per pod for deterministic selectors, but
+# those Services can share one MetalLB IP because each exposes a unique port.
+# Default to the first IP in the local MetalLB range; override or blank this for
+# environments that want independent Service IPs.
+: "${VALKEY_SHARED_LB_IP:=${METALLB_POOL%%-*}}"
 
 # Third-party images pulled on the Mac, saved to tars, imported into every
 # node's containerd (NOTHING is pulled from the internet inside a VM/pod).
 # NOTE: MetalLB fulfills the Valkey type:LoadBalancer Services in-cluster (k3s
 # servicelb/klipper is DISABLED at install); the ddk3s-lb keepalived VIP +
-# HAProxy front MetalLB's per-shard IPs. No VIP-shim (VIP is directly reachable).
+# HAProxy front the shared MetalLB IP by port. No VIP-shim (VIP is directly reachable).
 K3S_IMAGES=(
     "quay.io/metallb/controller:${METALLB_VERSION}"
     "quay.io/metallb/speaker:${METALLB_VERSION}"

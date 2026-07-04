@@ -262,7 +262,8 @@ What `install` chains (orchestrated by `scripts/k3s-install.sh`):
    in-cluster registry loop — and is skipped by default).
 7. **LB tier** (`k3s-lb.sh`) — creates the `ddk3s-lb` VM running keepalived
    (owns the VIP `192.168.105.100`) + HAProxy (pools HTTP `:80` to the
-   agents' ingress and Valkey TCP `:6379-6384` to each shard's MetalLB IP).
+  agents' ingress and Valkey TCP `:6379-6384` to the shared MetalLB IP on the
+  matching shard port).
    Runs last, since it pools to the ingress + Valkey that must already exist.
 8. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
 
@@ -437,9 +438,10 @@ Key pieces:
   drops UDP on nested VMs and breaks cluster DNS), pinned with
   `--flannel-iface=lima0`.
 - **MetalLB (L2/ARP mode)** fulfills `type: LoadBalancer` Services (k3s's
-  built-in klipper/servicelb is disabled) — each shard gets its own IP from a
-  pool, ARP-announced from the agents only (no shared-IP annotations, no per-pod
-  IPs); HAProxy on the LB tier maps each external port to that shard's MetalLB IP.
+  built-in klipper/servicelb is disabled) — the per-pod Valkey Services share
+  one pool IP, ARP-announced from the agents only, while unique ports preserve
+  shard selection; HAProxy on the LB tier maps each external port to that shared
+  MetalLB IP on the same port.
 
 ### DNS — everything is a hostname
 
