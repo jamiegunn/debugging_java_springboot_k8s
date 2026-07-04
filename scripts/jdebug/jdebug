@@ -34,7 +34,10 @@
 #   scripts/jdebug.sh jcmd "VM.native_memory summary"
 
 set -uo pipefail
-D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through symlinks so `jdebug` works when symlinked onto PATH (install.sh).
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do _d="$(cd -P "$(dirname "$_src")" && pwd)"; _src="$(readlink "$_src")"; [[ $_src == /* ]] || _src="$_d/$_src"; done
+D="$(cd -P "$(dirname "$_src")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$D/lib/common.sh"
 
@@ -57,7 +60,7 @@ fwd() { "$@" ${ARGS[@]+"${ARGS[@]}"}; }
 triage_parse() { parse_common_args ${ARGS[@]+"${ARGS[@]}"}; }
 
 case "$cmd" in
-    tui|menu|"")     exec "$D/jdebug/ui/tui.sh" ;;
+    tui|menu|"")     exec "$D/ui/tui.sh" ;;
 
     status)
         triage_parse
@@ -94,26 +97,26 @@ case "$cmd" in
 
     threads)
         case "$VIA" in
-            actuator) fwd "$D/jdebug/capture/actuator.sh" threads ;;
-            jattach)  fwd "$D/jdebug/capture/jattach.sh"  threads ;;
-            jdk)      fwd "$D/jdebug/capture/jdk-threads.sh" ;;
+            actuator) fwd "$D/capture/actuator.sh" threads ;;
+            jattach)  fwd "$D/capture/jattach.sh"  threads ;;
+            jdk)      fwd "$D/capture/jdk-threads.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
     heap)
         case "$VIA" in
-            actuator) fwd "$D/jdebug/capture/actuator.sh" heap ;;
-            jattach)  fwd "$D/jdebug/capture/jattach.sh"  heap ;;
-            jdk)      fwd "$D/jdebug/capture/jdk-heap.sh" ;;
+            actuator) fwd "$D/capture/actuator.sh" heap ;;
+            jattach)  fwd "$D/capture/jattach.sh"  heap ;;
+            jdk)      fwd "$D/capture/jdk-heap.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
-    jcmd)            fwd "$D/jdebug/capture/jattach.sh" jcmd ;;
-    memory)          fwd "$D/jdebug/observe/memory-report.sh" ;;
-    snapshot)        fwd "$D/jdebug/observe/snapshot.sh" ;;
-    logs)            fwd "$D/jdebug/observe/tail-logs.sh" ;;
-    log-level)       fwd "$D/jdebug/observe/set-log-level.sh" ;;
-    install-jattach) fwd "$D/jdebug/capture/jattach.sh" install ;;
+    jcmd)            fwd "$D/capture/jattach.sh" jcmd ;;
+    memory)          fwd "$D/observe/memory-report.sh" ;;
+    snapshot)        fwd "$D/observe/snapshot.sh" ;;
+    logs)            fwd "$D/observe/tail-logs.sh" ;;
+    log-level)       fwd "$D/observe/set-log-level.sh" ;;
+    install-jattach) fwd "$D/capture/jattach.sh" install ;;
 
     -h|--help)       usage_top ;;
     *) echo "unknown command: $cmd"; echo; usage_top; exit 64 ;;

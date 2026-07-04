@@ -135,7 +135,7 @@ help_for() {
     printf '  subcommand (preflight/install/bundle/resolver/lb/doctor/smoke/status/chaos/tour/valkey/uninstall, or "jdebug"): '
     local s; read -r s
     case "$s" in
-        jdebug|d) run "$SCRIPTS_ROOT/jdebug.sh" --help ;;
+        jdebug|d) run "$REPO_ROOT/jdebug" --help ;;
         "")      ;;
         *)       run "$K3S" "$s" --help ;;
     esac
@@ -170,7 +170,7 @@ while true; do
         11) run "$K3S" valkey ;;
         12) chaos_menu; continue ;;
         13) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
-        d|D) "$SCRIPTS_ROOT/jdebug/ui/tui.sh"; continue ;;
+        d|D) "$REPO_ROOT/jdebug"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;
         s|S) kube_shell ;;

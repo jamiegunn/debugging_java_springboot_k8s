@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 #
-# jdebug — root launcher for the JVM debug kit. Bare `./jdebug` opens the
-# interactive menu; `./jdebug <cmd> [args]` forwards to scripts/jdebug.sh
-# (status, health, top, threads, heap, jcmd, memory, snapshot, logs,
-# log-level, install-jattach). `./jdebug --help` lists every command.
-exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/jdebug.sh" "$@"
+# jdebug — repo launcher for the JVM debug kit. The kit itself lives in
+# scripts/jdebug/ as a SELF-CONTAINED unit (its own lib, no repo assumptions) so
+# it can be installed on its own / extracted into its own repo. This thin adapter
+# only pre-fills the debug-demo target + the lab kubeconfig so it's convenient to
+# run against THIS repo's app. Run `scripts/jdebug/jdebug -n <ns> -l <selector>`
+# directly (or install it) to point the kit at any other Spring Boot pod.
+set -uo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Repo-convenience defaults — only if the caller hasn't set them.
+: "${JDEBUG_NAMESPACE:=debug-demo}";                           export JDEBUG_NAMESPACE
+: "${JDEBUG_SELECTOR:=app.kubernetes.io/name=debug-demo-app}"; export JDEBUG_SELECTOR
+: "${JDEBUG_CONTAINER:=app}";                                  export JDEBUG_CONTAINER
+# Target the lab cluster if nothing else is chosen.
+if [[ -z "${KUBECONFIG:-}" && -s "$REPO/dumps/k3s.kubeconfig" ]]; then
+    export KUBECONFIG="$REPO/dumps/k3s.kubeconfig"
+fi
+
+exec "$REPO/scripts/jdebug/jdebug" "$@"

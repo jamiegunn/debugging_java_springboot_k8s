@@ -32,7 +32,7 @@ Prefer these from the repo root; the rest are lower-level implementation command
 | Command | Purpose |
 |---|---|
 | `./tui` / `scripts/k3s.sh <cmd>` | k3s lab lifecycle (interactive menu / router). |
-| `./jdebug` / `scripts/jdebug.sh <cmd>` | JVM debug kit — cluster-agnostic (any Spring Boot pod / KUBECONFIG). |
+| `./jdebug` / `scripts/jdebug/jdebug <cmd>` | JVM debug kit — cluster-agnostic (any Spring Boot pod / KUBECONFIG). |
 
 ## Behavior classes
 

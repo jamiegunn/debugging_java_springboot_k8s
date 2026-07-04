@@ -89,10 +89,10 @@ step pod.txt           "kubectl describe pod"        kubectl -n "$NAMESPACE" des
 step health.json       "actuator health"             aexec curl -sS "$ACTUATOR_BASE/health"
 step metrics.json      "actuator metrics index"      aexec curl -fsS "$ACTUATOR_BASE/metrics"
 step threads.txt       "actuator threaddump (text)"  aexec curl -fsS -H 'Accept: text/plain' "$ACTUATOR_BASE/threaddump"
-step memory-report.txt "memory anatomy"              "$SCRIPTS_ROOT/jdebug/observe/memory-report.sh" -n "$NAMESPACE" -l "$SELECTOR" --container "$APP_CONTAINER" "$POD"
+step memory-report.txt "memory anatomy"              "$SCRIPTS_ROOT/observe/memory-report.sh" -n "$NAMESPACE" -l "$SELECTOR" --container "$APP_CONTAINER" "$POD"
 
 if [[ $NO_JATTACH -ne 1 ]]; then
-    jat() { "$SCRIPTS_ROOT/jdebug/capture/jattach.sh" jcmd "$1" -n "$NAMESPACE" -l "$SELECTOR" --container "$APP_CONTAINER" "$POD"; }
+    jat() { "$SCRIPTS_ROOT/capture/jattach.sh" jcmd "$1" -n "$NAMESPACE" -l "$SELECTOR" --container "$APP_CONTAINER" "$POD"; }
     step gc-heap-info.txt  "jcmd GC.heap_info"           jat "GC.heap_info"
     step vm-flags.txt      "jcmd VM.flags"               jat "VM.flags"
     step codecache.txt     "jcmd Compiler.codecache"     jat "Compiler.codecache"

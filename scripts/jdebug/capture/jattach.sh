@@ -41,7 +41,7 @@ require_cmd kubectl curl
 
 : "${JATTACH_VERSION:=v2.2}"
 : "${JATTACH_REMOTE_PATH:=/tmp/jattach}"
-: "${JATTACH_CACHE_DIR:=$SCRIPTS_ROOT/.cache}"
+: "${JATTACH_CACHE_DIR:=$JDEBUG_CACHE_DIR}"
 
 ACTION=""
 CONFIRMED=0
