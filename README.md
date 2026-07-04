@@ -1,6 +1,6 @@
 # debugging_java_springboot_k8s
 
-A Spring Boot 3.3 / Java 25 service with Oracle + IBM MQ + Valkey,
+A Spring Boot 3.3 / Java 21 service with Oracle + IBM MQ + Valkey,
 deployable to Kubernetes via independent Helm charts. The primary goal
 of the repo is the **debug tooling layer** in `scripts/` — kubectl-driven
 tools for grabbing thread/heap dumps and toggling Logback levels at
@@ -538,13 +538,24 @@ kubectl -n valkey exec valkey-primary-0 -- valkey-cli -a $PASS --scan --pattern 
 
 ## Debug tooling
 
-All scripts default to namespace `debug-demo` and selector
-`app.kubernetes.io/name=debug-demo-app`. Override with `-n` / `-l`. The
-runtime image is JRE-only (`eclipse-temurin:25-jre-alpine`) — no JDK is
-baked in. **See CLAUDE.md for the three-tier capture story
-(actuator → jattach → JDK ephemeral container).**
+The debug kit has its own front door: **`./debug`** opens an interactive
+menu grouped by the runbook (triage → capture → memory → logs → snapshot);
+`./debug <cmd>` runs any tool directly. It is cluster-agnostic — every tool
+takes `-n <ns>` / `-l <selector>` / `--container <name>` (and a `--help`),
+defaulting to this repo's app (`debug-demo` /
+`app.kubernetes.io/name=debug-demo-app`) on whatever cluster your
+KUBECONFIG points at. The runtime image is JRE-only
+(`eclipse-temurin:21-jre-alpine`) — no JDK is baked in. **See CLAUDE.md for
+the three-tier capture story (actuator → jattach → JDK ephemeral
+container).**
 
 ```sh
+./debug                                    # interactive menu
+./debug status                             # pod status + recent events
+./debug health                             # actuator health incl. per-subsystem checks
+./debug threads                            # thread dump (tier 1: actuator); --via jattach|jdk
+./debug snapshot                           # one-shot incident bundle (see below)
+
 # Logs + log-level toggle
 scripts/tail-logs.sh                                    # multi-replica log stream, prefers stern
 scripts/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level via /actuator/loggers
@@ -552,15 +563,24 @@ scripts/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level via 
 # Memory triage — heap vs everything else, reconciled to container RSS
 scripts/memory-report.sh                                # one-shot table (cgroup + actuator)
 
-# JVM dumps — preferred path is actuator-only, no JDK tools in the pod
+# JVM dumps, tier 1 (PREFERRED) — actuator, JRE-only, nothing installed
+scripts/dump-actuator.sh threads                        # text/plain jstack-style; --json for structured
+scripts/dump-actuator.sh heap --confirm                 # hprof download (PAUSES the JVM)
+
+# JVM dumps, tier 2 — jattach: full jcmd surface via a ~80 KB static binary
 scripts/dump-jattach.sh install                         # one-time install of jattach into the pod
 scripts/dump-jattach.sh threads                         # Thread.print via jattach
 scripts/dump-jattach.sh heap --confirm                  # jmap-equivalent dump (pauses JVM)
 scripts/dump-jattach.sh jcmd "GC.heap_info"             # any jcmd-style command
 
-# Fallback path — kubectl debug with an ephemeral JDK container (last resort)
-scripts/dump-threads.sh                                 # ./dumps/threads/<pod>-thread-*.txt
-scripts/dump-heap.sh --confirm                          # ./dumps/heap/<pod>-heap-*.hprof
+# JVM dumps, tier 3 (last resort) — kubectl debug + ephemeral JDK container
+scripts/dump-threads.sh                                 # ./dumps/threads/<pod>-jdk-thread-*.txt
+scripts/dump-heap.sh --confirm                          # ./dumps/heap/<pod>-jdk-heap-*.hprof
+
+# One-shot incident bundle (runbook Step 6): pod events + health + metrics +
+# threaddump + memory anatomy + jcmd outputs, for offline MAT/VisualVM/fastthread
+scripts/snapshot.sh                                     # → ./dumps/snapshot-<ts>/
+scripts/snapshot.sh --heap --confirm                    # + heap.hprof (pauses JVM)
 
 # In-cluster CI loop against the local Artifactory
 scripts/local-ci.sh                                     # build app image, push image + charts

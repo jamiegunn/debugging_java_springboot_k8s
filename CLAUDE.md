@@ -1,6 +1,6 @@
 # debugging_java_springboot_k8s
 
-A Spring Boot 3.3 / Java 25 service designed as the **target** for a
+A Spring Boot 3.3 / Java 21 service designed as the **target** for a
 toolkit that diagnoses memory- and CPU-related issues in JVM pods on
 Kubernetes — heap pressure, GC thrash, thread starvation, leaks, slow
 JDBC/JMS hand-offs. The CRUD API and Helm charts exist mainly to give
@@ -9,7 +9,7 @@ the test tools something realistic to operate on.
 ## Constraint that shapes everything
 
 **No JDK tools to capture or analyze thread/heap dumps.** The runtime
-image is JRE-only (`eclipse-temurin:25-jre-alpine`) and the diagnostic
+image is JRE-only (`eclipse-temurin:21-jre-alpine`) and the diagnostic
 workflow must work in environments where you cannot pull a JDK image,
 attach an ephemeral container with `kubectl debug`, or install
 `jstack`/`jmap`/`jcmd` into the pod. Analysis goes through standalone
@@ -21,6 +21,8 @@ metrics (Micrometer/Prometheus).
 1. **Actuator (default).** `/actuator/threaddump` and `/actuator/heapdump`
    are built into Spring Boot and work with JRE-only images. Best when
    the pod is reachable and the app is responsive enough to serve HTTP.
+   Wrapped by `scripts/dump-actuator.sh` (`threads [--json]`,
+   `heap --confirm`).
 2. **jattach (when actuator is insufficient).** A single ~80 KB
    statically-linked binary that speaks the JVM Hotspot attach protocol.
    Gives access to the full jcmd command surface (`Thread.print -l`,
@@ -28,7 +30,7 @@ metrics (Micrometer/Prometheus).
    `Compiler.codecache`, …) that actuator doesn't expose. **Must be
    installed into the pod first** — see `scripts/dump-jattach.sh`.
 3. **JDK ephemeral container (last resort).** `kubectl debug --target=app
-  --image=eclipse-temurin:25-jdk-alpine ...` — `scripts/dump-threads.sh`
+  --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/dump-threads.sh`
    and `scripts/dump-heap.sh`. Use when you need tools beyond jattach's
    reach (e.g., `jstack -F` for unresponsive JVMs, `jdb` for live
    debugging) or when policy forbids installing binaries into pods.
@@ -326,10 +328,11 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — each shard gets its own pool IP; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
-| `./tui` (root) + `scripts/k3s.sh` | Single front door: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 0 = preflight, 12 = lb); `./tui <cmd>` forwards to the same commands. |
+| `./tui` (root) + `scripts/k3s.sh` | Front door for the **cluster lifecycle**: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 0 = preflight, 12 = lb, `d` = JVM debug kit); `./tui <cmd>` forwards to the same commands. |
+| `./debug` (root) + `scripts/debug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./debug` opens `scripts/debug-tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |
 | `scripts/k3s-*.sh` | Phase scripts, in install order: `k3s-preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `k3s-install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `k3s-net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `k3s-platform.sh` (MetalLB + ingress-nginx + namespaces), `k3s-charts.sh` (the five charts; caps the app HPA at 4), `k3s-lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents; `up`/`down`/`status`), `k3s-uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
 | `scripts/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
-| `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `run-unit-tests.sh`, `local-ci.sh` |
+| `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), the debug kit (`dump-actuator.sh`, `dump-jattach.sh`, `dump-threads.sh`, `dump-heap.sh`, `memory-report.sh`, `snapshot.sh`, `tail-logs.sh`, `set-log-level.sh` — all take `-n`/`-l`/`--container`, all have `--help`), `run-unit-tests.sh`, `local-ci.sh` |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
 | `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, MetalLB, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
@@ -743,7 +746,16 @@ scripts/dump-jattach.sh jcmd "VM.native_memory summary" -n debug-demo
 ### Step 6 — capture a snapshot for offline analysis
 
 When the live commands above point at the JVM but you can't keep
-poking at it, take a snapshot bundle:
+poking at it, take a snapshot bundle. **One command does all of it:**
+
+```sh
+scripts/snapshot.sh                        # → ./dumps/snapshot-<ts>/ (pod, health,
+                                           #   metrics, threads, memory-report, jcmd outputs)
+scripts/snapshot.sh --heap --confirm       # + heap.hprof (PAUSES the JVM)
+scripts/snapshot.sh --no-jattach           # actuator-only (nothing installed in the pod)
+```
+
+The manual equivalent, for picking individual pieces:
 
 ```sh
 POD=$(kubectl -n debug-demo get pod -l app.kubernetes.io/name=debug-demo-app -o jsonpath='{.items[0].metadata.name}')
@@ -1008,7 +1020,7 @@ out for node-to-node connections.
 
 ## Conventions
 
-- **Image:** runtime is `eclipse-temurin:25-jre-alpine`. Do not bake
+- **Image:** runtime is `eclipse-temurin:21-jre-alpine`. Do not bake
   the JDK in. If a tool needs `jstack`/`jmap`, that tool is wrong for
   this project — use actuator (preferred), jattach via
   `scripts/dump-jattach.sh` (when you need jcmd), or `kubectl debug`

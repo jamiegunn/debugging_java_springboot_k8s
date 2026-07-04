@@ -327,8 +327,8 @@ a tarball release is the better target.
 | `dump-threads.sh:10-11` header comment | Same inverted claim, inside the tool itself | **fix** |
 | `dumps/threads/app-…20260628T015351Z.txt` (0 bytes) | Artifact of a failed jattach run (m3); gitignored but misleading in the dump dir | **delete** |
 | `scripts/.DS_Store` | Finder noise (gitignored, still on disk) | **delete** |
-| Lima VM `debug-demo-haproxy` (**Running**, 512 MiB) | Leftover from the retired single-node VIP-shim design; zero references in the repo (`grep -rn debug-demo-haproxy` → nothing); `k3s-uninstall.sh` won't touch it | **delete** (`limactl delete -f debug-demo-haproxy`) |
-| Lima VMs `dns`, `haproxy`, `haproxy-b` (Stopped) | Same era, also unreferenced | **delete** |
+| Lima VM `debug-demo-haproxy` (**Running**, 512 MiB) | Leftover from the retired single-node VIP-shim design; zero references in the repo (`grep -rn debug-demo-haproxy` → nothing); `k3s-uninstall.sh` won't touch it | **deleted** (2026-07-04) |
+| Lima VMs `dns`, `haproxy`, `haproxy-b` (Stopped) | ~~Same era~~ **Correction:** their lima.yaml headers show they belong to a *different* project (multi-DC simulation, with the `dc1-k8s-*` VMs) | **keep — not ours** |
 | `docs/debugging-tools-eval-prompt.md` (untracked) | This review's prompt; decide whether it's meant to be committed | **keep or commit intentionally** |
 
 Checked and clean: no `install-stack.sh` references anywhere, no
