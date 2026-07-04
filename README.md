@@ -1,10 +1,13 @@
 # debugging_java_springboot_k8s
 
 A Spring Boot 3.3 / Java 21 service with Oracle + IBM MQ + Valkey,
-deployable to Kubernetes via independent Helm charts. The primary goal
-of the repo is the **debug tooling layer** in `scripts/` — kubectl-driven
+deployable to Kubernetes via independent Helm charts. The repo has two
+primary goals: the **debug tooling layer** in `scripts/` — kubectl-driven
 tools for grabbing thread/heap dumps and toggling Logback levels at
-runtime without restarting the pod.
+runtime without restarting the pod — and a concrete POC for using
+**MetalLB as Kubernetes ingress for TCP services**, specifically Valkey's
+RESP protocol through per-pod `LoadBalancer` Services that share one
+MetalLB backend IP and preserve node identity by port.
 
 The stack runs on a **purpose-built 3-node k3s cluster on Lima VMs**
 (1 tainted control-plane server + 2 worker agents), fronted by a
@@ -13,8 +16,13 @@ that owns a **keepalived VIP** and HAProxy-pools to the workers. The
 stack is addressed entirely **by hostname** and fed from a **fully
 air-gapped image bundle** (nothing pulls from inside a VM or pod). The
 full design reference is
-[`docs/k3s-architecture.md`](docs/k3s-architecture.md); the front door is
-`scripts/k3s.sh`.
+[`docs/k3s-architecture.md`](docs/k3s-architecture.md). For focused details,
+see [`docs/valkey-tcp-ingress-routing.md`](docs/valkey-tcp-ingress-routing.md)
+for the RESP/TCP ingress POC,
+[`docs/production-translation-guide.md`](docs/production-translation-guide.md)
+for how the lab maps to production, and
+[`docs/metallb-configuration.md`](docs/metallb-configuration.md) for the
+Kubernetes-level MetalLB shared-IP design. The front door is `scripts/k3s.sh`.
 
 ## Layout
 
@@ -29,6 +37,11 @@ full design reference is
 | `scripts/` | Debug + ops tools. `k3s.sh` is the single front door; `k3s-*.sh` are the phase scripts; `bundle-images.sh` builds the air-gap bundle. See "Debug tooling" below. |
 | `scripts/lib/k3s-env.sh` | Central config for the whole k3s stack (VM sizes, hostnames, image list, versions) — override via env. |
 | `docs/k3s-architecture.md` | Full design reference: topology, VIP/DNS, air-gap, the hostname Valkey model. |
+| `docs/lb-tier-keepalived-haproxy.md` | Why the lab uses keepalived + HAProxy, and how the same shape maps to production F5. |
+| `docs/metallb-configuration.md` | Kubernetes-level MetalLB configuration, shared backend IP assumptions, limits, and Valkey routing. |
+| `docs/stateful-storage-poc.md` | How StatefulSet PVCs use the lab's default storage class; explicitly POC-only, not production-grade HA storage. |
+| `docs/valkey-tcp-ingress-routing.md` | Canonical Valkey RESP/TCP routing guide: why one Service per pod, one shared MetalLB IP, and port-preserved node identity. |
+| `docs/production-translation-guide.md` | What is POC-specific versus what carries forward to production. |
 | `load/sample-data/` | Tiny seed CSV; expand to millions for stress runs (see below). |
 | `.github/workflows/` | CI: PR validation + main build → JFrog Artifactory. |
 | `harness/pipeline.yaml` | Harness CD pipeline. |
@@ -383,94 +396,36 @@ scripts/k3s.sh uninstall    # delete all 4 VMs (3 k3s + ddk3s-lb), the Mac /etc/
 
 ## Architecture
 
-### Cluster topology (4 VMs, one L2 segment)
+This README keeps only the orientation-level architecture. The Kubernetes admin
+details are documented separately so they do not obscure the repo's main intent:
+proving the debugging, validation, and operational tooling workflow against a
+realistic stack.
 
-```
-                          Mac (192.168.105.1 on the shared subnet)
-                                     │  resolves *.debug-demo.local via dnsmasq
-                                     │  reaches the VIP directly (same L2)
-                                     ▼
-                    ┌──────────────────────────────────┐
-                    │ ddk3s-lb   (1 cpu / 1 GiB)        │  ← F5/NetScaler stand-in
-                    │ keepalived  — owns VIP .100       │
-                    │ HAProxy     — :80 → agents' ingress
-                    │               :6379-6384 → MetalLB│
-                    └──────────────┬───────────────────┘
-                                   │  pools to the WORKER agents only
-        ┌──────────────────────────┼──────────────────────────┐
-   ┌────┴─────────┐      ┌──────────┴────────┐     ┌───────────┴───┐
-   │ ddk3s-server │      │  ddk3s-agent-1    │     │ ddk3s-agent-2 │
-   │ k3s server   │      │  k3s agent        │     │ k3s agent     │
-   │ control-plane│      │  worker           │     │ worker        │
-   │ TAINTED —    │      │  ingress, MetalLB,│     │ ingress, MetalLB,
-   │ NoSchedule   │      │  app, Oracle, MQ, │     │ app, Oracle, MQ,
-   │ dnsmasq      │      │  Valkey           │     │ Valkey        │
-   │ 3 GB / 2 cpu │      │  7 GB / 3 cpu     │     │ 7 GB / 3 cpu  │
-   └──────────────┘      └───────────────────┘     └───────────────┘
+The local testbed has four Lima VMs on one shared L2 network:
+
+```text
+Mac / local client
+  -> ddk3s-lb frontend VIP
+  -> two k3s worker agents
+  -> one tainted k3s control-plane server
 ```
 
-All 4 VMs **and the Mac** sit on Lima's `shared` network (socket_vmnet,
-`192.168.105.0/24`) — one L2 segment. That directness is the whole point:
-the VIP is reachable from the Mac and from every pod with no NAT, no
-static routes. See
-[`docs/k3s-architecture.md`](docs/k3s-architecture.md) for the full
-rationale.
+The LB VM owns the frontend VIP with keepalived and forwards traffic with
+HAProxy. HTTP goes to ingress-nginx on the workers. Valkey RESP/TCP goes through
+port-preserving HAProxy listeners to MetalLB-backed per-pod Services. Everything
+is addressed by hostname so the scripts can run the same way from the Mac and
+inside the cluster.
 
-Key pieces:
+The detailed implementation lives in focused docs:
 
-- **The LB tier is a separate VM** (`ddk3s-lb`, managed by
-  `scripts/k3s-lb.sh up/down/status`) — the "external VIP → backend pool
-  of cluster nodes" model. **keepalived** owns the VIP
-  `192.168.105.100` here, **independent of cluster-node health**: a
-  thrashing k3s node can't drag the VIP down with it (the outage that
-  drove this change). It self-daemonizes (`keepalived --use-file=...`)
-  and holds the VIP by VRRP priority — no ingress health-track script.
-  **HAProxy** fronts HTTP (`:80`, health-checked, so it routes around a
-  starved/down node) and Valkey TCP (`:6379-6384`). Both pool to the
-  **worker agents only** — the control-plane node is tainted, so ingress
-  runs there only on the agents and MetalLB never ARP-announces there.
-- **The control-plane server is tainted** (`node-role.kubernetes.io/control-plane=true:NoSchedule`),
-  so ALL workloads (app, Oracle, MQ, Valkey, ingress-nginx DaemonSet,
-  MetalLB speaker) run on the two worker agents; the small 3 GiB server
-  runs only in-process k3s components. Without the taint the app JVM
-  starved the server.
-- **flannel host-gw** backend (not VXLAN — VXLAN's tx-checksum-offload bug
-  drops UDP on nested VMs and breaks cluster DNS), pinned with
-  `--flannel-iface=lima0`.
-- **MetalLB (L2/ARP mode)** fulfills `type: LoadBalancer` Services (k3s's
-  built-in klipper/servicelb is disabled) — the per-pod Valkey Services share
-  one pool IP, ARP-announced from the agents only, while unique ports preserve
-  shard selection; HAProxy on the LB tier maps each external port to that shared
-  MetalLB IP on the same port.
-
-### DNS — everything is a hostname
-
-`APP_HOST=debug-demo.local`, `VALKEY_HOST=valkey.debug-demo.local` (both in
-`scripts/lib/k3s-env.sh`).
-
-| Consumer | Resolves via | To |
-|---|---|---|
-| Mac (`curl`, `valkey-cli`) | `/etc/resolver/debug-demo.local` → dnsmasq on the server VM (or `curl --resolve`) | VIP |
-| Pods (app, Valkey gossip) | CoreDNS custom stub (the `template` plugin answers the zone directly) | VIP |
-| Valkey `MOVED` / `CLUSTER SHARDS` | Valkey announces a **hostname**, not an IP | `valkey.debug-demo.local:<port>` |
-
-The CoreDNS stub answers the zone directly rather than forwarding to host
-dnsmasq, because pod → node-shared-IP UDP fails. No Mac static routes and
-no `/etc/hosts` writes are involved.
-
-### HTTP path
-
-```
-client → debug-demo.local → VIP 192.168.105.100 (on ddk3s-lb)
-       → HAProxy :80 → agents' ingress-nginx (hostPort DaemonSet)
-       → app ClusterIP → app pod
-```
-
-The ingress-nginx controller runs as a DaemonSet with
-`controller.hostPort.enabled` and `service.type=ClusterIP`, so exactly one
-pod per agent binds :80/:443 on the host. HAProxy on the LB VM
-health-checks the agents' ingress and routes around a down/starved one, so
-the VIP (held by keepalived on that same LB VM) is always a live front door.
+| Topic | Reference |
+|---|---|
+| Full k3s/Lima topology, shared L2 rationale, DNS, air-gap | [`docs/k3s-architecture.md`](docs/k3s-architecture.md) |
+| keepalived, HAProxy, and production F5 mapping | [`docs/lb-tier-keepalived-haproxy.md`](docs/lb-tier-keepalived-haproxy.md) |
+| MetalLB Kubernetes resources and shared backend IP | [`docs/metallb-configuration.md`](docs/metallb-configuration.md) |
+| Valkey RESP/TCP ingress and port-preserved routing | [`docs/valkey-tcp-ingress-routing.md`](docs/valkey-tcp-ingress-routing.md) |
+| POC-only StatefulSet/PVC storage | [`docs/stateful-storage-poc.md`](docs/stateful-storage-poc.md) |
+| What translates to production and what does not | [`docs/production-translation-guide.md`](docs/production-translation-guide.md) |
 
 ### Air-gap: no image ever pulled inside a VM or pod
 
@@ -490,28 +445,14 @@ explicit by-index pairing — `valkey-secondary-N` replicates
 `valkey-primary-N` — which makes failover scenarios predictable in the
 debug scripts.
 
-The subtle part is how addresses work:
+The networking POC is that clients use one hostname and node-specific ports,
+while the Valkey cluster bus and replication stay pod-to-pod on the Kubernetes
+network. Per-pod `LoadBalancer` Services share one MetalLB backend IP, and the
+port preserves Valkey node identity for RESP clients and MOVED/ASK redirects.
 
-- **Each pod listens on its own unique port**: client `6379+idx`
-  (primary-0 = 6379 … secondary-2 = 6384), bus `16379+idx`. It announces
-  its **pod IP + those ports**, so **gossip and replication run direct
-  pod-to-pod on the CNI network** — the VIP and MetalLB are out of the bus
-  path. (That is what makes replica joins reliable; announcing the VIP
-  used to hang them.)
-- **Clients get hostname endpoints**: `cluster-announce-hostname` +
-  `cluster-preferred-endpoint-type hostname`, so `CLUSTER SHARDS` / `MOVED`
-  return `valkey.debug-demo.local:<port>` → VIP → HAProxy → MetalLB IP → the
-  owning pod (each pod has a per-pod `LoadBalancer` Service, fulfilled by
-  MetalLB with its own pool IP, whose `targetPort` is that pod's unique client
-  port; only the client port is exposed — the bus stays pod-to-pod). Per-shard
-  addressability comes from the **port**.
-- **`MIGRATE` targets the pod IP**, not the hostname: MIGRATE opens a
-  node→node connection and the pod→VIP→HAProxy hairpin times out (IOERR) —
-  the same VIP-hairpin limit that keeps the bus pod-to-pod.
-- **The app pins `valkey.debug-demo.local → VIP`** via `hostAliases` in its
-  Deployment, because Lettuce/netty's resolver mishandles Kubernetes
-  `ndots:5` search-domain expansion (getent resolves it, netty throws
-  `UnknownHostException`).
+The canonical explanation of this path, including why HTTP ingress is not used,
+why there is one Service per pod, and why `MIGRATE` uses pod IPs, is
+[`docs/valkey-tcp-ingress-routing.md`](docs/valkey-tcp-ingress-routing.md).
 
 ### Investigating the cluster
 

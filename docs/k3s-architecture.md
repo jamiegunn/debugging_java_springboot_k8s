@@ -10,19 +10,65 @@ The VIP lives on the LB tier, **not on a cluster node** — a separate F5/
 NetScaler-shaped appliance in front of a backend pool of k3s nodes, so a
 thrashing or starved node can never take the VIP down with it.
 
+This is Kubernetes-admin-level implementation detail, included to explain how
+the lab routes traffic and why the scripts can test everything by hostname. The
+primary intent of the repository is to prove the debugging, validation, and
+operational tooling workflow. This local k3s design is the testbed that makes
+that workflow realistic; it is not presented as a production Kubernetes
+blueprint.
+
 Config for all of it lives in `scripts/lib/k3s-env.sh` (override via env).
 
-## Why the shared L2 network matters
+For focused companion references, see [docs/valkey-tcp-ingress-routing.md](valkey-tcp-ingress-routing.md)
+for the RESP/TCP path, [docs/production-translation-guide.md](production-translation-guide.md)
+for lab-to-production mapping, and [docs/stateful-storage-poc.md](stateful-storage-poc.md)
+for POC-only storage caveats.
 
-Everything hinges on one property: **the Mac and all VMs sit on a single L2
-segment** — Lima's **`shared` network** (socket_vmnet, `192.168.105.0/24`). A
-keepalived VIP on that segment is **directly reachable from the Mac and from
-every pod** (pod → node → same-subnet VIP), with no NAT, no static routes, and
-no proxy shim. That is exactly the corporate-LAN property: gossip and MOVED
-redirects resolve to the real VIP, and clients on the Mac dial it directly —
-just like production. (A NAT boundary between the Mac and the cluster network
-would break all of this: ARP for the VIP wouldn't cross it, forcing per-IP
-routes or a proxy. The shared network removes that boundary entirely.)
+## Why the shared L2 network matters in the lab
+
+The lab intentionally uses one property to keep the local install simple: **the
+Mac and all VMs sit on a single L2 segment** — Lima's **`shared` network**
+(socket_vmnet, `192.168.105.0/24`). A keepalived VIP on that segment is directly
+reachable from the Mac, the LB VM can reach the worker nodes, and HAProxy can
+reach the MetalLB backend IP without extra routes.
+
+Without that shared segment, the lab would need an explicit replacement for L2
+reachability. ARP for the keepalived VIP and MetalLB IPs does not cross NAT or a
+normal routed boundary. In concrete terms, "the Mac is behind NAT" would mean
+the k3s VMs live on a NAT-only VM subnet and the Mac is not directly attached to
+`192.168.105.0/24`. The Mac might be able to reach a translated localhost port
+or a NAT gateway address, but it could not directly ask "who has
+`192.168.105.100`?" or "who has `192.168.105.200`?" on the VM subnet. If the
+Mac were outside the Lima subnet, it would need a route to `192.168.105.0/24`, a
+port-forward/NAT rule into the VM network, or a proxy/load-balancer endpoint
+that is reachable from the Mac and can also reach the cluster backends.
+Likewise, if the LB VM were not on the backend worker network, HAProxy would
+need either a second interface on that network or a routed path to the worker
+and MetalLB backend IPs. The shared L2 network removes those extra moving parts
+for the POC.
+
+That flat network is a lab convenience, not a production requirement. The
+production pattern is the same two-sided load-balancer shape with explicit
+networking between the sides:
+
+```text
+client/application network
+  -> frontend VIP on F5 / load-balancer tier
+  -> routed or directly attached backend path
+  -> Kubernetes worker/server network
+  -> ingress worker IPs or MetalLB backend IPs
+```
+
+The important invariant is not that every address shares one subnet. The
+important invariant is that clients reach a stable frontend VIP, and the LB tier
+can reach the Kubernetes backend targets. In the lab, that reachability comes
+from one flat L2 network. In production, it usually comes from dual-homed load
+balancer interfaces, firewall/routing policy, BGP-advertised backend networks,
+or a platform-native load balancer integration.
+
+See [docs/lb-tier-keepalived-haproxy.md](lb-tier-keepalived-haproxy.md) for the
+lab-to-F5 mapping and [docs/metallb-configuration.md](metallb-configuration.md)
+for the MetalLB backend IP assumptions.
 
 ## Topology (4 VMs)
 
@@ -63,6 +109,9 @@ owning pod.
   each agent's ingress, so it routes around a starved/down node; one TCP
   frontend per Valkey client port maps 6379-6384 to the shared MetalLB IP on
   that same port (per-shard by port; MOVED-by-hostname preserved).
+  See [docs/lb-tier-keepalived-haproxy.md](lb-tier-keepalived-haproxy.md) for the LB-tier design and
+  production F5 mapping, and [docs/metallb-configuration.md](metallb-configuration.md) for the
+  Kubernetes-level MetalLB resources, assumptions, limits, and routing details.
 - **dnsmasq** runs as a host service on the server node. It answers
   `debug-demo.local`, `valkey.debug-demo.local`, `*.debug-demo.local` → the
   VIP. The Mac points at it via `/etc/resolver/debug-demo.local`; the cluster
@@ -129,6 +178,8 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   now; the VIP itself is served by the LB tier (see the LB-tier phase below).
 - [x] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
   namespaces, storage (local-path). Verify hostname resolution reaches the VIP.
+  See [docs/stateful-storage-poc.md](stateful-storage-poc.md) for why the default
+  StatefulSet/PVC storage is POC-only and not production-grade HA storage.
 - [x] **P3 — charts** — DONE and VALIDATED END TO END. Each Valkey pod
   listens on its own unique port (base+idx) and announces its POD IP + that
   port, so gossip/replication are DIRECT pod-to-pod on the CNI network (VIP and
