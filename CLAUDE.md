@@ -354,10 +354,13 @@ is built by `scripts/k3s.sh bundle` (or on demand by `install`).
 **Pre-flight is step 0** — `scripts/k3s-preflight.sh` (also `./tui
 preflight`) checks and auto-fixes the Mac prerequisites so `./tui
 install` works even if you never opened the README: Homebrew, CLI tools
-(limactl/kubectl/helm/curl), **socket_vmnet** (the Lima shared-network
-backend), **Lima sudoers** (`limactl sudoers | sudo tee
-/etc/sudoers.d/lima`), Docker (only to build the bundle), and RAM. It is
-idempotent and prints the exact fix command for anything it can't
+(limactl/kubectl/helm/curl), **sudo/admin access** (sudoers + resolver
+need it), **socket_vmnet** (the Lima shared-network backend), **Lima
+sudoers** (`limactl sudoers | sudo tee /etc/sudoers.d/lima`, which
+`sudoers --check` also validates the shared network against), **k3s +
+images** (the air-gap bundle offline, or Docker + github.com reachable to
+build it), and RAM. It is idempotent and prints the exact fix command for
+anything it can't
 auto-fix. (socket_vmnet + Lima sudoers used to be an undocumented manual
 step; preflight now handles both.)
 

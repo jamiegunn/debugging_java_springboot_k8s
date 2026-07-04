@@ -163,12 +163,15 @@ or a corporate mirror) builds an image bundle first, then hands it in.
 very first step, so you can realistically just run `./tui install` on a
 clean Mac. Pre-flight is idempotent and checks + auto-fixes the Mac
 prerequisites — Homebrew, the CLI tools (`limactl`/`kubectl`/`helm`/
-`curl`), **`socket_vmnet`** (the backend for Lima's `shared` network),
-the **Lima sudoers** entry (`/etc/sudoers.d/lima`, so the shared network
-starts without a password prompt), Docker (only to build the bundle), and
-RAM — printing the exact fix command for anything it can't safely do
-itself. socket_vmnet + Lima sudoers used to be a manual step; pre-flight
-now handles them. Run it standalone any time with `./tui preflight`.
+`curl`), **sudo/admin access** (the sudoers + resolver need it),
+**`socket_vmnet`** (the backend for Lima's `shared` network), the **Lima
+sudoers** entry (`/etc/sudoers.d/lima`, which `limactl sudoers --check`
+also validates the shared network against), **k3s + images** (the air-gap
+bundle offline, or Docker + `github.com` reachable to build it — where a
+corporate proxy/MITM bites first), and RAM — printing the exact fix
+command for anything it can't safely do itself. socket_vmnet + Lima
+sudoers used to be a manual step; pre-flight now handles them. Run it
+standalone any time with `./tui preflight`.
 
 ### 0. macOS prereqs
 
@@ -230,8 +233,9 @@ smoke-tests it:
 What `install` chains (orchestrated by `scripts/k3s-install.sh`):
 
 0. **Pre-flight** — `scripts/k3s-preflight.sh` checks + auto-fixes the Mac
-   prerequisites (Homebrew, CLI tools, socket_vmnet, Lima sudoers, Docker,
-   RAM) so the install can't fail obscurely deep inside VM creation.
+   prerequisites (Homebrew, CLI tools, sudo/admin access, socket_vmnet, Lima
+   sudoers + shared network, k3s+images present-or-reachable, RAM) so the
+   install can't fail obscurely deep inside VM creation.
 1. **Bundle** — `scripts/bundle-images.sh` runs on the Mac: `docker pull`
    + `docker save` every third-party image (list = `K3S_IMAGES` in
    `scripts/lib/k3s-env.sh`), builds + saves the app image, and downloads
