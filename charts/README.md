@@ -44,9 +44,12 @@ explicitly (`kubectl -n <ns> delete pvc --all`) for a clean slate.
 - `debug-demo-app` reads Oracle + MQ passwords from a `Secret`. Override
   `oracle.existingSecret` / `mq.existingSecret` in `values.yaml` to use a
   pre-existing secret instead of one created by the chart.
-- The app `Deployment` sets `shareProcessNamespace: true` so the debug
-  scripts (`scripts/dump-threads.sh`, `scripts/dump-heap.sh`) can attach an
-  ephemeral JDK container that targets the app's PID 1. It also pins
+- The app `Deployment` sets `shareProcessNamespace: true` so debug
+  sidecars / ephemeral containers (`scripts/dump-threads.sh`,
+  `scripts/dump-heap.sh`) can see the JVM process. Side effect: PID 1 in
+  the shared namespace is the `/pause` sandbox, NOT the JVM — every tool
+  must discover the java PID dynamically (walk `/proc/*/comm`), never
+  hardcode PID 1. It also pins
   `valkey.debug-demo.local → VIP` via `hostAliases` (Lettuce/netty mishandles
   k8s `ndots:5` search-domain expansion).
 - Oracle Free image (`container-registry.oracle.com/database/free`)

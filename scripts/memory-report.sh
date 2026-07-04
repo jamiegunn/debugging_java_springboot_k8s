@@ -79,6 +79,15 @@ for t in d.get('availableTags', []):
 mib() { python3 -c "print(round($1/1048576, 1))"; }
 
 info "reading pod $POD ..."
+
+# Fail LOUDLY if actuator isn't answering — a report full of silent zeros is
+# worse than no report during an incident.
+if ! actuator_json metrics | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+    err "actuator not reachable at http://localhost:8080/actuator/metrics in pod $POD"
+    err "check: kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- curl -s http://localhost:8080/actuator/health"
+    exit 3
+fi
+
 CG="$(read_cgroup)"
 RSS_B=$(echo "$CG" | awk '/^rss/ {print $2}')
 LIM_B=$(echo "$CG" | awk '/^limit/ {print $2}')
@@ -90,13 +99,25 @@ DIRECT=$(metric_value jvm.buffer.memory.used 'id:direct')
 MAPPED=$(metric_value jvm.buffer.memory.used 'id:mapped')
 THREADS=$(metric_value jvm.threads.live '')
 
+# A JVM with 0 bytes of heap doesn't exist — this means the metrics scrape
+# failed mid-report. Refuse to print a misleading table.
+if [[ "$HEAP_USED" -eq 0 ]]; then
+    err "jvm.memory.used{area:heap} came back 0 — metrics scrape failed, aborting"
+    exit 3
+fi
+
 # Per-pool non-heap breakdown — iterate whatever the JVM actually exposes
 POOL_IDS="$(metric_tag_values jvm.memory.used id)"
 
 echo
 echo "== Pod $POD ===================================================="
 printf "  Container RSS         : %8s MiB  (cgroup memory.current)\n" "$(mib "$RSS_B")"
-printf "  Container limit       : %8s MiB  (cgroup memory.max — what k8s OOM-kills on)\n" "$(mib "$LIM_B")"
+# cgroup v2 reports the literal string "max" when no memory limit is set.
+if [[ "$LIM_B" == "max" || -z "$LIM_B" ]]; then
+    printf "  Container limit       : %8s      (no limit set — node OOM killer applies)\n" "none"
+else
+    printf "  Container limit       : %8s MiB  (cgroup memory.max — what k8s OOM-kills on)\n" "$(mib "$LIM_B")"
+fi
 echo
 echo "  JVM heap"
 printf "    used                : %8s MiB\n" "$(mib "$HEAP_USED")"
@@ -140,7 +161,9 @@ UNACCOUNTED=$((RSS_B - ACCOUNTED))
 echo
 printf "  Accounted             : %8s MiB  (heap + nonheap pools + direct + mapped + stacks)\n" "$(mib "$ACCOUNTED")"
 printf "  Unaccounted           : %8s MiB  (JVM internal overhead + native libs + allocator waste)\n" "$(mib "$UNACCOUNTED")"
-printf "  RSS / limit           : %s%%\n" "$(python3 -c "print(round($RSS_B*100/$LIM_B, 1))")"
+if [[ "$LIM_B" != "max" && -n "$LIM_B" ]]; then
+    printf "  RSS / limit           : %s%%\n" "$(python3 -c "print(round($RSS_B*100/$LIM_B, 1))")"
+fi
 echo "================================================================="
 echo
 echo "Hints:"

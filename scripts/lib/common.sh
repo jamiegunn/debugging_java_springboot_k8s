@@ -7,7 +7,7 @@ set -euo pipefail
 : "${NAMESPACE:=debug-demo}"
 : "${SELECTOR:=app.kubernetes.io/name=debug-demo-app}"
 : "${APP_CONTAINER:=app}"
-: "${JDK_DEBUG_IMAGE:=eclipse-temurin:25-jdk-alpine}"
+: "${JDK_DEBUG_IMAGE:=eclipse-temurin:21-jdk-alpine}"   # match the runtime's Java major
 
 # Target the multi-node k3s cluster automatically: if the project kubeconfig
 # exists and KUBECONFIG isn't already set, point every `kubectl` here. This is
@@ -29,7 +29,14 @@ require_cmd() {
     done
 }
 
-# parse_common_args <args...> — consumes -n/--namespace, -l/--selector, --container.
+# usage — print the calling script's header comment block (line 2 to the first
+# blank line) as its --help text. Every tool keeps its docs in the header.
+usage() {
+    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# parse_common_args <args...> — consumes -n/--namespace, -l/--selector,
+# --container, and -h/--help (prints the header usage block and exits).
 # Sets NAMESPACE, SELECTOR, APP_CONTAINER. Leaves remaining args in REMAINING_ARGS.
 parse_common_args() {
     REMAINING_ARGS=()
@@ -38,11 +45,16 @@ parse_common_args() {
             -n|--namespace) NAMESPACE="$2"; shift 2 ;;
             -l|--selector)  SELECTOR="$2";  shift 2 ;;
             --container)    APP_CONTAINER="$2"; shift 2 ;;
+            -h|--help)      usage; exit 0 ;;
             --) shift; REMAINING_ARGS+=("$@"); break ;;
             *)  REMAINING_ARGS+=("$1"); shift ;;
         esac
     done
 }
+
+# show_cmd <words...> — echo the exact command a tool is about to run, so every
+# capture doubles as a copy-pasteable cookbook (house style set by smoke/doctor).
+show_cmd() { printf '  $ %s\n' "$*" >&2; }
 
 # resolve_pods — echoes pod names matching selector in namespace.
 resolve_pods() {

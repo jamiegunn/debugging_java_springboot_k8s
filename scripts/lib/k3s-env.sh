@@ -76,6 +76,7 @@ K3S_IMAGES=(
     "postgres:16-alpine"
     "maven:3.9-eclipse-temurin-21"
     "eclipse-temurin:21-jre-alpine"
+    "eclipse-temurin:21-jdk-alpine"   # ephemeral debug container (dump-threads/dump-heap tier 3)
 )
 # The app image is built locally (not pulled); this is its ref.
 : "${APP_IMAGE:=debug-demo-app:dev}"

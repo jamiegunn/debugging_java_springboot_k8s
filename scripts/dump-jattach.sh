@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
         --binary)                  LOCAL_BINARY="$2"; shift 2 ;;
         --confirm)                 CONFIRMED=1; shift ;;
         -h|--help)
-            sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+            usage
             exit 0 ;;
         --) shift; FILTERED_ARGS+=("$@"); break ;;
         *)  FILTERED_ARGS+=("$1"); shift ;;
@@ -70,7 +70,9 @@ if [[ "$ACTION" == "jcmd" ]]; then
     FILTERED_ARGS=("${FILTERED_ARGS[@]:1}")
 fi
 
-parse_common_args "${FILTERED_ARGS[@]}"
+# ${arr[@]+...} guard: bash 3.2 (stock macOS) treats "${arr[@]}" on an empty
+# array as unbound under `set -u`; fixed only in bash 4.4.
+parse_common_args ${FILTERED_ARGS[@]+"${FILTERED_ARGS[@]}"}
 POD="$(resolve_one_pod "${REMAINING_ARGS[0]:-}")"
 
 if [[ -z "$ACTION" ]]; then
