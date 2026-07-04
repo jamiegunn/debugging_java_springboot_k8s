@@ -57,6 +57,7 @@ install_app() {
         --set replicaCount=1 \
         --set resources.requests.cpu=50m \
         --set resources.requests.memory=512Mi \
+        --set autoscaling.maxReplicas=4 \
         --set ingress.enabled=true \
         --set ingress.className=nginx \
         --set "ingress.hosts[0].host=${APP_HOST}" \

@@ -92,6 +92,13 @@ autoscaling:
           periodSeconds: 60
 
 probes:
+  # startup gates liveness/readiness so a slow JVM boot (many replicas starting
+  # together, CPU-starved) isn't liveness-killed into a CrashLoop. 40 × 5s = up
+  # to ~200s to come up. Set `startup: null` to disable.
+  startup:
+    path: /actuator/health/liveness
+    periodSeconds: 5
+    failureThreshold: 40
   liveness:
     path: /actuator/health/liveness
     initialDelaySeconds: 30

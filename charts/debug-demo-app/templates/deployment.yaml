@@ -74,6 +74,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "debug-demo-app.valkeyPasswordSecret" . }}
                   key: VALKEY_PASSWORD
+          {{- if .Values.probes.startup }}
+          # Gate liveness/readiness behind startup so a slow JVM boot (e.g. many
+          # replicas starting together, CPU-starved) isn't liveness-killed into a
+          # CrashLoop. Once startup passes, liveness takes over.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path | default "/actuator/health/liveness" }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds | default 5 }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold | default 40 }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
