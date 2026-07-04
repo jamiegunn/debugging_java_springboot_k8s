@@ -54,15 +54,19 @@ try_fix() {
 echo
 printf '%s── Pre-flight: Mac prerequisites ──────────────────────────────%s\n' "$B" "$OFF"
 
-# 1. Homebrew — everything else is installed through it.
+# 1. Homebrew — everything else is installed through it. Offer to install it
+#    (the official installer; NONINTERACTIVE so --yes works), then bring it onto
+#    PATH for the rest of this run.
 if command -v brew >/dev/null 2>&1; then
     ok "Homebrew"
-    BREW_PREFIX="$(brew --prefix 2>/dev/null)"
 else
-    need "Homebrew not installed (needed to install the rest)" \
-        '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-    err "Install Homebrew first (command above), then re-run."; exit 1
+    try_fix "install Homebrew (needed to install everything else)" \
+        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    # the installer doesn't touch THIS shell's PATH — source it so brew is usable now
+    for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do [[ -x "$p" ]] && eval "$("$p" shellenv)" 2>/dev/null && break; done
+    command -v brew >/dev/null 2>&1 || { err "Homebrew still not on PATH — install it, then re-run."; exit 1; }
 fi
+BREW_PREFIX="$(brew --prefix 2>/dev/null)"
 
 # 2. CLI tools.
 missing=()
@@ -111,13 +115,20 @@ fi
 if [[ -s "$AIRGAP_DIR/k3s" ]]; then
     ok "k3s + images: air-gap bundle present — no Docker/internet needed"
 else
-    if docker info >/dev/null 2>&1; then ok "Docker running (to build the bundle)"
-    elif command -v docker >/dev/null 2>&1; then
-        need "Docker installed but not running (needed once to build the bundle)" \
-            "open -a Docker   # wait for it to start, then re-run"
+    # Bundle must be built → ensure Docker (install if missing, launch + wait if
+    # stopped), then confirm the sources are reachable.
+    if docker info >/dev/null 2>&1; then
+        ok "Docker running (to build the bundle)"
     else
-        need "Docker not installed (needed once to build the bundle)" \
-            "brew install --cask docker   # then launch it"
+        command -v docker >/dev/null 2>&1 || try_fix "install Docker Desktop (to build the bundle)" "brew install --cask docker"
+        if [[ $CHECK_ONLY -eq 0 ]] && command -v open >/dev/null 2>&1; then
+            printf '     %sstarting Docker Desktop (waiting up to 60s for the daemon)…%s\n' "$DIM" "$OFF"
+            open -a Docker 2>/dev/null
+            for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
+        fi
+        if docker info >/dev/null 2>&1; then ok "Docker running (to build the bundle)"
+        else need "Docker isn't running (needed once to build the bundle)" \
+            "open -a Docker   # wait for it to finish starting, then re-run  ./tui preflight"; fi
     fi
     if curl -sfI --max-time 8 https://github.com >/dev/null 2>&1; then
         ok "k3s sources reachable (github.com — the bundle can download k3s + images)"
