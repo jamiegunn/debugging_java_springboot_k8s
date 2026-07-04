@@ -50,8 +50,10 @@ check() {
 echo "=== 1. Cluster + nodes ============================================"
 check "3 nodes Ready" bash -c 'kubectl get nodes --no-headers | awk "\$2==\"Ready\"{c++} END{exit !(c==3)}"'
 cmd  "kubectl get nodes"
-check "backend pods Ready (oracle:1 mq:1 valkey:6 app:1 ingress:3)" bash -c '
-    for e in oracle:1 mq:1 valkey:6 debug-demo:1 ingress-nginx:3; do
+# ingress-nginx is a DaemonSet on the 2 worker agents only (control-plane is
+# tainted NoSchedule), so 2 pods — not 3 — is the healthy count.
+check "backend pods Ready (oracle:1 mq:1 valkey:6 app:1 ingress:2)" bash -c '
+    for e in oracle:1 mq:1 valkey:6 debug-demo:1 ingress-nginx:2; do
         ns="${e%:*}"; want="${e#*:}"
         r=$(kubectl -n "$ns" get pods --no-headers 2>/dev/null | awk "{split(\$2,a,\"/\"); if(a[1]==a[2]&&a[1]>0)c++} END{print c+0}")
         [ "$r" -ge "$want" ] || { echo "$ns: $r/$want Ready"; exit 1; }
@@ -99,6 +101,24 @@ check "MOVED redirect names the hostname (not an IP)" bash -c '
     # write from the wrong port without -c → raw MOVED with a hostname target
     out=$(kubectl -n valkey exec valkey-primary-0 -- sh -c "valkey-cli -h '"$VALKEY_HOST"' -p '"$VALKEY_CLIENT_BASE"' -a '"$VK_PASS"' set smoke:'"$TS"':x v" 2>/dev/null)
     echo "$out" | grep -q MOVED && echo "$out" | grep -q "'"$VALKEY_HOST"'" || { echo "$out" | grep -q OK; }'  # OK if seed owns the slot
+
+# External client: the Mac's OWN valkey-cli/redis-cli dials the hostname (via
+# /etc/resolver → dnsmasq → VIP) and follows MOVED — no kubectl exec, no
+# host→IP pinning. Skipped (not failed) when the optional prerequisites are
+# missing: a local cli (brew install valkey) + the Mac resolver
+# (scripts/k3s.sh resolver).
+LOCAL_CLI="$(command -v valkey-cli || command -v redis-cli || true)"
+if [[ -z "$LOCAL_CLI" ]]; then
+    printf '[SKIP] external client from the Mac (no valkey-cli/redis-cli — brew install valkey)\n'
+elif ! python3 -c "import socket; socket.getaddrinfo('${VALKEY_HOST}', ${VALKEY_CLIENT_BASE})" 2>/dev/null; then
+    printf '[SKIP] external client from the Mac (%s does not resolve — run: scripts/k3s.sh resolver)\n' "$VALKEY_HOST"
+else
+    cmd "$(basename "$LOCAL_CLI") -c -h $VALKEY_HOST -p $VALKEY_CLIENT_BASE -a \$VK_PASS set smoke:mac:$TS hi"
+    check "external client (Mac $(basename "$LOCAL_CLI")) SET/GET by hostname, follows MOVED" bash -c '
+        "'"$LOCAL_CLI"'" -c -h "'"$VALKEY_HOST"'" -p "'"$VALKEY_CLIENT_BASE"'" -a "'"$VK_PASS"'" --no-auth-warning set smoke:mac:'"$TS"' hi | grep -q OK
+        v=$("'"$LOCAL_CLI"'" -c -h "'"$VALKEY_HOST"'" -p $(('"$VALKEY_CLIENT_BASE"'+1)) -a "'"$VK_PASS"'" --no-auth-warning get smoke:mac:'"$TS"' | tail -1)
+        [ "$v" = hi ]'
+fi
 
 echo
 echo "=== 5. Air-gap proof ============================================="

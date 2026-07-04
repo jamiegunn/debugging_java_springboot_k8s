@@ -19,6 +19,8 @@ K3S="$SCRIPTS_ROOT/k3s.sh"
 : "${APP_HOST:=debug-demo.local}"
 : "${VALKEY_HOST:=valkey.debug-demo.local}"
 KCFG="$REPO_ROOT/dumps/k3s.kubeconfig"
+KCTX="ddk3s"   # context name when imported into ~/.kube/config (k3s ships "default", which collides)
+PASS_CMD="PASS=\$(kubectl --kubeconfig $KCFG -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)"
 
 # --- colors (respect NO_COLOR / non-tty) -----------------------------------
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -64,8 +66,11 @@ header() {
     printf '%s║  debug-demo · k3s control                                    ║%s\n' "$B" "$OFF"
     printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$B" "$OFF"
     printf '%s  • You don'\''t need to set KUBECONFIG — the scripts auto-target%s\n' "$DIM" "$OFF"
-    printf '%s    dumps/k3s.kubeconfig. For your own kubectl, run:%s\n' "$DIM" "$OFF"
-    printf '%s        export KUBECONFIG=$PWD/dumps/k3s.kubeconfig%s\n' "$CY" "$OFF"
+    printf '%s    dumps/k3s.kubeconfig. For your OWN kubectl, either:%s\n' "$DIM" "$OFF"
+    printf '%s        export KUBECONFIG=%s%s\n' "$CY" "$KCFG" "$OFF"
+    printf '%s    or import it into ~/.kube/config as context '\''%s'\'' → menu item %si%s\n' "$DIM" "$KCTX" "$B" "$OFF"
+    printf '%s  • Valkey password for your local valkey-cli / redis-cli:%s\n' "$DIM" "$OFF"
+    printf '%s        %s%s\n' "$CY" "$PASS_CMD" "$OFF"
     printf '%s  • Any subcommand takes --help for the underlying script'\''s options,%s\n' "$DIM" "$OFF"
     printf '%s    e.g.  k3s.sh smoke --help   or   k3s.sh chaos --help%s\n' "$DIM" "$OFF"
     printf '%s  • When in doubt, run %sdoctor%s%s — it walks the request path top to%s\n' "$DIM" "$B" "$OFF$DIM" "" "$OFF"
@@ -83,12 +88,12 @@ menu() {
   ${B}GET RUNNING${OFF}              ${B}CHECK / DIAGNOSE${OFF}         ${B}EXPLORE / BREAK${OFF}
    ${GN}1${OFF} preflight ${DIM}(deps)${OFF}      ${GN}5${OFF} doctor  ${DIM}(start here)${OFF}    ${GN}10${OFF} api tour
    ${GN}2${OFF} install               ${GN}6${OFF} status                 ${GN}11${OFF} valkey tour
-   ${GN}3${OFF} bundle                ${GN}7${OFF} smoke   ${DIM}(14 checks)${OFF}    ${GN}12${OFF} chaos …
+   ${GN}3${OFF} bundle                ${GN}7${OFF} smoke   ${DIM}(15 checks)${OFF}    ${GN}12${OFF} chaos …
    ${GN}4${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}8${OFF} valkey validation
                             ${GN}9${OFF} lb ${DIM}(LB tier status)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
-   ${GN}13${OFF} uninstall            ${GN}h${OFF} --help   ${GN}k${OFF} KUBECONFIG export   ${GN}s${OFF} shell   ${GN}q${OFF} quit
+   ${GN}13${OFF} uninstall            ${GN}h${OFF} --help  ${GN}k${OFF} KUBECONFIG export  ${GN}i${OFF} import kubeconfig  ${GN}s${OFF} shell  ${GN}q${OFF} quit
 EOF
     printf '\n  %s> %s' "$B" "$OFF"
 }
@@ -141,9 +146,40 @@ help_for() {
     esac
 }
 kube_export() {
-    printf '\n  Copy-paste to point your own kubectl at the cluster:\n\n'
+    printf '\n  Copy-paste to point your own kubectl at the cluster (this shell only):\n\n'
     printf '    %sexport KUBECONFIG=%s%s\n' "$CY" "$KCFG" "$OFF"
-    printf '    %sexport KUBECONFIG=$PWD/dumps/k3s.kubeconfig%s   %s(from the repo root)%s\n' "$CY" "$OFF" "$DIM" "$OFF"
+    printf '\n  To make it permanent across shells, import it instead → menu item %si%s\n' "$B" "$OFF"
+    printf '\n  Valkey password for your local valkey-cli / redis-cli:\n\n'
+    printf '    %s%s%s\n' "$CY" "$PASS_CMD" "$OFF"
+}
+kube_import() {  # merge dumps/k3s.kubeconfig into ~/.kube/config as context $KCTX
+    [[ -s "$KCFG" ]] || { printf '  %sno kubeconfig yet — install first (option 2).%s\n' "$RD" "$OFF"; return; }
+    local dest="$HOME/.kube/config" tmp merged bak
+    printf '\n  Merges %s\n  into %s as context %s%s%s (k3s names everything\n' "$KCFG" "$dest" "$B" "$KCTX" "$OFF"
+    printf '  "default", which would collide — the entry is renamed on the way in).\n'
+    printf '  Re-running refreshes the entry; your current file is backed up first.\n\n'
+    confirm "merge into $dest?" || return
+    local prev=""   # keep the user's current-context — the merge takes ours otherwise
+    [[ -s "$dest" ]] && prev="$(kubectl --kubeconfig "$dest" config current-context 2>/dev/null)"
+    tmp="$(mktemp)"; merged="$(mktemp)"
+    # rename ONLY the identifier fields — never cert/server data
+    sed -E 's/(name|cluster|user|current-context): default$/\1: '"$KCTX"'/' "$KCFG" > "$tmp"
+    mkdir -p "$HOME/.kube"
+    if [[ -s "$dest" ]]; then
+        bak="$dest.bak-$(date +%Y%m%d%H%M%S)"
+        cp "$dest" "$bak" && printf '  %sbacked up: %s%s\n' "$DIM" "$bak" "$OFF"
+    fi
+    # our file FIRST so a re-import overrides a stale $KCTX entry in $dest
+    if KUBECONFIG="$tmp:$dest" kubectl config view --flatten > "$merged" 2>/dev/null && [[ -s "$merged" ]]; then
+        mv "$merged" "$dest" && chmod 600 "$dest"; rm -f "$tmp"
+        [[ -n "$prev" && "$prev" != "$KCTX" ]] && kubectl --kubeconfig "$dest" config use-context "$prev" >/dev/null 2>&1
+        printf '\n  %s✓ imported.%s Your current-context is unchanged (%s). Use the cluster with:\n\n' "$GN" "$OFF" "${prev:-$KCTX}"
+        printf '    %skubectl config use-context %s%s          %s(sticky, every new shell)%s\n' "$CY" "$KCTX" "$OFF" "$DIM" "$OFF"
+        printf '    %skubectl --context %s -n valkey get pods%s   %s(one-off)%s\n' "$CY" "$KCTX" "$OFF" "$DIM" "$OFF"
+    else
+        rm -f "$tmp" "$merged"
+        printf '  %s✘ merge failed — %s left untouched.%s\n' "$RD" "$dest" "$OFF"
+    fi
 }
 kube_shell() {
     [[ -s "$KCFG" ]] || { printf '  %sno kubeconfig yet — install first.%s\n' "$RD" "$OFF"; return; }
@@ -173,6 +209,7 @@ while true; do
         d|D) "$REPO_ROOT/jdebug"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;
+        i|I) kube_import ;;
         s|S) kube_shell ;;
         q|Q|"") clear 2>/dev/null; exit 0 ;;
         *) continue ;;

@@ -77,6 +77,15 @@ done
 if [[ ${#missing[@]} -eq 0 ]]; then ok "CLI tools (limactl, kubectl, helm, curl)"
 else try_fix "install CLI tools: ${missing[*]}" "brew install ${missing[*]}"; fi
 
+# 2b. Valkey client on the Mac (OPTIONAL — warn-only, never blocks). Used by
+#     the valkey-tour 'external' section and the smoke test's external-client
+#     check; everything else runs valkey-cli in-cluster via kubectl exec.
+if command -v valkey-cli >/dev/null 2>&1 || command -v redis-cli >/dev/null 2>&1; then
+    ok "valkey-cli/redis-cli (optional — enables the external-client checks in valkey-tour + smoke)"
+else
+    warn "no valkey-cli/redis-cli on the Mac — the external-client checks in valkey-tour/smoke will be skipped. Optional: brew install valkey"
+fi
+
 # 3. sudo access — the Lima sudoers file and the Mac /etc/resolver each need it
 #    once. Non-admin corporate Macs can do neither. (Soft: an already-configured
 #    machine can still install; the sudoers/resolver steps below hard-fail if

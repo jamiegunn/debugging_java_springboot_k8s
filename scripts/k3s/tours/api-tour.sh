@@ -33,12 +33,18 @@ require_cmd curl python3 kubectl
 
 # --- entry point: the keepalived VIP, reached BY HOSTNAME -------------------
 # curl --resolve puts the hostname in the Host header (so ingress routes it)
-# while dialing the VIP, so no Mac /etc/resolver is needed for this path.
+# while dialing the VIP. On the Mac this is NOT optional: macOS routes
+# two-label *.local names (debug-demo.local) to Bonjour/mDNS and ignores
+# /etc/resolver for them, so the apex hostname can never resolve locally.
+# (Three-label names like valkey.debug-demo.local DO resolve — see the
+# valkey-tour 'external' section.) Every printed command below includes
+# --resolve so it is copy-pasteable into any terminal as-is.
 ENTRY_IP="${K3S_VIP:-192.168.105.100}"
 VIA="keepalived VIP → ingress-nginx"
 HOST="${APP_HOST:-debug-demo.local}"
 BASE="http://${HOST}"
 CURL=(curl -fsS -m 10 --resolve "${HOST}:80:${ENTRY_IP}")
+CURL_SHOW="curl --resolve ${HOST}:80:${ENTRY_IP}"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
@@ -49,8 +55,8 @@ step()  {
     if [[ "${PAUSE:-0}" == "1" ]]; then printf '  [Enter to run] '; read -r; fi
     return 0
 }
-show() {  # show <curl args...> — print the command, run it, pretty-print JSON
-    printf '  \033[36m$ curl %s\033[0m\n' "$*"
+show() {  # show <curl args...> — print the EXACT command (copy-pasteable), run it, pretty-print JSON
+    printf '  \033[36m$ %s %s\033[0m\n' "$CURL_SHOW" "$*"
     local out
     if out="$("${CURL[@]}" "$@" 2>&1)"; then
         echo "$out" | python3 -m json.tool 2>/dev/null | sed 's/^/  /' || echo "$out" | sed 's/^/  /'
@@ -98,7 +104,7 @@ print(max(r['id'] for r in rows))" 2>/dev/null)"
     show "$BASE/api/customers/$CID"
 
     step "Validation is server-side — a bad email is a 400 with detail" ""
-    printf '  \033[36m$ curl -X POST %s/api/customers -d {"name":"x","email":"nope"}\033[0m\n' "$BASE"
+    printf '  \033[36m$ %s -X POST %s/api/customers -H "Content-Type: application/json" -d '\''{"name":"x","email":"nope"}'\''\033[0m\n' "$CURL_SHOW" "$BASE"
     "${CURL[@]}" -X POST "$BASE/api/customers" -H 'Content-Type: application/json' \
         -d '{"name":"x","email":"nope"}' 2>/dev/null | python3 -m json.tool 2>/dev/null | sed 's/^/  /' || true
 
@@ -168,7 +174,7 @@ fi
 if want diag; then
     step "Thread dump — text format, straight from actuator" \
          "This is capture path #1 (no JDK in the image). Full file: add -o dump.txt"
-    printf '  \033[36m$ curl -H "Accept: text/plain" %s/actuator/threaddump | head -20\033[0m\n' "$BASE"
+    printf '  \033[36m$ %s -H "Accept: text/plain" %s/actuator/threaddump | head -20\033[0m\n' "$CURL_SHOW" "$BASE"
     "${CURL[@]}" -H 'Accept: text/plain' "$BASE/actuator/threaddump" 2>/dev/null | head -20 | sed 's/^/  /'
 
     step "JVM metrics — heap, GC pause, live threads" ""
@@ -181,7 +187,7 @@ fi
 
 echo
 bold "Tour done. Next stops:"
-echo "  scripts/k3s/verify/smoke.sh              full 14-check verification"
+echo "  scripts/k3s/verify/smoke.sh              full 15-check verification"
 echo "  scripts/k3s/verify/valkey-cluster-tests.sh   MOVED / ASK / failover semantics"
 echo "  scripts/chaos.sh                  break things on purpose and watch"
 echo "  scripts/k3s/tours/valkey-tour.sh            the Valkey cluster from the outside"

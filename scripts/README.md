@@ -59,7 +59,7 @@ bundle) · `cluster.sh` (Lima VMs + k3s + image import) · `net.sh` (DNS + resol
 | Script | Behavior |
 |---|---|
 | `doctor.sh` | Read-only — every-layer health + fix commands |
-| `smoke.sh` | Read-only + app writes — 14-check end-to-end |
+| `smoke.sh` | Read-only + app writes — 15-check end-to-end |
 | `docs-verify.sh` | Read-only — asserts the `/docs` design claims against the live cluster |
 | `chaos.sh` | Disruptive — node/LB/Valkey/scale failure injection |
 | `valkey-cluster-tests.sh` | Disruptive — slot migration, failover, MOVED/ASK |

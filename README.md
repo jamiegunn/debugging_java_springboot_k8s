@@ -279,7 +279,7 @@ What `install` chains (orchestrated by `scripts/k3s/phases/install.sh`):
   agents' ingress and Valkey TCP `:6379-6384` to the shared MetalLB IP on the
   matching shard port).
    Runs last, since it pools to the ingress + Valkey that must already exist.
-8. **Smoke** — `scripts/k3s/verify/smoke.sh` (14 checks, all by hostname).
+8. **Smoke** — `scripts/k3s/verify/smoke.sh` (15 checks, all by hostname).
 
 The kubeconfig is written to `dumps/k3s.kubeconfig`;
 `scripts/lib/common.sh` auto-points every script's `kubectl` at it, so
@@ -295,7 +295,7 @@ scripts/k3s.sh install      # full install (preflight → bundle → VMs → k3s
 scripts/k3s.sh lb           # the LB tier VM (ddk3s-lb): keepalived VIP + HAProxy (up/down/status)
 scripts/k3s.sh resolver     # write the Mac /etc/resolver so hostnames resolve (sudo; optional)
 scripts/k3s.sh doctor       # one-shot health check across EVERY layer (start here if broken)
-scripts/k3s.sh smoke        # 14-check end-to-end verification, all by hostname
+scripts/k3s.sh smoke        # 15-check end-to-end verification, all by hostname
 scripts/k3s.sh status       # VMs + VIP owner + nodes
 scripts/k3s.sh chaos ...    # inject failures (node-down, lb-down, valkey-freeze, ...)
 scripts/k3s.sh tour         # narrated API walk-through (api-tour.sh)
@@ -345,7 +345,7 @@ choices:
 scripts/k3s.sh doctor    # checks every layer (tooling → VMs → nodes → VIP →
                          # DNS → ingress → workloads + air-gap → Valkey → e2e)
                          # and prints the exact fix command for anything broken
-scripts/k3s.sh smoke     # 14 checks, all by hostname
+scripts/k3s.sh smoke     # 15 checks, all by hostname
 ```
 
 `doctor` is the place to start whenever something looks wrong: it walks

@@ -396,7 +396,7 @@ scripts/k3s.sh resolver
 # 3. Health across every layer; prints the fix command for anything broken
 scripts/k3s.sh doctor
 
-# 4. Smoke test — 14 checks, all by hostname
+# 4. Smoke test — 15 checks, all by hostname
 scripts/k3s.sh smoke
 ```
 
@@ -816,6 +816,7 @@ specific node (`CLUSTER *`, `INFO`, `LATENCY`, `SLOWLOG`, `CONFIG`,
 scripts/k3s/tours/valkey-tour.sh                       # everything (valkey-cli in-cluster, by hostname)
 scripts/k3s/tours/valkey-tour.sh --section topology    # cluster_state, nodes, shards, role+uptime per node
 scripts/k3s/tours/valkey-tour.sh --section strings     # which keys land on which shards; SET/GET with TTL
+scripts/k3s/tours/valkey-tour.sh --section external    # the Mac's OWN valkey-cli/redis-cli by hostname (needs scripts/k3s.sh resolver) — copy-pasteable SET/GET, follows MOVED
 scripts/k3s/tours/valkey-tour.sh --section hash        # HSET/HINCRBY on customer:stats:{N}; hash-tag pinning demo
 scripts/k3s/tours/valkey-tour.sh --section list        # LLEN + LRANGE of orders:recent
 scripts/k3s/tours/valkey-tour.sh --section zset        # ZCARD + top-10 ZREVRANGE WITHSCORES
@@ -1087,7 +1088,7 @@ than the 5s cluster-node-timeout — no election would ever happen. Slot
 `MIGRATE` uses the pod IP.
 
 Cluster/end-to-end verification is split across:
-`scripts/k3s/verify/smoke.sh` (14 checks, all by hostname — HTTP via
+`scripts/k3s/verify/smoke.sh` (15 checks, all by hostname — HTTP via
 `curl --resolve`, Valkey in-cluster), `scripts/k3s/verify/doctor.sh` (every
 layer, tooling → VMs → nodes → VIP → DNS → ingress → workloads/air-gap →
 Valkey → end-to-end, printing the fix command for anything broken), and

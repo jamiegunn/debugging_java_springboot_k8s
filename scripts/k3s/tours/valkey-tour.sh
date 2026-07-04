@@ -6,6 +6,11 @@
 # HAProxy → MetalLB IP → the owning pod; nodes are distinguished by port
 # (6379-6384).
 #
+# The 'external' section is the exception: it runs YOUR MAC's own
+# valkey-cli/redis-cli against the same hostname (resolved via
+# /etc/resolver → dnsmasq → VIP — install with `scripts/k3s.sh resolver`),
+# proving a genuinely external client works with no host→IP pinning.
+#
 # Use this when you want a comprehensive snapshot: topology, every op type
 # the chart wires up, MOVED redirect behavior, latency, slow queries, big
 # keys, memory. Output is informational — no pass/fail. For pass/fail
@@ -19,7 +24,7 @@
 #   ./valkey-tour.sh                   # full tour
 #   ./valkey-tour.sh --seed valkey.debug-demo.local:6380   # a different seed (host[:port])
 #   ./valkey-tour.sh --section topology          # just one section
-#       sections: topology, strings, hash, list, zset, stream, pubsub, info, latency
+#       sections: topology, strings, external, hash, list, zset, stream, pubsub, info, latency
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -160,6 +165,41 @@ section strings && {
 }
 
 # ---------------------------------------------------------------------------
+section external && {
+    echo "The cluster from OUTSIDE — your Mac's own valkey-cli/redis-cli, by hostname."
+    echo "No kubectl exec and no host→IP pinning: the Mac resolves $SEED via"
+    echo "/etc/resolver → dnsmasq → VIP, and -c follows MOVED redirects exactly like"
+    echo "any external client would. Every command below is copy-pasteable as-is."
+    echo "(Three-label names like $SEED resolve via /etc/resolver; only the two-label"
+    echo "apex debug-demo.local is claimed by macOS mDNS — hence curl's --resolve.)"
+    echo
+    LOCAL_CLI="$(command -v valkey-cli || command -v redis-cli || true)"
+    if [[ -z "$LOCAL_CLI" ]]; then
+        echo "  (skipped: no valkey-cli/redis-cli on the Mac — brew install valkey)"
+    elif command -v python3 >/dev/null 2>&1 && ! python3 -c "import socket; socket.getaddrinfo('$SEED', $PORT)" 2>/dev/null; then
+        echo "  (skipped: the Mac can't resolve $SEED — run: scripts/k3s.sh resolver)"
+    else
+        LC="$(basename "$LOCAL_CLI")"
+        OTHER_PORT=$(( PORT == 6379 ? 6380 : 6379 ))
+        lshow() { printf '  \033[36m$ %s\033[0m\n' "$1"; shift; "$@" 2>&1 | sed 's/^/  /'; }
+        echo "  Grab the password once per shell (--kubeconfig is REQUIRED here: your"
+        echo "  shell's default kubectl context is likely another cluster, which yields an"
+        echo "  empty \$PASS → 'AUTH failed: WRONGPASS'):"
+        printf '  \033[36m$ PASS=$(kubectl --kubeconfig %s -n %s get secret valkey -o jsonpath='"'"'{.data.password}'"'"' | base64 -d)\033[0m\n' "${K3S_KUBECONFIG:-dumps/k3s.kubeconfig}" "${VALKEY_NS:-valkey}"
+        echo
+        lshow "$LC -c -h $SEED -p $PORT -a \"\$PASS\" --no-auth-warning SET tour:mac 'hello from the Mac' EX 300" \
+              "$LOCAL_CLI" -c -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning SET tour:mac "hello from the Mac" EX 300
+        lshow "$LC -c -h $SEED -p $PORT -a \"\$PASS\" --no-auth-warning GET tour:mac" \
+              "$LOCAL_CLI" -c -h "$SEED" -p "$PORT" -a "$PASS" --no-auth-warning GET tour:mac
+        echo
+        echo "  Same key via a DIFFERENT node ($SEED:$OTHER_PORT) — the cli follows the"
+        echo "  MOVED redirect, resolving the announced hostname just like the app does:"
+        lshow "$LC -c -h $SEED -p $OTHER_PORT -a \"\$PASS\" --no-auth-warning GET tour:mac" \
+              "$LOCAL_CLI" -c -h "$SEED" -p "$OTHER_PORT" -a "$PASS" --no-auth-warning GET tour:mac
+    fi
+}
+
+# ---------------------------------------------------------------------------
 section hash && {
     echo "Hash ops on customer:stats:{N} — the {N} hash tag pins all per-customer keys to one shard."
     echo
@@ -227,7 +267,7 @@ section pubsub && {
     echo "To watch the classic channel live (cluster bus broadcasts, so any seed works):"
     echo "  kubectl -n valkey exec -it valkey-primary-0 -- valkey-cli -h $SEED -p $PORT -a '\$PASS' subscribe orders:notifications"
     echo "Then in another terminal, drive an order to trigger a PUBLISH:"
-    echo "  curl -X POST http://debug-demo.local/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":1,\"amount\":1.00}'"
+    echo "  curl --resolve ${APP_HOST:-debug-demo.local}:80:${K3S_VIP:-192.168.105.100} -X POST http://${APP_HOST:-debug-demo.local}/api/orders -H 'Content-Type: application/json' -d '{\"customerId\":1,\"amount\":1.00}'"
 }
 
 # ---------------------------------------------------------------------------
@@ -273,4 +313,4 @@ section latency && {
 echo
 echo "═══════════════════════════════════════════════════════════════════"
 echo "Done. Sections you can run individually:"
-echo "  --section topology  strings  hash  list  zset  stream  pubsub  info  latency"
+echo "  --section topology  strings  external  hash  list  zset  stream  pubsub  info  latency"
