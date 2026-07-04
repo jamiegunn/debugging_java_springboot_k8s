@@ -138,10 +138,32 @@ else
     fi
 fi
 
-# 7. RAM — the VMs are 3 + 7 + 7 + 1 = 18 GiB.
+# 7. RAM — the VMs total SERVER + 2×AGENT + LB GiB (all configurable). If the
+#    Mac is short, don't just fail — compute a SMALLER profile sized to the
+#    actual RAM and hand over the exact `K3S_*_MEM=… ./tui install` to try.
+s_mem=${K3S_SERVER_MEM:-3}; a_mem=${K3S_AGENT_MEM:-7}; l_mem=${K3S_LB_MEM:-1}
+budget=$(( s_mem + 2*a_mem + l_mem ))
+reserve=4                                   # leave ~this much GiB for macOS
 mem=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
-if [[ $mem -ge 20 ]]; then ok "RAM: ${mem} GiB (VMs use ~18)"
-else warn "RAM: ${mem} GiB — the VMs want ~18 GiB. Close apps, or shrink K3S_SERVER_MEM/K3S_AGENT_MEM in scripts/lib/k3s-env.sh"; fi
+if (( mem >= budget + reserve )); then
+    ok "RAM: ${mem} GiB (VMs use ${budget}, ~$(( mem - budget )) left for macOS)"
+else
+    warn "RAM: ${mem} GiB — the default VMs need ${budget} GiB (+~${reserve} for macOS). You can shrink them and try:"
+    # Fit: LB stays 1, server floored at 2 (control-plane min), the rest to the
+    # two agents (they run ALL workloads — Oracle is the hungriest).
+    fit_s=2; fit_l=1
+    fit_a=$(( (mem - reserve - fit_s - fit_l) / 2 )); (( fit_a < 3 )) && fit_a=3
+    fit_total=$(( fit_s + 2*fit_a + fit_l ))
+    if (( fit_total + 2 > mem )); then
+        printf '     %s%s GiB is too little even for a minimal ~%s GiB profile — a Mac with ≥16 GiB\n     is recommended. You can still try the smallest profile, but expect OOMs:%s\n' "$YL" "$mem" "$fit_total" "$OFF"
+    fi
+    printf '     %sK3S_SERVER_MEM=%s K3S_AGENT_MEM=%s K3S_LB_MEM=%s ./tui install%s\n' "$CY" "$fit_s" "$fit_a" "$fit_l" "$OFF"
+    if (( fit_a >= 5 )); then
+        printf '     %s(should hold the full stack; if pods OOM, raise K3S_AGENT_MEM)%s\n' "$DIM" "$OFF"
+    else
+        printf '     %s(tight — %s GiB agents may OOM under Oracle+MQ+Valkey+app. If so, install\n     fewer charts, or use a Mac with more RAM. Persist values by editing\n     scripts/lib/k3s-env.sh instead of prefixing each command.)%s\n' "$DIM" "$fit_a" "$OFF"
+    fi
+fi
 
 echo
 if [[ $PROB -eq 0 ]]; then

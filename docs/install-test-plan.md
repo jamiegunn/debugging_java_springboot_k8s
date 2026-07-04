@@ -81,12 +81,20 @@ sudo sed -i '' '/[[:space:]]github.com$/d' /etc/hosts
 mv /tmp/airgap.bak dumps/airgap
 ```
 
-### A6. Low RAM  *(can't remove RAM — verify the message)*
+### A6. Low RAM  *(can't remove RAM — verify the fitted-profile advice)*
+The check reads `sysctl hw.memsize` (passes when `mem ≥ VM budget + ~4 GiB for
+macOS). On a short Mac it doesn't just fail — it computes a **smaller profile
+sized to your RAM** and prints the exact override to try, e.g.:
+```
+⚠ RAM: 16 GiB — the default VMs need 18 GiB (+~4 for macOS). You can shrink them and try:
+   K3S_SERVER_MEM=2 K3S_AGENT_MEM=4 K3S_LB_MEM=1 ./tui install
+   (tight — 4 GiB agents may OOM under Oracle+MQ+Valkey+app; install fewer charts or use a bigger Mac)
+```
+Those env vars are honored end-to-end (k3s-env.sh → cluster + LB VM sizing), and
+persist if you edit `scripts/lib/k3s-env.sh` instead of prefixing each command.
+Try it live by actually installing with a smaller profile:
 ```sh
-# Can't shrink physical RAM; the check reads sysctl hw.memsize (>=20 GiB passes).
-# Verify the WARN branch renders by reading the check, or on a <20 GiB Mac it
-# prints: ⚠ RAM: N GiB — shrink K3S_SERVER_MEM/K3S_AGENT_MEM in scripts/lib/k3s-env.sh
-grep -A3 '7. RAM' scripts/k3s-preflight.sh
+K3S_SERVER_MEM=2 K3S_AGENT_MEM=5 K3S_LB_MEM=1 ./tui install   # then ./tui doctor / smoke
 ```
 
 ### A7. sudo / non-admin  *(describe — needs a non-admin account to truly test)*
