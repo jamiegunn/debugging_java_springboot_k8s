@@ -254,8 +254,9 @@ What `install` chains (orchestrated by `scripts/k3s-install.sh`):
    `*.debug-demo.local`, a CoreDNS stub so pods resolve the same
    hostnames, and the Mac `/etc/resolver` — all answering to the VIP.
    This script is DNS-only; the VIP itself is served by the LB tier below.
-5. **Platform** (`k3s-platform.sh`) — ingress-nginx as a hostPort
-   DaemonSet (on the agents), namespaces, and `local-path` storage.
+5. **Platform** (`k3s-platform.sh`) — MetalLB (the in-cluster LoadBalancer
+   fulfiller, L2 mode) and ingress-nginx as a hostPort DaemonSet (on the
+   agents), plus the namespaces.
 6. **Charts** (`k3s-charts.sh`) — Oracle, IBM MQ, Valkey, and the app
    (Artifactory is optional — only for the `scripts/local-ci.sh`
    in-cluster registry loop — and is skipped by default).

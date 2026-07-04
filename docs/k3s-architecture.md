@@ -162,10 +162,10 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   in-cluster hostname. common.sh auto-targets the k3s kubeconfig for the
   whole suite.
 - [x] **P6 — troubleshooting kit**: scripts/k3s-doctor.sh — one command
-  checks every layer (tooling → VMs → nodes → VIP → DNS → ingress →
-  workloads → Valkey cluster → end-to-end), and for anything broken prints
-  the exact fix command (validated: 23/24, the 1 being the optional Mac
-  resolver). `./tui` (root launcher) / `scripts/k3s.sh` is the single front
+  checks every layer (tooling → VMs → nodes → VIP → DNS → MetalLB + ingress →
+  workloads → Valkey cluster → end-to-end), and for anything broken prints the
+  exact fix command. It counts passes dynamically; the only expected ✘ on a
+  healthy stack is the optional Mac resolver (cleared by `./tui resolver`). `./tui` (root launcher) / `scripts/k3s.sh` is the single front
   door: bare `./tui` opens an interactive menu (option 0 = preflight, 12 = lb);
   subcommands are **preflight** / bundle / install / resolver / **lb** / doctor
   / smoke / status / chaos / tour / valkey / uninstall. `k3s-doctor.sh`
