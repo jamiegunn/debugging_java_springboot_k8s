@@ -15,6 +15,7 @@
 #   Check
 #     doctor        one-shot health check across EVERY layer (start here if broken)
 #     smoke         14-check end-to-end verification, all by hostname
+#     docs-verify   assert the /docs design claims against the live cluster
 #     status        VMs + VIP owner + nodes
 #
 #   Explore / break
