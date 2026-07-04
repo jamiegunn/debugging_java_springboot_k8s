@@ -51,6 +51,13 @@ EOF
 
 banner
 
+# --- pre-flight: Mac prerequisites (socket_vmnet, sudoers, tools, Docker) ----
+# Idempotent + self-healing. Aborts with exact fix commands if something can't
+# be auto-fixed (e.g. Docker not running), so the install never fails obscurely
+# deep inside VM creation.
+info "pre-flight: checking Mac prerequisites..."
+"$SCRIPT_DIR/k3s-preflight.sh" || { err "pre-flight failed — fix the items above, then re-run: ./tui install"; exit 1; }
+
 # --- 0. air-gap bundle ------------------------------------------------------
 if [[ $SKIP_BUNDLE -eq 1 || -s "$AIRGAP_DIR/k3s" ]]; then
     info "[0/5] air-gap bundle: present (skipping build) — $AIRGAP_DIR"

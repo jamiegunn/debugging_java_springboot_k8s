@@ -7,8 +7,9 @@
 # Run with NO arguments (or `tui`) for an interactive menu over everything.
 #
 #   Get running
+#     preflight     check + auto-fix Mac prerequisites (socket_vmnet, sudoers, tools)
 #     bundle        build the air-gap image bundle on the Mac (scripts/bundle-images.sh)
-#     install       full install: VMs → k3s → VIP/DNS → ingress → charts → smoke
+#     install       full install: preflight → VMs → k3s → VIP/DNS → ingress → charts → LB → smoke
 #     resolver      write the Mac /etc/resolver so hostnames resolve (sudo)
 #
 #   Check
@@ -38,6 +39,7 @@ usage() { sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
     tui|menu|"")  exec "$D/k3s-tui.sh" ;;
+    preflight)  exec "$D/k3s-preflight.sh" "$@" ;;   # check/fix Mac prerequisites
     bundle)     exec "$D/bundle-images.sh" "$@" ;;
     install)    exec "$D/k3s-install.sh" "$@" ;;
     uninstall)  exec "$D/k3s-uninstall.sh" "$@" ;;

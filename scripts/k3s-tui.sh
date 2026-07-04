@@ -78,10 +78,10 @@ menu() {
     header
     cat <<EOF
   ${B}GET RUNNING${OFF}              ${B}CHECK${OFF}                    ${B}EXPLORE / BREAK${OFF}
-   ${GN}1${OFF} install               ${GN}4${OFF} doctor  ${DIM}(start here)${OFF}     ${GN}8${OFF}  api tour
-   ${GN}2${OFF} bundle                ${GN}5${OFF} smoke   ${DIM}(14 checks)${OFF}      ${GN}9${OFF}  valkey tour
-   ${GN}3${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}6${OFF} status                  ${GN}10${OFF} chaos …
-                            ${GN}7${OFF} valkey 58-test suite
+   ${GN}0${OFF} preflight ${DIM}(deps)${OFF}      ${GN}4${OFF} doctor  ${DIM}(start here)${OFF}     ${GN}8${OFF}  api tour
+   ${GN}1${OFF} install               ${GN}5${OFF} smoke   ${DIM}(14 checks)${OFF}      ${GN}9${OFF}  valkey tour
+   ${GN}2${OFF} bundle                ${GN}6${OFF} status                  ${GN}10${OFF} chaos …
+   ${GN}3${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}7${OFF} valkey 58-test suite    ${GN}12${OFF} lb ${DIM}(LB tier status)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
    ${GN}11${OFF} uninstall            ${GN}h${OFF}  --help for a subcommand
@@ -150,6 +150,7 @@ while true; do
     menu
     read -r choice || exit 0
     case "$choice" in
+        0)  run "$K3S" preflight ;;
         1)  confirm "Full install (builds VMs, ~15 min the first time) — proceed?" && run "$K3S" install ;;
         2)  run "$K3S" bundle ;;
         3)  confirm "Write /etc/resolver/${BASE_DOMAIN:-debug-demo.local} (needs sudo) — proceed?" && run "$K3S" resolver ;;
@@ -162,6 +163,7 @@ while true; do
         9)  run "$K3S" valkey ;;
         10) chaos_menu; continue ;;
         11) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
+        12) run "$K3S" lb status ;;
         h|H) help_for ;;
         k|K) kube_export ;;
         s|S) kube_shell ;;
