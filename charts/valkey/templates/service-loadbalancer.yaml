@@ -43,7 +43,8 @@ metadata:
 spec:
   type: LoadBalancer
   {{- if $sharedIP }}
-  loadBalancerIP: {{ $sharedIP | quote }}
+  # IP is requested via the metallb.io/loadBalancerIPs annotation above, NOT the
+  # deprecated spec.loadBalancerIP — MetalLB rejects a Service that sets BOTH.
   externalTrafficPolicy: Cluster
   {{- end }}
   ports:
@@ -68,7 +69,8 @@ metadata:
 spec:
   type: LoadBalancer
   {{- if $sharedIP }}
-  loadBalancerIP: {{ $sharedIP | quote }}
+  # IP is requested via the metallb.io/loadBalancerIPs annotation above, NOT the
+  # deprecated spec.loadBalancerIP — MetalLB rejects a Service that sets BOTH.
   externalTrafficPolicy: Cluster
   {{- end }}
   ports:
