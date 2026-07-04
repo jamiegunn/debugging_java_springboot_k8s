@@ -37,6 +37,7 @@ Kubernetes-level MetalLB shared-IP design. The front door is `scripts/k3s.sh`.
 | `scripts/` | Debug + ops tools. `k3s.sh` is the single front door; `k3s-*.sh` are the phase scripts; `bundle-images.sh` builds the air-gap bundle. See "Debug tooling" below. |
 | `scripts/lib/k3s-env.sh` | Central config for the whole k3s stack (VM sizes, hostnames, image list, versions) — override via env. |
 | `docs/k3s-architecture.md` | Full design reference: topology, VIP/DNS, air-gap, the hostname Valkey model. |
+| `docs/networking-l2-primer.md` | Background primer: L2 vs routed vs NAT, ARP, and why the flat lab network makes the VIP + MetalLB IP directly reachable. |
 | `docs/lb-tier-keepalived-haproxy.md` | Why the lab uses keepalived + HAProxy, and how the same shape maps to production F5. |
 | `docs/metallb-configuration.md` | Kubernetes-level MetalLB configuration, shared backend IP assumptions, limits, and Valkey routing. |
 | `docs/stateful-storage-poc.md` | How StatefulSet PVCs use the lab's default storage class; explicitly POC-only, not production-grade HA storage. |
@@ -421,6 +422,7 @@ The detailed implementation lives in focused docs:
 | Topic | Reference |
 |---|---|
 | Full k3s/Lima topology, shared L2 rationale, DNS, air-gap | [`docs/k3s-architecture.md`](docs/k3s-architecture.md) |
+| L2/ARP/NAT networking background for the flat lab network | [`docs/networking-l2-primer.md`](docs/networking-l2-primer.md) |
 | keepalived, HAProxy, and production F5 mapping | [`docs/lb-tier-keepalived-haproxy.md`](docs/lb-tier-keepalived-haproxy.md) |
 | MetalLB Kubernetes resources and shared backend IP | [`docs/metallb-configuration.md`](docs/metallb-configuration.md) |
 | Valkey RESP/TCP ingress and port-preserved routing | [`docs/valkey-tcp-ingress-routing.md`](docs/valkey-tcp-ingress-routing.md) |

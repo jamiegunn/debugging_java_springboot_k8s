@@ -104,7 +104,7 @@ worker VM deleted or corrupted: local data may be lost or stranded
 cluster uninstall: data is expected to be removed with the lab
 ```
 
-That is acceptable for this repository's POC goals. It is not acceptable as a general production storage model for stateful services.
+That is acceptable for this repository's local goals.
 
 ## StatefulSet behavior with local-path
 
@@ -172,9 +172,9 @@ Those are separate layers. Network failover does not imply storage failover.
 
 ## Oracle, IBM MQ, and Artifactory notes
 
-Oracle, IBM MQ, Artifactory, and Artifactory Postgres are also configured for local POC persistence, not production HA.
+Oracle, IBM MQ, Artifactory, and Artifactory Postgres are also configured for local POC persistence.
 
-The charts use single-replica StatefulSets with one PVC each. This is enough to preserve state across pod restarts during local testing, but it does not provide production database or broker durability.
+The charts use single-replica StatefulSets with one PVC each. This is enough to preserve state across pod restarts during local testing.
 
 For production, each of these systems needs its own storage and recovery design:
 
@@ -266,4 +266,4 @@ Cross-node transparent failover: no
 Production durability: no
 ```
 
-This is intentional. The repository's stateful storage exists to support a local debugging and networking POC, including the MetalLB TCP ingress path for Valkey RESP. It is not a production storage architecture.
+This is intentional: the storage exists to support a local debugging and networking POC, including the MetalLB TCP ingress path for Valkey RESP.

@@ -222,7 +222,7 @@ client
   -> Valkey pod
 ```
 
-Production does not require the frontend VIP and backend MetalLB IP to be on the same subnet. It does require the load balancer to reach the backend IP and ports through routing, dual-homing, BGP, or platform integration.
+The frontend VIP and backend MetalLB IP need not share a subnet; the load balancer only needs a backend path to that shared IP on the Valkey ports. See [docs/production-translation-guide.md](production-translation-guide.md) for how that backend path is realized.
 
 ## MOVED and ASK redirects
 

@@ -7,6 +7,7 @@ Short version: the repo uses local components to model production responsibiliti
 Related documents:
 
 - [docs/k3s-architecture.md](k3s-architecture.md) is the local topology reference.
+- [docs/networking-l2-primer.md](networking-l2-primer.md) is the L2/ARP/NAT background for the flat lab network.
 - [docs/lb-tier-keepalived-haproxy.md](lb-tier-keepalived-haproxy.md) explains the lab LB tier and F5 shape.
 - [docs/metallb-configuration.md](metallb-configuration.md) explains the MetalLB Kubernetes resources.
 - [docs/stateful-storage-poc.md](stateful-storage-poc.md) explains why the current PVC storage is POC-only.

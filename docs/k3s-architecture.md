@@ -22,53 +22,21 @@ Config for all of it lives in `scripts/lib/k3s-env.sh` (override via env).
 For focused companion references, see [docs/valkey-tcp-ingress-routing.md](valkey-tcp-ingress-routing.md)
 for the RESP/TCP path, [docs/production-translation-guide.md](production-translation-guide.md)
 for lab-to-production mapping, and [docs/stateful-storage-poc.md](stateful-storage-poc.md)
-for POC-only storage caveats.
+for the storage caveats.
 
 ## Why the shared L2 network matters in the lab
 
-The lab intentionally uses one property to keep the local install simple: **the
-Mac and all VMs sit on a single L2 segment** — Lima's **`shared` network**
-(socket_vmnet, `192.168.105.0/24`). A keepalived VIP on that segment is directly
-reachable from the Mac, the LB VM can reach the worker nodes, and HAProxy can
-reach the MetalLB backend IP without extra routes.
+The whole stack relies on the Mac and all four VMs sharing one L2 segment
+(Lima's `shared` network, socket_vmnet, `192.168.105.0/24`), so the keepalived
+VIP and the MetalLB backend IP are directly ARP-reachable — no routes, no NAT,
+no port-forwarding. That flat network is a lab convenience; the invariant that
+actually carries forward is only that clients reach a stable frontend VIP and
+the LB tier can reach the Kubernetes backend targets.
 
-Without that shared segment, the lab would need an explicit replacement for L2
-reachability. ARP for the keepalived VIP and MetalLB IPs does not cross NAT or a
-normal routed boundary. In concrete terms, "the Mac is behind NAT" would mean
-the k3s VMs live on a NAT-only VM subnet and the Mac is not directly attached to
-`192.168.105.0/24`. The Mac might be able to reach a translated localhost port
-or a NAT gateway address, but it could not directly ask "who has
-`192.168.105.100`?" or "who has `192.168.105.200`?" on the VM subnet. If the
-Mac were outside the Lima subnet, it would need a route to `192.168.105.0/24`, a
-port-forward/NAT rule into the VM network, or a proxy/load-balancer endpoint
-that is reachable from the Mac and can also reach the cluster backends.
-Likewise, if the LB VM were not on the backend worker network, HAProxy would
-need either a second interface on that network or a routed path to the worker
-and MetalLB backend IPs. The shared L2 network removes those extra moving parts
-for the POC.
-
-That flat network is a lab convenience, not a production requirement. The
-production pattern is the same two-sided load-balancer shape with explicit
-networking between the sides:
-
-```text
-client/application network
-  -> frontend VIP on F5 / load-balancer tier
-  -> routed or directly attached backend path
-  -> Kubernetes worker/server network
-  -> ingress worker IPs or MetalLB backend IPs
-```
-
-The important invariant is not that every address shares one subnet. The
-important invariant is that clients reach a stable frontend VIP, and the LB tier
-can reach the Kubernetes backend targets. In the lab, that reachability comes
-from one flat L2 network. In production, it usually comes from dual-homed load
-balancer interfaces, firewall/routing policy, BGP-advertised backend networks,
-or a platform-native load balancer integration.
-
-See [docs/lb-tier-keepalived-haproxy.md](lb-tier-keepalived-haproxy.md) for the
-lab-to-F5 mapping and [docs/metallb-configuration.md](metallb-configuration.md)
-for the MetalLB backend IP assumptions.
+See [docs/networking-l2-primer.md](networking-l2-primer.md) for the
+L2-vs-routed-vs-NAT detail, and
+[docs/production-translation-guide.md](production-translation-guide.md) for the
+full lab-to-production mapping.
 
 ## Topology (4 VMs)
 

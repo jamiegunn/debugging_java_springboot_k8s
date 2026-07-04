@@ -208,9 +208,8 @@ Valkey-specific TCP/RESP path is maintained in
 ## Why the lab network shape still maps to production
 
 The lab collapses the frontend and backend networks onto one Lima shared L2
-segment for local operability. That is simpler than production, but it is not a
-different architecture. The real boundary is not the subnet boundary; the real
-boundary is this responsibility split:
+segment for local operability, but the responsibility split is identical to
+production:
 
 ```text
 client-facing entry point
@@ -218,11 +217,12 @@ client-facing entry point
   -> Kubernetes backend target
 ```
 
-In the lab, all three are reachable on `192.168.105.0/24`, so no extra routing
-is required. In production, the same shape usually uses routing, dual-homing,
-BGP, or a platform load-balancer integration between frontend and backend
-networks. See [docs/production-translation-guide.md](production-translation-guide.md)
-for the full production translation.
+The real boundary is that split, not the subnet boundary. How the two sides are
+separated in production — routing, dual-homing, BGP, or a platform load-balancer
+integration — lives in
+[docs/production-translation-guide.md](production-translation-guide.md); the
+L2-vs-routed-vs-NAT background is in
+[docs/networking-l2-primer.md](networking-l2-primer.md).
 
 ## IP ownership in production
 

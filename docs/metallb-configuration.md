@@ -10,11 +10,11 @@ Related documents:
 - [docs/valkey-tcp-ingress-routing.md](valkey-tcp-ingress-routing.md) is the canonical Valkey RESP/TCP routing guide.
 - [docs/production-translation-guide.md](production-translation-guide.md) explains how the local lab maps to production.
 
-## Introductory network assumptions
+## Network assumptions
 
-The local lab is flatter than production. The design does not require production clients, the frontend VIP, and the MetalLB backend IP to all live on the same subnet.
-
-The local Lima environment uses one shared L2 network for the Mac, the LB VM, the k3s nodes, the keepalived VIP, and the MetalLB pool:
+The local Lima environment puts the Mac, the LB VM, the k3s nodes, the
+keepalived VIP, and the MetalLB pool on one shared L2 network
+(`192.168.105.0/24`), so the shared backend IP is directly ARP-reachable:
 
 ```text
 Mac / local client
@@ -25,31 +25,18 @@ Mac / local client
   -> Valkey Service and pod
 ```
 
-That flat L2 layout is a local development convenience. In production, the more likely shape is a split network model:
+That flat layout is a local convenience; production usually splits the
+client-facing VIP network from the Kubernetes backend network. Either way the
+**Kubernetes Service model is unchanged**: the Valkey chart still uses one
+per-pod `LoadBalancer` Service per node, all sharing one backend MetalLB IP and
+distinguished by port. The MetalLB-specific production assumptions (IPAM,
+backend reachability, L2 vs BGP) are collected under
+[Production MetalLB assumptions](#production-metallb-assumptions) below.
 
-```text
-client / application network
-  -> frontend VIP on a load-balancer-owned network
-  -> load balancer backend path
-  -> MetalLB shared backend IP on a Kubernetes worker/server network
-  -> k3s or Kubernetes worker node
-  -> Valkey Service and pod
-```
-
-This changes the network ownership model, but it does not change the Kubernetes Service model used by Valkey. The Valkey chart can still use one per-pod `LoadBalancer` Service per Valkey node, all sharing one backend MetalLB IP and distinguished by port.
-
-The production assumptions are:
-
-- clients resolve the Valkey hostname to the frontend VIP, not to the MetalLB backend IP
-- the frontend VIP is owned by an external load balancer tier such as F5, NetScaler, HAProxy, or a cloud/provider equivalent
-- the load balancer has a backend route, interface, VLAN, or routed path to the Kubernetes network where the MetalLB IP is reachable
-- the MetalLB IP is allocated from a backend/server-side subnet that can be announced by Kubernetes worker nodes
-- MetalLB L2 mode requires L2 adjacency only on the backend network where the MetalLB IP is announced, not across the client-facing network
-- firewall policy allows the load balancer to connect to the MetalLB backend IP on the Valkey ports
-
-If the load balancer backend cannot be L2-adjacent to the worker subnet, routed access may still work when the network routes the MetalLB pool to the worker segment where ARP resolution occurs. If that is not acceptable or is operationally awkward, production should evaluate MetalLB BGP mode or a platform-native load balancer integration instead of L2 mode.
-
-The lab's flat L2 network is therefore a simplification, not a production requirement. What carries over to production is the two-sided load-balancer shape: clients reach a frontend VIP, and the load balancer reaches Kubernetes backend targets. See [docs/lb-tier-keepalived-haproxy.md](lb-tier-keepalived-haproxy.md) for the keepalived/HAProxy lab mapping and the production F5 equivalent.
+For the L2-vs-routed-vs-NAT background see
+[docs/networking-l2-primer.md](networking-l2-primer.md); for the full
+lab-to-production mapping see
+[docs/production-translation-guide.md](production-translation-guide.md).
 
 ## IP minimization constraint
 
