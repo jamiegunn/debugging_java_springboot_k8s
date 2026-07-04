@@ -72,38 +72,62 @@ done
 if [[ ${#missing[@]} -eq 0 ]]; then ok "CLI tools (limactl, kubectl, helm, curl)"
 else try_fix "install CLI tools: ${missing[*]}" "brew install ${missing[*]}"; fi
 
-# 3. socket_vmnet — the backend for Lima's 'shared' network (the whole stack
-#    depends on the Mac + VMs sharing one L2 segment).
-if brew list socket_vmnet >/dev/null 2>&1 \
-   || [[ -x "${BREW_PREFIX:-}/opt/socket_vmnet/bin/socket_vmnet" || -x /opt/socket_vmnet/bin/socket_vmnet ]]; then
-    ok "socket_vmnet (shared-network backend)"
+# 3. sudo access — the Lima sudoers file and the Mac /etc/resolver each need it
+#    once. Non-admin corporate Macs can do neither. (Soft: an already-configured
+#    machine can still install; the sudoers/resolver steps below hard-fail if
+#    they actually can't sudo.)
+if sudo -n true 2>/dev/null || id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin; then
+    ok "sudo access (admin / passwordless — you may be prompted once)"
 else
-    try_fix "install socket_vmnet (the shared network needs it)" "brew install socket_vmnet"
+    warn "your account can't sudo (not in the 'admin' group). The Lima sudoers and Mac resolver need it — ask IT to run 'limactl sudoers | sudo tee /etc/sudoers.d/lima', or use an admin account."
 fi
 
-# 4. Lima sudoers — socket_vmnet must run without a password prompt per VM.
+# 4. socket_vmnet — the backend for Lima's 'shared' network (the whole stack
+#    depends on the Mac + VMs sharing one L2 segment).
+SVN=""
+for p in "${BREW_PREFIX:-}/opt/socket_vmnet/bin/socket_vmnet" /opt/socket_vmnet/bin/socket_vmnet; do
+    [[ -x "$p" ]] && { SVN="$p"; break; }
+done
+[[ -z "$SVN" ]] && brew list socket_vmnet >/dev/null 2>&1 && SVN="(brew)"
+if [[ -n "$SVN" ]]; then ok "socket_vmnet (shared-network backend)"
+else try_fix "install socket_vmnet (the shared network needs it)" "brew install socket_vmnet"; fi
+
+# 5. Lima sudoers — socket_vmnet must run without a password prompt per VM.
+#    `sudoers --check` also validates that the 'shared' network is defined and
+#    points at the socket_vmnet binary, so it doubles as the "is the shared
+#    network actually usable?" check.
 if limactl sudoers --check >/dev/null 2>&1; then
-    ok "Lima sudoers (/etc/sudoers.d/lima up to date)"
+    ok "Lima sudoers + shared network configured (/etc/sudoers.d/lima up to date)"
 else
-    try_fix "configure Lima sudoers (needs sudo once; shared network won't start without it)" \
+    try_fix "configure Lima sudoers (needs sudo once; the shared network won't start without it)" \
         "limactl sudoers | sudo tee /etc/sudoers.d/lima >/dev/null"
 fi
 
-# 5. Docker — only to BUILD the air-gap bundle. Once dumps/airgap exists it's
-#    never needed again (the cluster is fully offline).
+# 6. k3s + images: present offline, or reachable to build. The air-gap bundle
+#    (dumps/airgap: the k3s binary, its airgap image tar, and the app/backend
+#    images) IS "k3s installed" — offline, nothing to download. If it's missing
+#    it must be BUILT, which needs Docker + reachable sources (GitHub for the k3s
+#    release, registries for images) — where a corporate proxy/MITM bites first.
 if [[ -s "$AIRGAP_DIR/k3s" ]]; then
-    ok "air-gap bundle present — Docker not needed"
-elif docker info >/dev/null 2>&1; then
-    ok "Docker running (to build the air-gap bundle)"
-elif command -v docker >/dev/null 2>&1; then
-    need "Docker is installed but not running (needed once to build the bundle)" \
-        "open -a Docker   # wait for it to finish starting, then re-run"
+    ok "k3s + images: air-gap bundle present — no Docker/internet needed"
 else
-    need "Docker not installed (needed once to build the air-gap bundle)" \
-        "brew install --cask docker   # then launch Docker Desktop"
+    if docker info >/dev/null 2>&1; then ok "Docker running (to build the bundle)"
+    elif command -v docker >/dev/null 2>&1; then
+        need "Docker installed but not running (needed once to build the bundle)" \
+            "open -a Docker   # wait for it to start, then re-run"
+    else
+        need "Docker not installed (needed once to build the bundle)" \
+            "brew install --cask docker   # then launch it"
+    fi
+    if curl -sfI --max-time 8 https://github.com >/dev/null 2>&1; then
+        ok "k3s sources reachable (github.com — the bundle can download k3s + images)"
+    else
+        need "can't reach github.com — the bundle can't fetch the k3s binary/images" \
+            "corporate network? use a proxy/mirror, or run 'scripts/k3s.sh bundle' on an open network and copy dumps/airgap/ across"
+    fi
 fi
 
-# 6. RAM — the VMs are 3 + 7 + 7 + 1 = 18 GiB.
+# 7. RAM — the VMs are 3 + 7 + 7 + 1 = 18 GiB.
 mem=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
 if [[ $mem -ge 20 ]]; then ok "RAM: ${mem} GiB (VMs use ~18)"
 else warn "RAM: ${mem} GiB — the VMs want ~18 GiB. Close apps, or shrink K3S_SERVER_MEM/K3S_AGENT_MEM in scripts/lib/k3s-env.sh"; fi
