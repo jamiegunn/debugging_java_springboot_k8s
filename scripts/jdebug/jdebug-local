@@ -33,7 +33,23 @@ jvm_pid() {
     echo 1
 }
 
-need_curl()   { have curl || { err "curl not found in this container — the actuator tiers need it"; exit 127; }; }
+need_http()   { have curl || have wget || { err "need curl or wget in this container for the actuator tiers"; exit 127; }; }
+# http_get <url> [outfile] — GET via curl, else busybox wget (stock alpine has wget,
+# not curl). $HTTP_ACCEPT sets the Accept header (curl always; wget on modern builds).
+http_get() {
+    _u=$1; _o=${2:-}
+    if have curl; then
+        set -- -fsS
+        if [ -n "${HTTP_ACCEPT:-}" ]; then set -- "$@" -H "Accept: $HTTP_ACCEPT"; fi
+        if [ -n "$_o" ]; then set -- "$@" -o "$_o"; fi
+        curl "$@" "$_u"
+    else
+        set -- -q
+        if [ -n "${HTTP_ACCEPT:-}" ]; then set -- "$@" "--header=Accept: $HTTP_ACCEPT"; fi
+        if [ -n "$_o" ]; then wget "$@" -O "$_o" "$_u" 2>/dev/null || wget -q -O "$_o" "$_u"
+        else                 wget "$@" -O -   "$_u" 2>/dev/null || wget -q -O -   "$_u"; fi
+    fi
+}
 need_jattach() {
     [ -x "$JATTACH_BIN" ] && return 0
     err "jattach not found at $JATTACH_BIN."
@@ -44,33 +60,33 @@ need_jattach() {
 # metric_value <name> [tag] — pull one number out of actuator /metrics (no python).
 metric_value() {
     _u="$ACTUATOR_BASE/metrics/$1"; [ -n "${2:-}" ] && _u="$_u?tag=$2"
-    curl -fsS "$_u" 2>/dev/null | tr ',' '\n' | grep -m1 '"value"' | sed 's/.*"value"://; s/[^0-9.eE+-]//g'
+    http_get "$_u" 2>/dev/null | tr ',' '\n' | grep -m1 '"value"' | sed 's/.*"value"://; s/[^0-9.eE+-]//g'
 }
 mib() { awk -v v="${1:-0}" 'BEGIN{ if(v=="")v=0; printf "%.1f", v/1048576 }'; }
 
 # --- commands ---------------------------------------------------------------
 cmd_health() {
-    need_curl
-    curl -fsS "$ACTUATOR_BASE/health" || { err "actuator not reachable at $ACTUATOR_BASE"; exit 1; }
+    need_http
+    http_get "$ACTUATOR_BASE/health" || { err "actuator not reachable at $ACTUATOR_BASE"; exit 1; }
     echo
 }
 
 cmd_threads() {
-    need_curl
+    need_http
     # jstack-format (text/plain) to stdout — redirect to a file, or feed fastthread.io
-    curl -fsS -H 'Accept: text/plain' "$ACTUATOR_BASE/threaddump"
+    HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump"
 }
 
 cmd_heap() {
-    need_curl
+    need_http
     [ "${1:-}" = "--confirm" ] || { err "heap dump PAUSES the JVM (destructive in prod). Re-run: jdebug-local heap --confirm"; exit 2; }
     out="$OUT_DIR/heap-$(ts).hprof"
-    curl -fsS "$ACTUATOR_BASE/heapdump" -o "$out"
+    http_get "$ACTUATOR_BASE/heapdump" "$out"
     echo "wrote $out  ($(wc -c <"$out" 2>/dev/null || echo '?') bytes) — pull it out with: kubectl cp <pod>:$out ./"
 }
 
 cmd_memory() {
-    need_curl
+    need_http
     # container RSS + limit from cgroup (v2, then v1)
     rss=""; lim=""
     if [ -f /sys/fs/cgroup/memory.current ]; then
@@ -91,9 +107,9 @@ cmd_memory() {
 }
 
 cmd_metrics() {
-    need_curl
-    if [ -n "${1:-}" ]; then curl -fsS "$ACTUATOR_BASE/metrics/$1"; echo
-    else curl -fsS "$ACTUATOR_BASE/metrics" | tr ',' '\n' | sed -n 's/.*"\(jvm[^"]*\|process[^"]*\|system[^"]*\)".*/  \1/p' | sort -u; fi
+    need_http
+    if [ -n "${1:-}" ]; then http_get "$ACTUATOR_BASE/metrics/$1"; echo
+    else http_get "$ACTUATOR_BASE/metrics" | tr ',' '\n' | sed -n 's/.*"\(jvm[^"]*\|process[^"]*\|system[^"]*\)".*/  \1/p' | sort -u; fi
 }
 
 cmd_jcmd() {
@@ -103,13 +119,13 @@ cmd_jcmd() {
 }
 
 cmd_snapshot() {
-    need_curl
+    need_http
     heap=0; [ "${1:-}" = "--heap" ] && heap=1
     dir="$OUT_DIR/jdebug-snapshot-$(ts)"; mkdir -p "$dir"
     echo "collecting into $dir ..."
-    curl -fsS "$ACTUATOR_BASE/health"                          >"$dir/health.json"   2>/dev/null || true
-    curl -fsS -H 'Accept: text/plain' "$ACTUATOR_BASE/threaddump" >"$dir/threads.txt" 2>/dev/null || true
-    curl -fsS "$ACTUATOR_BASE/metrics"                         >"$dir/metrics.json"  2>/dev/null || true
+    http_get "$ACTUATOR_BASE/health"                          >"$dir/health.json"   2>/dev/null || true
+    HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump" >"$dir/threads.txt" 2>/dev/null || true
+    http_get "$ACTUATOR_BASE/metrics"                         >"$dir/metrics.json"  2>/dev/null || true
     cmd_memory >"$dir/memory.txt" 2>/dev/null || true
     if [ -x "$JATTACH_BIN" ]; then
         p=$(jvm_pid)
@@ -117,7 +133,7 @@ cmd_snapshot() {
             "$JATTACH_BIN" "$p" jcmd "$c" >"$dir/jcmd-$(echo "$c" | tr ' .' '__').txt" 2>/dev/null || true
         done
     else echo "(jattach not staged — skipped jcmd; see: jdebug-local help jcmd)" >"$dir/jcmd-SKIPPED.txt"; fi
-    [ "$heap" = 1 ] && { echo "heap dump (pauses JVM)..."; curl -fsS "$ACTUATOR_BASE/heapdump" -o "$dir/heap.hprof" 2>/dev/null || true; }
+    [ "$heap" = 1 ] && { echo "heap dump (pauses JVM)..."; http_get "$ACTUATOR_BASE/heapdump" "$dir/heap.hprof" 2>/dev/null || true; }
     ( cd "$OUT_DIR" && tar czf "$dir.tar.gz" "$(basename "$dir")" 2>/dev/null ) && echo "bundle: $dir.tar.gz" || echo "bundle dir: $dir"
     echo "pull it out with: kubectl cp <pod>:$dir.tar.gz ./"
 }
@@ -146,7 +162,7 @@ COMMANDS
   help [command]      comprehensive help, or per-command detail
 
 CAPTURE TIERS
-  actuator  needs only curl + the app's /actuator endpoints (present in this image)
+  actuator  needs only curl OR wget + the /actuator endpoints (both busybox-friendly)
   jattach   needs the ~80 KB jattach binary at /tmp/jattach — stage it from OUTSIDE
             with `jdebug install-jattach`, or `kubectl cp` one in
 
