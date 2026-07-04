@@ -77,17 +77,16 @@ header() {
 menu() {
     header
     cat <<EOF
+  ${B}${CY}▶ d${OFF}  ${B}JVM DEBUG KIT${OFF} ${DIM}— dumps · memory · logs · snapshot (the core diagnostics workflow)${OFF}
+
   ${B}GET RUNNING${OFF}              ${B}CHECK${OFF}                    ${B}EXPLORE / BREAK${OFF}
    ${GN}0${OFF} preflight ${DIM}(deps)${OFF}      ${GN}4${OFF} doctor  ${DIM}(start here)${OFF}     ${GN}8${OFF}  api tour
    ${GN}1${OFF} install               ${GN}5${OFF} smoke   ${DIM}(14 checks)${OFF}      ${GN}9${OFF}  valkey tour
    ${GN}2${OFF} bundle                ${GN}6${OFF} status                  ${GN}10${OFF} chaos …
-   ${GN}3${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}7${OFF} valkey 58-test suite    ${GN}12${OFF} lb ${DIM}(LB tier status)${OFF}
+   ${GN}3${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}7${OFF} valkey validation       ${GN}12${OFF} lb ${DIM}(LB tier status)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
-   ${GN}11${OFF} uninstall            ${GN}h${OFF}  --help for a subcommand
-                            ${GN}k${OFF}  print the KUBECONFIG export
-                            ${GN}s${OFF}  shell with KUBECONFIG set
-                            ${GN}q${OFF}  quit
+   ${GN}11${OFF} uninstall            ${GN}h${OFF} --help   ${GN}k${OFF} KUBECONFIG export   ${GN}s${OFF} shell   ${GN}q${OFF} quit
 EOF
     printf '\n  %s> %s' "$B" "$OFF"
 }
@@ -110,13 +109,13 @@ chaos_menu() {
 EOF
         printf '\n  %s> %s' "$B" "$OFF"; local c; read -r c || return
         case "$c" in
-            1) run "$K3S" chaos node-down agent-1 ;;
-            2) run "$K3S" chaos node-down agent-2 ;;
+            1) confirm "node-down stops agent-1 (its pods reschedule) — proceed?" && run "$K3S" chaos node-down agent-1 ;;
+            2) confirm "node-down stops agent-2 (its pods reschedule) — proceed?" && run "$K3S" chaos node-down agent-2 ;;
             3) confirm "lb-down stops the LB VM (VIP + external access go down) — proceed?" && run "$K3S" chaos lb-down ;;
-            4) run "$K3S" chaos valkey-freeze ;;
-            5) run "$K3S" chaos oracle-down ;;
-            6) run "$K3S" chaos mq-down ;;
-            7) run "$K3S" chaos valkey-down ;;
+            4) confirm "valkey-freeze freezes a primary (triggers failover) — proceed?" && run "$K3S" chaos valkey-freeze ;;
+            5) confirm "oracle-down scales Oracle to 0 — proceed?" && run "$K3S" chaos oracle-down ;;
+            6) confirm "mq-down scales IBM MQ to 0 — proceed?" && run "$K3S" chaos mq-down ;;
+            7) confirm "valkey-down scales Valkey to 0 — proceed?" && run "$K3S" chaos valkey-down ;;
             8) run "$K3S" chaos probe ;;
             9) run "$K3S" chaos status ;;
             10) run "$K3S" chaos heal ;;
@@ -131,8 +130,13 @@ EOF
 
 # --- utilities --------------------------------------------------------------
 help_for() {
-    printf '  subcommand (install/bundle/resolver/doctor/smoke/status/chaos/tour/valkey/uninstall): '
-    local s; read -r s; [[ -n "$s" ]] && run "$K3S" "$s" --help
+    printf '  subcommand (preflight/install/bundle/resolver/lb/doctor/smoke/status/chaos/tour/valkey/uninstall, or "debug"): '
+    local s; read -r s
+    case "$s" in
+        debug|d) run "$SCRIPT_DIR/debug.sh" --help ;;
+        "")      ;;
+        *)       run "$K3S" "$s" --help ;;
+    esac
 }
 kube_export() {
     printf '\n  Copy-paste to point your own kubectl at the cluster:\n\n'
@@ -164,6 +168,7 @@ while true; do
         10) chaos_menu; continue ;;
         11) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
         12) run "$K3S" lb status ;;
+        d|D) "$SCRIPT_DIR/debug-tui.sh"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;
         s|S) kube_shell ;;
