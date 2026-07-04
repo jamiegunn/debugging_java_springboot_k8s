@@ -31,11 +31,11 @@ service:
   artifactoryPort: 8081  # legacy Artifactory-only port (works even when router/frontend are still bootstrapping)
   type: ClusterIP
 
-# Tight requests so it can schedule on a default-sized Rancher Desktop VM.
-# These are well below JFrog's recommended minimum (1 CPU / 2 GiB); on this
-# footprint Artifactory startup takes ~3-5 minutes and the UI is sluggish.
-# Bump the RD VM (Preferences → Virtual Machine → Memory) to 10 GB and raise
-# these for anything beyond local CI loop testing.
+# Tight requests so it fits a resource-constrained worker node. These are well
+# below JFrog's recommended minimum (1 CPU / 2 GiB); on this footprint
+# Artifactory startup takes ~3-5 minutes and the UI is sluggish. Bump the agent
+# VM memory (K3S_AGENT_MEM in scripts/lib/k3s-env.sh) and raise these for
+# anything beyond local CI loop testing.
 resources:
   requests:
     cpu: 1000m

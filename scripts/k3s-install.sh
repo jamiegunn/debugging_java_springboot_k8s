@@ -11,8 +11,7 @@
 #   5  LB tier           scripts/k3s-lb.sh up       (ddk3s-lb VM: keepalived VIP + HAProxy)
 #   6  verify + smoke                                 (VIP + DNS reachable by hostname)
 #
-# Everything is air-gapped and hostname-native. Replaces the Rancher Desktop
-# install-stack.sh end to end.
+# Everything is air-gapped and hostname-native.
 #
 # Usage:
 #   ./k3s-install.sh                 # full install (prompts for sudo once, for the Mac resolver)

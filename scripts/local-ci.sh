@@ -8,7 +8,7 @@
 # Prereqs:
 #   - artifactory chart installed (helm install artifactory ./charts/artifactory -n artifactory)
 #   - Artifactory pod ready: kubectl -n artifactory get pod artifactory-artifactory-0 -> 1/1 Running
-#   - docker (Rancher Desktop moby) reachable as the active context
+#   - docker reachable as the active context (Docker Desktop / any daemon)
 #
 # Usage:
 #   scripts/local-ci.sh                    # uses git short-sha as image tag
@@ -61,11 +61,11 @@ if [[ -z "$TAG" ]]; then
     fi
 fi
 
-# Rancher Desktop's docker daemon runs inside the Lima VM. Inside the VM,
-# `127.0.0.1` is the VM, not the host, so kubectl port-forward (bound to
-# host:127.0.0.1) is unreachable from docker. We use `host.docker.internal`
-# which RD maps to the host. Because that hostname isn't insecure by default,
-# the VM's daemon.json must include:
+# When the docker daemon runs inside a VM (Docker Desktop / Lima), `127.0.0.1`
+# is the VM, not the host, so kubectl port-forward (bound to host:127.0.0.1) is
+# unreachable from docker. We use `host.docker.internal`, which the daemon maps
+# to the host. Because that hostname isn't insecure by default, the daemon's
+# daemon.json must include:
 #   "insecure-registries": ["host.docker.internal:8081"]
 # REST/curl calls still go to 127.0.0.1 — those run on the host, not the VM.
 REGISTRY_DOCKER="host.docker.internal:${AF_LOCAL_PORT}"

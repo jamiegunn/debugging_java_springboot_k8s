@@ -1,34 +1,28 @@
-# Multi-node k3s architecture (replaces Rancher Desktop end-to-end)
+# Multi-node k3s architecture
 
-This is the blueprint for the surgery that replaces the single-node Rancher
-Desktop stack (RD's embedded k3s + MetalLB + the HAProxy-VM F5 stand-in + the
-dev VIP shim + Mac static routes) with a **purpose-built 3-node k3s cluster on
-Lima VMs**, a **dedicated load-balancer VM** (`ddk3s-lb`) that owns the
-**keepalived VRRP VIP** and fronts the cluster with HAProxy, **dnsmasq
-hostnames**, and a **fully air-gapped image supply** suitable for a corporate
+The design reference for the stack: a **purpose-built 3-node k3s cluster on
+Lima VMs**, fronted by a **dedicated load-balancer VM** (`ddk3s-lb`) that owns
+the **keepalived VRRP VIP** and HAProxy-pools to the cluster, with **dnsmasq
+hostnames** and a **fully air-gapped image supply** suitable for a corporate
 network where pods and VMs cannot reach the internet.
 
 The VIP lives on the LB tier, **not on a cluster node** — a separate F5/
-NetScaler-shaped appliance in front of a backend pool of k3s nodes. That's the
-key change from earlier revisions, which floated the VIP between the k3s nodes
-themselves; a thrashing/starved node could take the VIP down with it.
+NetScaler-shaped appliance in front of a backend pool of k3s nodes, so a
+thrashing or starved node can never take the VIP down with it.
 
 Config for all of it lives in `scripts/lib/k3s-env.sh` (override via env).
 
-## Why this fixes what RD couldn't
+## Why the shared L2 network matters
 
-RD ran everything in one vz-NAT VM. Two hard walls fell out of that:
-- **The vz-NAT wall** — pods could not dial the external VIP (the HAProxy VM),
-  so Valkey gossip via announced addresses was impossible; we papered over it
-  with the `devVipShim` DaemonSet.
-- **IP-only, route-hacked access** — MetalLB IPs needed `sudo route` entries on
-  the Mac, and everything was addressed by IP.
-
-On Lima's **`shared` network** (socket_vmnet, `192.168.105.0/24`) every VM and
-the Mac sit on one L2 segment. A keepalived VIP on that segment is **directly
-reachable from the Mac and from every pod** (pod → node → same-subnet VIP), no
-NAT, no routes, no shim. That is exactly the corporate-LAN property, so the
-shim is deleted and gossip hairpins through the real VIP like production.
+Everything hinges on one property: **the Mac and all VMs sit on a single L2
+segment** — Lima's **`shared` network** (socket_vmnet, `192.168.105.0/24`). A
+keepalived VIP on that segment is **directly reachable from the Mac and from
+every pod** (pod → node → same-subnet VIP), with no NAT, no static routes, and
+no proxy shim. That is exactly the corporate-LAN property: gossip and MOVED
+redirects resolve to the real VIP, and clients on the Mac dial it directly —
+just like production. (A NAT boundary between the Mac and the cluster network
+would break all of this: ARP for the VIP wouldn't cross it, forcing per-IP
+routes or a proxy. The shared network removes that boundary entirely.)
 
 ## Topology (4 VMs)
 
@@ -116,24 +110,9 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
 
 Charts run with `imagePullPolicy: Never` (or `IfNotPresent` against the
 pre-imported images). A pod that tries to pull would fail — which is the point:
-it proves nothing reaches out. The old `preload-images.sh` (which pulled into
-RD's shared moby) is replaced by this bundle→import flow.
-
-## What gets retired vs. kept
-
-| Retired (RD-specific) | Replaced by |
-|---|---|
-| `install-stack.sh` (RD 10-phase) | `k3s-install.sh` (preflight + VM + k3s + DNS + charts + LB tier) |
-| `install-haproxy-vm.sh`, `lima-haproxy.yaml` | the `ddk3s-lb` VM (keepalived VIP + HAProxy), `scripts/k3s-lb.sh` |
-| `host-routes.sh` (Mac static routes) | direct L2 reachability on the shared subnet |
-| MetalLB (chart annotations, pool) | keepalived VRRP VIP on the LB tier + klipper svclb |
-| `charts/valkey` `devVipShim` | deleted — pods reach the VIP directly |
-| MetalLB `allow-shared-ip` / `sharedIP` / `announceIP` | `announceHostname` → VIP |
-| Pattern D hostNetwork single-pod ingress | ingress-nginx DaemonSet behind the VIP |
-
-Kept, adapted: the app, all four backend charts (Oracle/MQ/Valkey/Artifactory),
-the whole test + troubleshooting suite (re-pointed at hostnames), the JRE-only
-diagnostic constraint.
+it proves nothing reaches out. The image list lives in `K3S_IMAGES`
+(`scripts/lib/k3s-env.sh`); `scripts/bundle-images.sh` builds the bundle and
+`scripts/k3s-cluster.sh` imports it.
 
 ## Phased implementation
 

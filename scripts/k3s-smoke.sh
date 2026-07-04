@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # k3s-smoke.sh — end-to-end verification of the multi-node k3s stack, ENTIRELY
-# BY HOSTNAME. Replaces the Rancher-Desktop smoke-test.sh (HAProxy VM / MetalLB
-# IPs / default kubectl context) with the k3s equivalent.
+# BY HOSTNAME.
 #
 # Two entry styles, both hostname-based:
 #   - HTTP from the Mac: curl --resolve debug-demo.local:80:<VIP>  (Host header
