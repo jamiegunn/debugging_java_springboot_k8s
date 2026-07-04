@@ -64,24 +64,37 @@ metric_value() {
 }
 mib() { awk -v v="${1:-0}" 'BEGIN{ if(v=="")v=0; printf "%.1f", v/1048576 }'; }
 
+# actuator_fail [jcmd-alternative] — a clear message when actuator can't be reached
+# (absent, disabled, wrong port, or secured), pointing at the jattach fallback,
+# which needs NO actuator. $1 = a jcmd to suggest for this capture, if any.
+actuator_fail() {
+    err "actuator not reachable at $ACTUATOR_BASE  (absent? disabled? wrong port/path? secured?)"
+    err "  → set \$ACTUATOR_BASE to correct the URL/port, then retry."
+    if [ -n "${1:-}" ]; then
+        err "  → or, if this app exposes no actuator at all, capture via jattach (needs none):"
+        err "        jdebug-local jcmd \"$1\""
+    fi
+    exit 1
+}
+
 # --- commands ---------------------------------------------------------------
 cmd_health() {
     need_http
-    http_get "$ACTUATOR_BASE/health" || { err "actuator not reachable at $ACTUATOR_BASE"; exit 1; }
+    http_get "$ACTUATOR_BASE/health" || actuator_fail
     echo
 }
 
 cmd_threads() {
     need_http
     # jstack-format (text/plain) to stdout — redirect to a file, or feed fastthread.io
-    HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump"
+    HTTP_ACCEPT=text/plain http_get "$ACTUATOR_BASE/threaddump" || actuator_fail "Thread.print -l"
 }
 
 cmd_heap() {
     need_http
     [ "${1:-}" = "--confirm" ] || { err "heap dump PAUSES the JVM (destructive in prod). Re-run: jdebug-local heap --confirm"; exit 2; }
     out="$OUT_DIR/heap-$(ts).hprof"
-    http_get "$ACTUATOR_BASE/heapdump" "$out"
+    http_get "$ACTUATOR_BASE/heapdump" "$out" || actuator_fail "GC.heap_dump $out"
     echo "wrote $out  ($(wc -c <"$out" 2>/dev/null || echo '?') bytes) — pull it out with: kubectl cp <pod>:$out ./"
 }
 
@@ -100,16 +113,26 @@ cmd_memory() {
     echo "Container / JVM memory (this pod)"
     [ -n "$rss" ] && printf '  container RSS     : %8s MiB   (cgroup — what the kernel OOM-kills on)\n' "$(mib "$rss")"
     case "$lim" in ''|max) : ;; *) printf '  container limit   : %8s MiB\n' "$(mib "$lim")" ;; esac
-    printf '  JVM heap used     : %8s MiB\n' "$(mib "$heap")"
-    printf '  JVM non-heap used : %8s MiB   (metaspace, code cache, ...)\n' "$(mib "$nonheap")"
-    printf '  live threads      : %8s        (~1 MiB stack each)\n' "${threads:-?}"
-    echo "  (heap < limit but OOMKilled? look at non-heap, direct buffers, threads — jcmd VM.native_memory)"
+    if [ -n "$heap" ]; then
+        printf '  JVM heap used     : %8s MiB\n' "$(mib "$heap")"
+        printf '  JVM non-heap used : %8s MiB   (metaspace, code cache, ...)\n' "$(mib "$nonheap")"
+        printf '  live threads      : %8s        (~1 MiB stack each)\n' "${threads:-?}"
+        echo "  (heap < limit but OOMKilled? look at non-heap, direct buffers, threads — jcmd VM.native_memory)"
+    else
+        echo "  JVM heap/non-heap : unavailable — actuator metrics not reachable at $ACTUATOR_BASE"
+        echo "  (RSS above is straight from cgroup and is still valid. For JVM detail without"
+        echo "   actuator, use jattach:  jdebug-local jcmd \"GC.heap_info\"  /  jcmd \"VM.native_memory summary\")"
+    fi
 }
 
 cmd_metrics() {
     need_http
-    if [ -n "${1:-}" ]; then http_get "$ACTUATOR_BASE/metrics/$1"; echo
-    else http_get "$ACTUATOR_BASE/metrics" | tr ',' '\n' | sed -n 's/.*"\(jvm[^"]*\|process[^"]*\|system[^"]*\)".*/  \1/p' | sort -u; fi
+    if [ -n "${1:-}" ]; then
+        http_get "$ACTUATOR_BASE/metrics/$1" || actuator_fail; echo
+    else
+        _m=$(http_get "$ACTUATOR_BASE/metrics") || actuator_fail
+        printf '%s' "$_m" | tr ',' '\n' | sed -n 's/.*"\(jvm[^"]*\|process[^"]*\|system[^"]*\)".*/  \1/p' | sort -u
+    fi
 }
 
 cmd_jcmd() {

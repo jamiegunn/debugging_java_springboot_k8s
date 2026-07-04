@@ -91,8 +91,9 @@ case "$ACTION" in
         show_cmd "kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- sh -c '<curl-or-wget> -H Accept:$ACCEPT $ACTUATOR_BASE/threaddump' > $LOCAL_PATH"
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
                 sh -c "$(pod_fetch "$ACTUATOR_BASE/threaddump" "$ACCEPT")" > "$LOCAL_PATH"; then
-            err "actuator threaddump failed — is the app serving HTTP? Fall back to:"
-            err "  scripts/jdebug/capture/jattach.sh threads -n $NAMESPACE $POD"
+            err "actuator threaddump failed — actuator absent/disabled, app not serving HTTP, or secured."
+            err "  jattach needs NO actuator (it speaks the JVM attach protocol). Capture via tier 2:"
+            err "    jdebug threads --via jattach -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"
             exit 1
         fi
@@ -111,8 +112,9 @@ case "$ACTION" in
         show_cmd "kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- sh -c '<curl-or-wget> $ACTUATOR_BASE/heapdump' > $LOCAL_PATH"
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
                 sh -c "$(pod_fetch "$ACTUATOR_BASE/heapdump")" > "$LOCAL_PATH"; then
-            err "actuator heapdump failed. Fall back to:"
-            err "  scripts/jdebug/capture/jattach.sh heap --confirm -n $NAMESPACE $POD"
+            err "actuator heapdump failed — actuator absent/disabled, app not serving HTTP, or secured."
+            err "  jattach needs NO actuator (it speaks the JVM attach protocol). Capture via tier 2:"
+            err "    jdebug heap --via jattach --confirm -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"
             exit 1
         fi
