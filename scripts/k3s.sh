@@ -18,7 +18,7 @@
 #     status        VMs + VIP owner + nodes
 #
 #   Explore / break
-#     chaos         inject failures (node-down, vip-failover, valkey-freeze, ...)
+#     chaos         inject failures (node-down, lb-down, valkey-freeze, ...)
 #     tour          narrated API walk-through          (scripts/api-tour.sh)
 #     valkey        the Valkey cluster from outside     (scripts/valkey-tour.sh)
 #

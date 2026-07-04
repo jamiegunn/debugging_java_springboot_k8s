@@ -44,7 +44,7 @@ run() {  # run <cmd...> — echo it, run it, keep output on screen
 status_line() {
     local up=0 total=0 vm list kc vip
     list="$(limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null)"
-    for vm in "${K3S_ALL_VMS[@]:-}"; do
+    for vm in "${K3S_ALL_VMS[@]:-}" "${K3S_LB_VM:-}"; do
         [[ -z "$vm" ]] && continue
         total=$((total+1))
         printf '%s\n' "$list" | awk -v n="$vm" '$1==n && $2=="Running"{f=1} END{exit !f}' && up=$((up+1))
