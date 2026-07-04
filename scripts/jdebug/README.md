@@ -44,8 +44,15 @@ jdebug logs                                    # stream logs from all replicas
 jdebug log-level <logger> <LEVEL>              # runtime level change via actuator
 jdebug install-jattach                         # pre-stage jattach in the pod
 
-jdebug                                         # interactive menu (triage → capture → memory → logs → snapshot)
+jdebug wizard                                  # guided, symptom-driven capture flow
+jdebug                                         # interactive menu (opens with a mode chooser)
 ```
+
+**Guided diagnosis.** New to the toolkit or the JVM? `jdebug wizard` (also `▶ w`
+in the menu) asks what you're seeing — OOMKilled, slow/hung, high CPU, creeping
+memory, GC pauses, or "not sure" — then runs the right capture sequence for that
+symptom and names the analyzer to open next. Destructive steps (heap dumps) ask
+first.
 
 Every command takes `-n/--namespace`, `-l/--selector`, `--container`, `--help`.
 
@@ -97,7 +104,9 @@ the actuator + jattach + memory tiers all work.
 ## Requirements
 
 `kubectl` + `curl` on your PATH, a reachable kube context, and a pod that runs as
-the same uid your `kubectl exec` lands as (jattach attaches same-uid).
+the same uid your `kubectl exec` lands as (jattach attaches same-uid). The
+actuator tier uses whatever HTTP client is **in the pod** — `curl` or busybox
+`wget` — so it works against a stock JRE-alpine image with nothing added.
 
 Heap dumps and `snapshot --heap` **pause the JVM** — they require `--confirm` and
 should be treated as destructive in production.

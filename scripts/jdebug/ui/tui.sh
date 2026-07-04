@@ -91,10 +91,87 @@ local_settings() {
     export ACTUATOR_BASE JATTACH_BIN
 }
 
+# --- guided diagnosis wizard (remote mode) ----------------------------------
+# Each symptom maps to a recipe from the CLAUDE.md runbook: explain the plan, run
+# the right capture sequence against the current target, then name the next step.
+wiz_say() { printf '  %s%s%s\n' "$CY" "$*" "$OFF"; }
+wiz_hd()  { printf '\n  %s— %s —%s\n\n' "$B" "$*" "$OFF"; }
+wiz_oom() {
+    wiz_hd "OOMKilled / memory restarts"
+    wiz_say "Is it heap or off-heap? Memory anatomy first, then the right dump."
+    run "$DBG" memory
+    wiz_say "heap ≈ limit → heap pressure/leak (heap dump + MAT)"
+    wiz_say "heap low, RSS high → off-heap: metaspace / direct / native (NMT)"
+    confirm "capture a HEAP DUMP now? (pauses the JVM)" && run "$DBG" heap --confirm
+    confirm "capture native memory (NMT) via jattach?" && run "$DBG" jcmd "VM.native_memory summary"
+    wiz_say "Next → ./dumps/heap/*.hprof in Eclipse MAT (Leak Suspects); NMT shows off-heap growth."
+}
+wiz_slow() {
+    wiz_hd "Slow / hung / high latency"
+    wiz_say "Thread dump — look for threads BLOCKED on a pool (HikariCP acquire) or a deadlock."
+    run "$DBG" threads --via actuator
+    wiz_say "And health — a DOWN subsystem (db/mq/redis) explains stalls:"
+    run "$DBG" health
+    wiz_say "Next → feed ./dumps/threads/*.txt to fastthread.io (flags deadlocks & identical stacks)."
+}
+wiz_cpu() {
+    wiz_hd "High CPU / HPA scaling"
+    wiz_say "Two thread dumps a few seconds apart — the stack RUNNABLE in both is the hot loop."
+    run "$DBG" threads --via actuator
+    run "$DBG" threads --via actuator
+    run "$DBG" top
+    wiz_say "Next → diff the two dumps; the persistently-RUNNABLE stack is your CPU."
+    wiz_say "       or profile: jdebug jcmd \"JFR.start duration=60s filename=/tmp/r.jfr\""
+}
+wiz_leak() {
+    wiz_hd "Memory creeping up (suspected leak)"
+    wiz_say "A leak = retained objects growing. Baseline heap dump now, another after load, diff in MAT."
+    confirm "take the BASELINE heap dump now? (pauses the JVM)" && run "$DBG" heap --confirm
+    wiz_say "Next → run load, wait, re-run this option for a 2nd dump; MAT → compare dominator trees."
+}
+wiz_gc() {
+    wiz_hd "GC pauses climbing"
+    wiz_say "Heap occupancy + collector state:"
+    run "$DBG" jcmd "GC.heap_info"
+    run "$DBG" memory
+    wiz_say "Next → pauses climbing with heap near full → allocation pressure or a leak → heap dump + MAT."
+    wiz_say "       trend /actuator/metrics/jvm.gc.pause over time (Prometheus/Grafana)."
+}
+wiz_all() {
+    wiz_hd "Not sure — capture everything"
+    wiz_say "Full offline bundle: threads + health + memory + jcmd (+ optional heap)."
+    if confirm "include a HEAP DUMP? (pauses the JVM)"; then run "$DBG" snapshot --heap --confirm; else run "$DBG" snapshot; fi
+    wiz_say "Next → ./dumps/snapshot-* : MAT (hprof) · fastthread.io (threads.txt) · editor (jcmd)."
+}
+wizard() {
+    while true; do
+        clear 2>/dev/null || printf '\n\n'
+        box "Guided diagnosis - what are you seeing?"
+        printf '\n'
+        printf '   %s1%s  Pod %sOOMKilled%s / restarts on memory\n'   "$GN" "$OFF" "$B" "$OFF"
+        printf '   %s2%s  %sSlow%s / hung / high latency\n'           "$GN" "$OFF" "$B" "$OFF"
+        printf '   %s3%s  %sHigh CPU%s / HPA scaling up\n'            "$GN" "$OFF" "$B" "$OFF"
+        printf '   %s4%s  Memory %screeping up%s over time (leak)\n'  "$GN" "$OFF" "$B" "$OFF"
+        printf '   %s5%s  %sGC pauses%s climbing\n'                   "$GN" "$OFF" "$B" "$OFF"
+        printf '   %s6%s  Not sure — %scapture everything%s\n'        "$GN" "$OFF" "$B" "$OFF"
+        printf '   %sb%s  back\n'                                     "$GN" "$OFF"
+        printf '\n  %starget: %s / %s · destructive steps ask first%s\n' "$DIM" "$NAMESPACE" "$SELECTOR" "$OFF"
+        printf '\n  %s> %s' "$B" "$OFF"; local s; read -r s
+        case "$s" in
+            1) wiz_oom ;; 2) wiz_slow ;; 3) wiz_cpu ;; 4) wiz_leak ;; 5) wiz_gc ;; 6) wiz_all ;;
+            b|B|"") return ;;
+            *) continue ;;
+        esac
+        pause
+    done
+}
+
 # --- menus ------------------------------------------------------------------
 menu_remote() {
     header_remote
     cat <<EOF
+  ${B}${CY}▶ w${OFF}  ${B}GUIDED DIAGNOSIS${OFF} ${DIM}— tell me the symptom, I run the right capture sequence${OFF}
+
   ${B}TRIAGE${OFF}                      ${B}CAPTURE${OFF} ${DIM}(pick tier at prompt)${OFF}
    ${GN}1${OFF} pod status + events      ${GN}5${OFF} thread dump ${DIM}(actuator)${OFF}
    ${GN}2${OFF} actuator health          ${GN}6${OFF} heap dump ${RD}(actuator · pauses JVM)${OFF}
@@ -126,6 +203,7 @@ EOF
 
 dispatch_remote() {
     case "$1" in
+        w|W) wizard ;;
         1)  run "$DBG" status ;;
         2)  run "$DBG" health ;;
         3)  run "$DBG" top ;;
@@ -163,9 +241,11 @@ dispatch_local() {
 }
 
 # --- main loop --------------------------------------------------------------
+# `tui.sh wizard` (via `jdebug wizard`) jumps straight into the guided flow.
+if [[ "${1:-}" == wizard ]]; then MODE=1; wizard; clear 2>/dev/null; exit 0; fi
 [[ -n "$MODE" ]] || choose_mode
 while true; do
     if [[ "$MODE" == 1 ]]; then menu_remote; read -r choice || exit 0; dispatch_remote "$choice" || continue
     else menu_local; read -r choice || exit 0; dispatch_local "$choice" || continue; fi
-    [[ "$choice" =~ ^[tTmMsS]$ ]] || pause
+    [[ "$choice" =~ ^[tTmMsSwW]$ ]] || pause
 done

@@ -33,6 +33,18 @@ require_cmd kubectl
 
 : "${ACTUATOR_BASE:=http://localhost:8080/actuator}"
 
+# pod_fetch <url> [accept] — an sh snippet that GETs <url> from INSIDE the pod with
+# whatever HTTP client it has: curl on our app image, busybox wget on a stock
+# JRE-alpine (no curl). Run it via `kubectl exec -- sh -c "$(pod_fetch ...)"`.
+pod_fetch() {
+    local url="$1" accept="${2:-}"
+    if [[ -n "$accept" ]]; then
+        echo "if command -v curl >/dev/null 2>&1; then curl -fsS -H 'Accept: $accept' '$url'; else wget -qO- --header='Accept: $accept' '$url' 2>/dev/null || wget -qO- '$url'; fi"
+    else
+        echo "if command -v curl >/dev/null 2>&1; then curl -fsS '$url'; else wget -qO- '$url'; fi"
+    fi
+}
+
 ACTION=""
 CONFIRMED=0
 AS_JSON=0
@@ -76,10 +88,9 @@ case "$ACTION" in
             ACCEPT="text/plain"
         fi
         info "thread dump via actuator (pod=$POD)"
-        show_cmd kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
-            curl -fsS -H "Accept: $ACCEPT" "$ACTUATOR_BASE/threaddump" "> $LOCAL_PATH"
+        show_cmd "kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- sh -c '<curl-or-wget> -H Accept:$ACCEPT $ACTUATOR_BASE/threaddump' > $LOCAL_PATH"
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
-                curl -fsS -H "Accept: $ACCEPT" "$ACTUATOR_BASE/threaddump" > "$LOCAL_PATH"; then
+                sh -c "$(pod_fetch "$ACTUATOR_BASE/threaddump" "$ACCEPT")" > "$LOCAL_PATH"; then
             err "actuator threaddump failed — is the app serving HTTP? Fall back to:"
             err "  scripts/jdebug/capture/jattach.sh threads -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"
@@ -97,10 +108,9 @@ case "$ACTION" in
         ensure_dir "$OUT_DIR"
         LOCAL_PATH="$OUT_DIR/${POD}-actuator-heap-$TS.hprof"
         info "heap dump via actuator (pod=$POD) — this PAUSES the JVM"
-        show_cmd kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
-            curl -fsS -o - "$ACTUATOR_BASE/heapdump" "> $LOCAL_PATH"
+        show_cmd "kubectl -n $NAMESPACE exec $POD -c $APP_CONTAINER -- sh -c '<curl-or-wget> $ACTUATOR_BASE/heapdump' > $LOCAL_PATH"
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
-                curl -fsS -o - "$ACTUATOR_BASE/heapdump" > "$LOCAL_PATH"; then
+                sh -c "$(pod_fetch "$ACTUATOR_BASE/heapdump")" > "$LOCAL_PATH"; then
             err "actuator heapdump failed. Fall back to:"
             err "  scripts/jdebug/capture/jattach.sh heap --confirm -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"

@@ -6,7 +6,8 @@
 # Every command takes -n <ns> -l <selector> [--container <name>] [pod];
 # defaults target this repo's app (debug-demo / debug-demo-app).
 #
-# Run with NO arguments (or `tui`) for the interactive menu.
+# Run with NO arguments (or `tui`) for the interactive menu; `wizard` jumps
+# straight into a guided, symptom-driven capture flow.
 #
 #   Triage (runbook steps 1–4)
 #     status        pod status, restarts, recent events
@@ -67,6 +68,7 @@ triage_parse() { parse_common_args ${ARGS[@]+"${ARGS[@]}"}; }
 
 case "$cmd" in
     tui|menu|"")     exec "$D/ui/tui.sh" ;;
+    wizard|guide)    exec "$D/ui/tui.sh" wizard ;;
 
     status)
         triage_parse
