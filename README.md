@@ -232,17 +232,17 @@ smoke-tests it:
 
 What `install` chains (orchestrated by `scripts/k3s-install.sh`):
 
-0. **Pre-flight** — `scripts/k3s-preflight.sh` checks + auto-fixes the Mac
+1. **Pre-flight** — `scripts/k3s-preflight.sh` checks + auto-fixes the Mac
    prerequisites (Homebrew, CLI tools, sudo/admin access, socket_vmnet, Lima
    sudoers + shared network, k3s+images present-or-reachable, RAM) so the
    install can't fail obscurely deep inside VM creation.
-1. **Bundle** — `scripts/bundle-images.sh` runs on the Mac: `docker pull`
+2. **Bundle** — `scripts/bundle-images.sh` runs on the Mac: `docker pull`
    + `docker save` every third-party image (list = `K3S_IMAGES` in
    `scripts/lib/k3s-env.sh`), builds + saves the app image, and downloads
    the k3s binary + `k3s-airgap-images-<arch>.tar.zst`. Everything lands
    in `dumps/airgap/`. (Already have a bundle? `scripts/k3s.sh install`
    reuses it; build one explicitly with `scripts/k3s.sh bundle`.)
-2. **VMs + k3s** (`k3s-cluster.sh`) — creates 3 Lima VMs (`ddk3s-server`,
+3. **VMs + k3s** (`k3s-cluster.sh`) — creates 3 Lima VMs (`ddk3s-server`,
    `ddk3s-agent-1`, `ddk3s-agent-2`) on Lima's `shared` network
    (`192.168.105.0/24`), copies the bundle into each, installs k3s
    v1.31.5 with `INSTALL_K3S_SKIP_DOWNLOAD=true`, and
@@ -250,20 +250,20 @@ What `install` chains (orchestrated by `scripts/k3s-install.sh`):
    installed with `--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule`,
    so all workloads land on the two agents. A pod that tried to pull would
    fail — which is the point.
-3. **DNS** (`k3s-net.sh`) — dnsmasq on the server node for
+4. **DNS** (`k3s-net.sh`) — dnsmasq on the server node for
    `*.debug-demo.local`, a CoreDNS stub so pods resolve the same
    hostnames, and the Mac `/etc/resolver` — all answering to the VIP.
    This script is DNS-only; the VIP itself is served by the LB tier below.
-4. **Platform** (`k3s-platform.sh`) — ingress-nginx as a hostPort
+5. **Platform** (`k3s-platform.sh`) — ingress-nginx as a hostPort
    DaemonSet (on the agents), namespaces, and `local-path` storage.
-5. **Charts** (`k3s-charts.sh`) — Oracle, IBM MQ, Valkey, and the app
+6. **Charts** (`k3s-charts.sh`) — Oracle, IBM MQ, Valkey, and the app
    (Artifactory is optional — only for the `scripts/local-ci.sh`
    in-cluster registry loop — and is skipped by default).
-6. **LB tier** (`k3s-lb.sh`) — creates the `ddk3s-lb` VM running keepalived
+7. **LB tier** (`k3s-lb.sh`) — creates the `ddk3s-lb` VM running keepalived
    (owns the VIP `192.168.105.100`) + HAProxy (pools HTTP `:80` to the
    agents' ingress and Valkey TCP `:6379-6384` to the agents' klipper).
    Runs last, since it pools to the ingress + Valkey that must already exist.
-7. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
+8. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
 
 The kubeconfig is written to `dumps/k3s.kubeconfig`;
 `scripts/lib/common.sh` auto-points every script's `kubectl` at it, so

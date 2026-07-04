@@ -93,11 +93,11 @@ cmd_up() {
     # DNS only. The VIP itself lives on the LB tier (scripts/k3s-lb.sh); DNS just
     # answers *.debug-demo.local → that VIP, for both the Mac and pods.
     [[ -s "$K3S_KUBECONFIG" ]] || { err "no kubeconfig — run scripts/k3s-cluster.sh up first"; exit 1; }
-    info "[1/3] dnsmasq on the server..."
+    info "   [1/3] dnsmasq on the server..."
     configure_dnsmasq
-    info "[2/3] CoreDNS stub zone..."
+    info "   [2/3] CoreDNS stub zone..."
     configure_coredns
-    info "[3/3] Mac resolver..."
+    info "   [3/3] Mac resolver..."
     configure_mac_resolver
     echo
     info "DNS up (*.$BASE_DOMAIN → $K3S_VIP). The VIP is served by the LB tier: scripts/k3s-lb.sh up"

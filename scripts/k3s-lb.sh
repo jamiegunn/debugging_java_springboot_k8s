@@ -146,13 +146,13 @@ HDR
 }
 
 cmd_up() {
-    info "[1/4] LB VM ($K3S_LB_VM)..."
+    info "   [1/4] LB VM ($K3S_LB_VM)..."
     create_lb_vm || return 1
-    info "[2/4] VIP pre-flight..."
+    info "   [2/4] VIP pre-flight..."
     preflight_vip || return 1
-    info "[3/4] keepalived (VIP)..."
+    info "   [3/4] keepalived (VIP)..."
     configure_keepalived || return 1
-    info "[4/4] haproxy (pools → k3s nodes)..."
+    info "   [4/4] haproxy (pools → k3s nodes)..."
     configure_haproxy || return 1
     mkdir -p "$(dirname "$K3S_VIP_FILE")" 2>/dev/null && printf '%s\n' "$K3S_VIP" > "$K3S_VIP_FILE"
     echo

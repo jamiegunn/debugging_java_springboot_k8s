@@ -3,13 +3,17 @@
 # k3s-install.sh — P4. The one front door for the multi-node k3s stack. Chains
 # every phase, each of which is an idempotent standalone script:
 #
-#   0  air-gap bundle    scripts/bundle-images.sh   (skippable if already built)
-#   1  cluster           scripts/k3s-cluster.sh up  (3 VMs + k3s, offline)
-#   2  DNS               scripts/k3s-net.sh up      (dnsmasq + CoreDNS + resolver → VIP)
-#   3  platform          scripts/k3s-platform.sh up (ingress-nginx DaemonSet)
-#   4  charts            scripts/k3s-charts.sh up   (oracle, mq, valkey, app)
-#   5  LB tier           scripts/k3s-lb.sh up       (ddk3s-lb VM: keepalived VIP + HAProxy)
-#   6  verify + smoke                                 (VIP + DNS reachable by hostname)
+#   1  pre-flight        scripts/k3s-preflight.sh   (Mac prerequisites, auto-fix)
+#   2  air-gap bundle    scripts/bundle-images.sh   (skippable if already built)
+#   3  cluster           scripts/k3s-cluster.sh up  (3 VMs + k3s, offline)
+#   4  DNS               scripts/k3s-net.sh up      (dnsmasq + CoreDNS + resolver → VIP)
+#   5  platform          scripts/k3s-platform.sh up (ingress-nginx DaemonSet)
+#   6  charts            scripts/k3s-charts.sh up   (oracle, mq, valkey, app)
+#   7  LB tier           scripts/k3s-lb.sh up       (ddk3s-lb VM: keepalived VIP + HAProxy)
+#   8  verify + smoke                               (VIP + DNS reachable by hostname)
+#
+# Top-level phases are [n/8]; each sub-script prints its OWN indented [n/m]
+# sub-steps underneath.
 #
 # Everything is air-gapped and hostname-native.
 #
@@ -43,7 +47,7 @@ banner() {
 
   ┌──────────────────────────────────────────────────────────────┐
   │  debug-demo on multi-node k3s — air-gapped, keepalived VIP,   │
-  │  everything by hostname. 3 Lima VMs (1 server + 2 agents).    │
+  │  everything by hostname. 4 VMs: 1 server + 2 agents + 1 LB.   │
   └──────────────────────────────────────────────────────────────┘
 EOF
 }
@@ -54,40 +58,40 @@ banner
 # Idempotent + self-healing. Aborts with exact fix commands if something can't
 # be auto-fixed (e.g. Docker not running), so the install never fails obscurely
 # deep inside VM creation.
-info "pre-flight: checking Mac prerequisites..."
+info "[1/8] pre-flight: checking Mac prerequisites..."
 "$SCRIPT_DIR/k3s-preflight.sh" || { err "pre-flight failed — fix the items above, then re-run: ./tui install"; exit 1; }
 
-# --- 0. air-gap bundle ------------------------------------------------------
+# --- 2. air-gap bundle ------------------------------------------------------
 if [[ $SKIP_BUNDLE -eq 1 || -s "$AIRGAP_DIR/k3s" ]]; then
-    info "[0/5] air-gap bundle: present (skipping build) — $AIRGAP_DIR"
+    info "[2/8] air-gap bundle: present (skipping build) — $AIRGAP_DIR"
 else
-    info "[0/5] building air-gap bundle (pulls images on the Mac, ~5 GB)..."
+    info "[2/8] building air-gap bundle (pulls images on the Mac, ~5 GB)..."
     "$SCRIPT_DIR/bundle-images.sh" --skip-artifactory || { err "bundle build failed"; exit 1; }
 fi
 
-# --- 1. cluster -------------------------------------------------------------
-info "[1/6] cluster (3 VMs + k3s, offline)..."
+# --- 3. cluster -------------------------------------------------------------
+info "[3/8] cluster (3 VMs + k3s, offline)..."
 "$SCRIPT_DIR/k3s-cluster.sh" up || { err "cluster provisioning failed"; exit 1; }
 
-# --- 2. DNS -----------------------------------------------------------------
-info "[2/6] DNS (dnsmasq + CoreDNS stub + Mac resolver → VIP)..."
+# --- 4. DNS -----------------------------------------------------------------
+info "[4/8] DNS (dnsmasq + CoreDNS stub + Mac resolver → VIP)..."
 "$SCRIPT_DIR/k3s-net.sh" up || { err "DNS setup failed"; exit 1; }
 
-# --- 3. platform ------------------------------------------------------------
-info "[3/6] platform (ingress-nginx)..."
+# --- 5. platform ------------------------------------------------------------
+info "[5/8] platform (ingress-nginx)..."
 "$SCRIPT_DIR/k3s-platform.sh" up || { err "platform install failed"; exit 1; }
 
-# --- 4. charts --------------------------------------------------------------
-info "[4/6] charts (oracle, mq, valkey, app)..."
+# --- 6. charts --------------------------------------------------------------
+info "[6/8] charts (oracle, mq, valkey, app)..."
 "$SCRIPT_DIR/k3s-charts.sh" up || { err "chart install failed"; exit 1; }
 
-# --- 5. LB tier -------------------------------------------------------------
+# --- 7. LB tier -------------------------------------------------------------
 # Last: the LB VM pools to the k3s ingress + Valkey, so those must exist first.
-info "[5/6] LB tier (ddk3s-lb: keepalived VIP + HAProxy → k3s nodes)..."
+info "[7/8] LB tier (ddk3s-lb: keepalived VIP + HAProxy → k3s nodes)..."
 "$SCRIPT_DIR/k3s-lb.sh" up || { err "LB tier setup failed"; exit 1; }
 
-# --- 6. verify --------------------------------------------------------------
-info "[6/6] verify VIP + DNS..."
+# --- 8. verify --------------------------------------------------------------
+info "[8/8] verify VIP + DNS..."
 "$SCRIPT_DIR/k3s-net.sh" verify
 
 if [[ $SKIP_SMOKE -eq 0 ]]; then

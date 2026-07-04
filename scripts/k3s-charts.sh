@@ -84,16 +84,16 @@ wait_ready() {
 }
 
 cmd_up() {
-    info "[1/3] backends (oracle, mq, valkey) in parallel..."
+    info "   [1/3] backends (oracle, mq, valkey) in parallel..."
     install_oracle & install_mq & install_valkey & wait
 
-    info "[2/3] waiting for backends Ready..."
+    info "   [2/3] waiting for backends Ready..."
     wait_ready oracle 'app.kubernetes.io/name=oracle' 1 600 &
     wait_ready mq     'app.kubernetes.io/name=ibm-mq' 1 600 &
     wait_ready valkey 'app.kubernetes.io/name=valkey' 6 600 &
     wait
 
-    info "[3/3] app..."
+    info "   [3/3] app..."
     install_app
     wait_ready debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 300
 

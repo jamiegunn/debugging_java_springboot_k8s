@@ -199,23 +199,23 @@ write_kubeconfig() {
 cmd_up() {
     [[ -s "$AIRGAP_DIR/k3s" ]] || { err "no air-gap bundle — run scripts/bundle-images.sh first"; exit 1; }
 
-    info "[1/6] provisioning VMs..."
+    info "   [1/6] provisioning VMs..."
     create_vm "$K3S_SERVER_VM" "$K3S_SERVER_CPUS" "$K3S_SERVER_MEM" || exit 1
     for vm in "${K3S_AGENT_VMS[@]}"; do create_vm "$vm" "$K3S_AGENT_CPUS" "$K3S_AGENT_MEM" || exit 1; done
 
-    info "[2/6] copying air-gap bundle into VMs..."
+    info "   [2/6] copying air-gap bundle into VMs..."
     for vm in "${K3S_ALL_VMS[@]}"; do copy_bundle "$vm" || { err "bundle copy to $vm failed"; exit 1; }; done
 
-    info "[3/6] installing k3s server..."
+    info "   [3/6] installing k3s server..."
     install_server || exit 1
 
-    info "[4/6] installing k3s agents..."
+    info "   [4/6] installing k3s agents..."
     for vm in "${K3S_AGENT_VMS[@]}"; do install_agent "$vm"; done
 
-    info "[5/6] importing images into every node..."
+    info "   [5/6] importing images into every node..."
     for vm in "${K3S_ALL_VMS[@]}"; do import_images "$vm"; done
 
-    info "[6/6] kubeconfig + readiness..."
+    info "   [6/6] kubeconfig + readiness..."
     write_kubeconfig
     info "  waiting for 3 nodes Ready..."
     local i

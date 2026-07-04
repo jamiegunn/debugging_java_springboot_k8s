@@ -158,7 +158,9 @@ K3S_VIP=192.168.105.240 ./tui install   # install onto a different VIP; it persi
 ---
 
 ## Expected end state
-- `./tui doctor` → 23/24 (only ✘ = optional Mac `/etc/resolver`, or 24/24 after `./tui resolver`)
-- `./tui smoke` → 14/14
+- `./tui doctor` → `✔ HEALTHY — N checks passed` (it counts dynamically; the only
+  expected ✘ on a good stack is the optional Mac `/etc/resolver`, which clears
+  after `./tui resolver`)
+- `./tui smoke` → `Passed: 14  Failed: 0`
 - 4 VMs Running: `ddk3s-server` (tainted control-plane), `ddk3s-agent-1/2` (workers), `ddk3s-lb` (VIP + HAProxy)
 - After `./tui uninstall`: `limactl list` shows no `ddk3s-*` instances

@@ -35,11 +35,11 @@ helm_kc() { helm --kubeconfig "$K3S_KUBECONFIG" "$@"; }
 cmd_up() {
     [[ -s "$INGRESS_TGZ" ]] || { err "vendored chart missing: $INGRESS_TGZ"; exit 1; }
 
-    info "[1/3] namespaces..."
+    info "   [1/3] namespaces..."
     for ns in "${OUR_NAMESPACES[@]}"; do kc create namespace "$ns" >/dev/null 2>&1 || true; done
     kc create namespace ingress-nginx >/dev/null 2>&1 || true
 
-    info "[2/3] ingress-nginx (hostPort DaemonSet, offline from vendored tgz)..."
+    info "   [2/3] ingress-nginx (hostPort DaemonSet, offline from vendored tgz)..."
     # --kind DaemonSet + hostPort 80/443 → every node answers on :80, so the VIP
     # always lands on a serving node. ClusterIP service (no external LB needed;
     # hostPort + keepalived VIP is the entry). Images are pre-imported, so
@@ -57,7 +57,7 @@ cmd_up() {
         --wait --timeout 5m >/dev/null 2>&1 || {
             err "  ingress-nginx install failed — kc -n ingress-nginx get pods"; return 1; }
 
-    info "[3/3] waiting for the ingress DaemonSet to be Ready on all nodes..."
+    info "   [3/3] waiting for the ingress DaemonSet to be Ready on all nodes..."
     kc -n ingress-nginx rollout status daemonset/ingress-nginx-controller --timeout=180s 2>/dev/null | sed 's/^/  /' \
         || err "  ingress DaemonSet not Ready — kc -n ingress-nginx get pods -o wide"
 
