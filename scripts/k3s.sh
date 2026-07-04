@@ -42,6 +42,7 @@ case "$cmd" in
     install)    exec "$D/k3s-install.sh" "$@" ;;
     uninstall)  exec "$D/k3s-uninstall.sh" "$@" ;;
     resolver)   exec "$D/k3s-net.sh" up ;;        # writes /etc/resolver (sudo)
+    lb)         exec "$D/k3s-lb.sh" "$@" ;;        # the LB tier: keepalived VIP + HAProxy
     doctor)     exec "$D/k3s-doctor.sh" "$@" ;;
     smoke)      exec "$D/k3s-smoke.sh" "$@" ;;
     status)     exec "$D/k3s-chaos.sh" status ;;

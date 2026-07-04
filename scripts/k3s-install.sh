@@ -5,10 +5,11 @@
 #
 #   0  air-gap bundle    scripts/bundle-images.sh   (skippable if already built)
 #   1  cluster           scripts/k3s-cluster.sh up  (3 VMs + k3s, offline)
-#   2  VIP + DNS         scripts/k3s-net.sh up      (keepalived + dnsmasq + resolvers)
+#   2  DNS               scripts/k3s-net.sh up      (dnsmasq + CoreDNS + resolver → VIP)
 #   3  platform          scripts/k3s-platform.sh up (ingress-nginx DaemonSet)
 #   4  charts            scripts/k3s-charts.sh up   (oracle, mq, valkey, app)
-#   5  verify + smoke                                 (VIP + DNS reachable by hostname)
+#   5  LB tier           scripts/k3s-lb.sh up       (ddk3s-lb VM: keepalived VIP + HAProxy)
+#   6  verify + smoke                                 (VIP + DNS reachable by hostname)
 #
 # Everything is air-gapped and hostname-native. Replaces the Rancher Desktop
 # install-stack.sh end to end.
@@ -59,23 +60,28 @@ else
 fi
 
 # --- 1. cluster -------------------------------------------------------------
-info "[1/5] cluster (3 VMs + k3s, offline)..."
+info "[1/6] cluster (3 VMs + k3s, offline)..."
 "$SCRIPT_DIR/k3s-cluster.sh" up || { err "cluster provisioning failed"; exit 1; }
 
-# --- 2. VIP + DNS -----------------------------------------------------------
-info "[2/5] VIP + DNS (keepalived + dnsmasq + resolvers)..."
-"$SCRIPT_DIR/k3s-net.sh" up || { err "VIP/DNS setup failed"; exit 1; }
+# --- 2. DNS -----------------------------------------------------------------
+info "[2/6] DNS (dnsmasq + CoreDNS stub + Mac resolver → VIP)..."
+"$SCRIPT_DIR/k3s-net.sh" up || { err "DNS setup failed"; exit 1; }
 
 # --- 3. platform ------------------------------------------------------------
-info "[3/5] platform (ingress-nginx)..."
+info "[3/6] platform (ingress-nginx)..."
 "$SCRIPT_DIR/k3s-platform.sh" up || { err "platform install failed"; exit 1; }
 
 # --- 4. charts --------------------------------------------------------------
-info "[4/5] charts (oracle, mq, valkey, app)..."
+info "[4/6] charts (oracle, mq, valkey, app)..."
 "$SCRIPT_DIR/k3s-charts.sh" up || { err "chart install failed"; exit 1; }
 
-# --- 5. verify --------------------------------------------------------------
-info "[5/5] verify VIP + DNS..."
+# --- 5. LB tier -------------------------------------------------------------
+# Last: the LB VM pools to the k3s ingress + Valkey, so those must exist first.
+info "[5/6] LB tier (ddk3s-lb: keepalived VIP + HAProxy → k3s nodes)..."
+"$SCRIPT_DIR/k3s-lb.sh" up || { err "LB tier setup failed"; exit 1; }
+
+# --- 6. verify --------------------------------------------------------------
+info "[6/6] verify VIP + DNS..."
 "$SCRIPT_DIR/k3s-net.sh" verify
 
 if [[ $SKIP_SMOKE -eq 0 ]]; then

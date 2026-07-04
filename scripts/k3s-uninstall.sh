@@ -36,7 +36,7 @@ done
 if [[ $ASSUME_YES -eq 0 ]]; then
     echo "About to remove:"
     echo "  - Mac /etc/resolver/$BASE_DOMAIN (sudo)"
-    echo "  - Lima VMs: ${K3S_ALL_VMS[*]}  (deletes the entire cluster + data)"
+    echo "  - Lima VMs: ${K3S_ALL_VMS[*]} $K3S_LB_VM  (deletes the cluster + LB tier + data)"
     echo "  - kubeconfig: $K3S_KUBECONFIG"
     [[ $PURGE_BUNDLE -eq 1 ]] && echo "  - air-gap bundle: $AIRGAP_DIR"
     printf "Proceed? [y/N] "; read -r ans
@@ -48,7 +48,7 @@ fi
 
 info "deleting Lima VMs..."
 FAILED_VMS=()
-for vm in "${K3S_ALL_VMS[@]}"; do
+for vm in "${K3S_ALL_VMS[@]}" "$K3S_LB_VM"; do
     limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$vm" || continue
     limactl stop -f "$vm" >/dev/null 2>&1
     # force-delete; retry once in case it raced the force-stop, then VERIFY —

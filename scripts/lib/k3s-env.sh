@@ -21,9 +21,15 @@
 K3S_AGENT_VMS=("${K3S_VM_PREFIX}-agent-1" "${K3S_VM_PREFIX}-agent-2")
 K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 
-# Per-VM sizing (24 GB Mac budget: 3 + 7 + 7 = 17 GB VMs, ~7 GB left for macOS).
+# The load-balancer tier: a SEPARATE VM (the F5/NetScaler stand-in) that runs
+# keepalived (owns the VIP) + HAProxy (pools to the k3s nodes). The VIP lives
+# here, NOT on the cluster nodes — so it's independent of cluster-node health.
+: "${K3S_LB_VM:=${K3S_VM_PREFIX}-lb}"
+
+# Per-VM sizing (24 GB Mac budget: 3 + 7 + 7 + 1 = 18 GB VMs, ~6 GB left).
 : "${K3S_SERVER_CPUS:=2}"; : "${K3S_SERVER_MEM:=3}"       # GiB
 : "${K3S_AGENT_CPUS:=3}";  : "${K3S_AGENT_MEM:=7}"        # GiB
+: "${K3S_LB_CPUS:=1}";     : "${K3S_LB_MEM:=1}"           # tiny: just haproxy+keepalived
 : "${K3S_DISK:=40}"                                       # GiB per VM
 
 # --- network / VIP / DNS ----------------------------------------------------

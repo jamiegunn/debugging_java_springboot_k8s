@@ -48,7 +48,7 @@ if [[ -s "$K3S_KUBECONFIG" ]]; then ok "kubeconfig: $K3S_KUBECONFIG"
 else bad "no kubeconfig at $K3S_KUBECONFIG" "scripts/k3s-cluster.sh up   (or  scripts/k3s-cluster.sh kubeconfig)"; fi
 
 sect "2. Lima VMs"
-for vm in "${K3S_ALL_VMS[@]}"; do
+for vm in "${K3S_ALL_VMS[@]}" "$K3S_LB_VM"; do
     st="$(limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null | awk -v n="$vm" '$1==n{print $2}')"
     [[ "$st" == Running ]] && ok "$vm Running" || bad "$vm: ${st:-missing}" "limactl start $vm"
 done
@@ -57,11 +57,12 @@ sect "3. k3s nodes"
 nready="$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"{c++} END{print c+0}')"
 [[ "$nready" == 3 ]] && ok "3 nodes Ready" || bad "$nready/3 nodes Ready" "kubectl get nodes; kubectl describe node <name>"
 
-sect "4. keepalived VIP ($K3S_VIP)"
-owner="(none)"
-for vm in "${K3S_ALL_VMS[@]}"; do limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP" && owner="$vm"; done
-[[ "$owner" != "(none)" ]] && ok "VIP held by $owner" || bad "no node holds the VIP" "scripts/k3s-net.sh up   (keepalived)"
-if ping -c1 -t2 "$K3S_VIP" >/dev/null 2>&1; then ok "VIP pingable from the Mac"; else bad "VIP not reachable from the Mac" "check the Lima 'shared' network; scripts/k3s-net.sh status"; fi
+sect "4. LB tier — VIP $K3S_VIP + HAProxy (on $K3S_LB_VM)"
+if limactl shell "$K3S_LB_VM" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP"; then ok "VIP held by $K3S_LB_VM (keepalived)"
+else bad "$K3S_LB_VM does not hold the VIP" "scripts/k3s-lb.sh up   (keepalived on the LB VM)"; fi
+if limactl shell "$K3S_LB_VM" -- pgrep -x haproxy >/dev/null 2>&1; then ok "HAProxy running on $K3S_LB_VM"
+else bad "HAProxy not running on $K3S_LB_VM" "scripts/k3s-lb.sh up"; fi
+if ping -c1 -t2 "$K3S_VIP" >/dev/null 2>&1; then ok "VIP pingable from the Mac"; else bad "VIP not reachable from the Mac" "scripts/k3s-lb.sh status"; fi
 
 sect "5. DNS (hostnames → VIP)"
 # Mac side (curl --resolve doesn't need this, but valkey-cli from the Mac does)
