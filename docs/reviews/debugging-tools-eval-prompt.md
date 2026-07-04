@@ -119,9 +119,9 @@ command you ran). A 5 needs proof, not vibes.
 - Read each **(B)** script top to bottom. Don't skim.
 - Run `--help` on every tool; capture the output; grade it.
 - If a cluster is up (`./tui status` shows VMs Running), **dry-run the safe,
-  read-only tools** against it and paste real output: `scripts/memory-report.sh
-  -n debug-demo`, `scripts/dump-jattach.sh jcmd "GC.heap_info" -n debug-demo`,
-  a `text/plain` actuator threaddump, `scripts/tail-logs.sh` (briefly). **Do
+  read-only tools** against it and paste real output: `scripts/debug/observe/memory-report.sh
+  -n debug-demo`, `scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo`,
+  a `text/plain` actuator threaddump, `scripts/debug/observe/tail-logs.sh` (briefly). **Do
   NOT** run destructive ones (heap dump, chaos, scale-to-zero) — note that you
   skipped them and why.
 - `grep -rn` across the repo to prove orphans (a script/file referenced by

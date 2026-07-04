@@ -84,10 +84,10 @@ this doc is about MetalLB and the Kubernetes objects around it. It is not the fu
 
 This document covers:
 
-- the MetalLB components installed by `scripts/k3s-platform.sh`
+- the MetalLB components installed by `scripts/k3s/phases/platform.sh`
 - the repository-owned MetalLB CRs in `k3s/manifests/metallb-valkey-pool.yaml`
 - the Valkey `type: LoadBalancer` Services rendered by `charts/valkey/templates/service-loadbalancer.yaml`
-- how `scripts/k3s-lb.sh` discovers those Services and generates HAProxy backends
+- how `scripts/k3s/phases/lb.sh` discovers those Services and generates HAProxy backends
 - failure and scaling assumptions around worker nodes and control-plane nodes
 
 This document does not cover:
@@ -107,8 +107,8 @@ MetalLB is installed from a vendored upstream manifest, then this repo adds a sm
 | MetalLB IP pool and L2 advertisement | `k3s/manifests/metallb-valkey-pool.yaml` | this repo | Defines the `valkey-pool` address range and restricts L2 advertisement to non-control-plane nodes. |
 | Valkey per-pod LoadBalancer Services | `charts/valkey/templates/service-loadbalancer.yaml` | this repo | Creates one `type: LoadBalancer` Service per Valkey pod, all sharing one MetalLB IP and using unique ports. |
 | MetalLB pool values | `scripts/lib/k3s-env.sh` | this repo | Defines `METALLB_POOL` and `VALKEY_SHARED_LB_IP`. |
-| Platform installer | `scripts/k3s-platform.sh` | this repo | Applies MetalLB, waits for readiness, renders/applies the pool manifest, then installs ingress-nginx. |
-| LB tier installer | `scripts/k3s-lb.sh` | this repo | Reads Valkey Service `EXTERNAL-IP`s and generates HAProxy TCP frontends/backends. |
+| Platform installer | `scripts/k3s/phases/platform.sh` | this repo | Applies MetalLB, waits for readiness, renders/applies the pool manifest, then installs ingress-nginx. |
+| LB tier installer | `scripts/k3s/phases/lb.sh` | this repo | Reads Valkey Service `EXTERNAL-IP`s and generates HAProxy TCP frontends/backends. |
 
 ## Installation sequence
 
@@ -116,15 +116,15 @@ first the cluster disables k3s's built-in service load balancer, then the platfo
 
 The relevant sequence is:
 
-1. `scripts/k3s-cluster.sh` installs k3s with `--disable servicelb`.
-2. `scripts/k3s-platform.sh up` applies `k3s/manifests/metallb-native-v0.14.9.yaml`.
-3. `scripts/k3s-platform.sh up` waits for `deploy/controller` in `metallb-system`.
-4. `scripts/k3s-platform.sh up` waits for `ds/speaker` in `metallb-system` best-effort.
-5. `scripts/k3s-platform.sh up` renders `k3s/manifests/metallb-valkey-pool.yaml` by replacing `__METALLB_POOL__` with `METALLB_POOL`.
-6. `scripts/k3s-platform.sh up` applies the rendered `IPAddressPool` and `L2Advertisement`.
-7. `scripts/k3s-charts.sh up` installs the Valkey Helm chart and passes `loadBalancer.sharedIP=$VALKEY_SHARED_LB_IP` by default.
+1. `scripts/k3s/phases/cluster.sh` installs k3s with `--disable servicelb`.
+2. `scripts/k3s/phases/platform.sh up` applies `k3s/manifests/metallb-native-v0.14.9.yaml`.
+3. `scripts/k3s/phases/platform.sh up` waits for `deploy/controller` in `metallb-system`.
+4. `scripts/k3s/phases/platform.sh up` waits for `ds/speaker` in `metallb-system` best-effort.
+5. `scripts/k3s/phases/platform.sh up` renders `k3s/manifests/metallb-valkey-pool.yaml` by replacing `__METALLB_POOL__` with `METALLB_POOL`.
+6. `scripts/k3s/phases/platform.sh up` applies the rendered `IPAddressPool` and `L2Advertisement`.
+7. `scripts/k3s/phases/charts.sh up` installs the Valkey Helm chart and passes `loadBalancer.sharedIP=$VALKEY_SHARED_LB_IP` by default.
 8. MetalLB assigns the requested shared IP to the Valkey `type: LoadBalancer` Services.
-9. `scripts/k3s-lb.sh up` reads the Valkey Services' `.status.loadBalancer.ingress[0].ip` values and writes HAProxy TCP backends.
+9. `scripts/k3s/phases/lb.sh up` reads the Valkey Services' `.status.loadBalancer.ingress[0].ip` values and writes HAProxy TCP backends.
 
 The install is split this way because MetalLB's validating webhook is served by the MetalLB controller. The pool CRs are retried after the controller rollout because applying CRs too early can fail while the webhook is not ready.
 
@@ -170,7 +170,7 @@ spec:
         - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
 ```
 
-`scripts/k3s-platform.sh` renders the placeholder:
+`scripts/k3s/phases/platform.sh` renders the placeholder:
 
 ```sh
 render_metallb_pool() {
@@ -217,7 +217,7 @@ nodeSelectors:
 
 This means an eligible announcing node must not have the `node-role.kubernetes.io/control-plane` label.
 
-The k3s server is installed with a control-plane taint in `scripts/k3s-cluster.sh`:
+The k3s server is installed with a control-plane taint in `scripts/k3s/phases/cluster.sh`:
 
 ```sh
 --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule
@@ -287,7 +287,7 @@ loadBalancer:
     bus: 16379
 ```
 
-`scripts/k3s-charts.sh` passes the local shared IP during install:
+`scripts/k3s/phases/charts.sh` passes the local shared IP during install:
 
 ```sh
 --set loadBalancer.announceHostname="$VALKEY_HOST"
@@ -317,7 +317,7 @@ checks. The canonical semantic inventory is in
 At the MetalLB/HAProxy boundary, HAProxy maps each TCP port on the VIP to the
 same port on the MetalLB IP that Kubernetes assigned to that Service.
 
-`scripts/k3s-lb.sh` discovers Valkey Service assignments using this JSONPath:
+`scripts/k3s/phases/lb.sh` discovers Valkey Service assignments using this JSONPath:
 
 ```sh
 {range .items[?(@.spec.type=="LoadBalancer")]}{.spec.ports[0].port}{" "}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}
@@ -435,7 +435,7 @@ Known limitations:
 - A single ordinary Kubernetes Service cannot replace the per-pod Services because Kubernetes Services have one selector for all ports.
 - The control plane is excluded from announcement, so at least one eligible worker must remain available.
 - Local-path storage can limit StatefulSet pod recovery after worker failure.
-- HAProxy reads Service status when `scripts/k3s-lb.sh up` runs; if Service IPs or ports change later, HAProxy must be regenerated or restarted by rerunning the LB script.
+- HAProxy reads Service status when `scripts/k3s/phases/lb.sh up` runs; if Service IPs or ports change later, HAProxy must be regenerated or restarted by rerunning the LB script.
 - The design assumes k3s `servicelb` is disabled. If k3s klipper/servicelb is enabled, it may compete with MetalLB for `LoadBalancer` Services.
 
 ## Production MetalLB assumptions
@@ -491,13 +491,13 @@ valkey-secondary-2-ext  LoadBalancer   ...   192.168.105.200   6384/TCP
 Check the platform phase status:
 
 ```sh
-scripts/k3s-platform.sh status
+scripts/k3s/phases/platform.sh status
 ```
 
 Regenerate the LB VM HAProxy configuration after Service IP changes:
 
 ```sh
-scripts/k3s-lb.sh up
+scripts/k3s/phases/lb.sh up
 ```
 
 Run broad validation:
@@ -505,7 +505,7 @@ Run broad validation:
 ```sh
 scripts/k3s.sh doctor
 scripts/k3s.sh smoke
-scripts/valkey-cluster-tests.sh --skip-failover
+scripts/k3s/verify/valkey-cluster-tests.sh --skip-failover
 ```
 
 ## Troubleshooting map
@@ -514,13 +514,13 @@ if traffic fails, identify which layer is broken: DNS, VIP, HAProxy, MetalLB IP 
 
 | Symptom | Likely layer | First checks |
 |---|---|---|
-| `valkey.debug-demo.local` does not resolve | DNS | `scripts/k3s-net.sh status`, CoreDNS custom ConfigMap, Mac resolver |
-| VIP does not answer | LB VM / keepalived | `scripts/k3s-lb.sh status`, `ping $K3S_VIP` |
-| HAProxy has no Valkey backend | Service status | `kubectl -n valkey get svc`, rerun `scripts/k3s-lb.sh up` |
+| `valkey.debug-demo.local` does not resolve | DNS | `scripts/k3s/phases/net.sh status`, CoreDNS custom ConfigMap, Mac resolver |
+| VIP does not answer | LB VM / keepalived | `scripts/k3s/phases/lb.sh status`, `ping $K3S_VIP` |
+| HAProxy has no Valkey backend | Service status | `kubectl -n valkey get svc`, rerun `scripts/k3s/phases/lb.sh up` |
 | Valkey Services have no `EXTERNAL-IP` | MetalLB controller/pool | `kubectl -n metallb-system get pods`, `kubectl -n metallb-system describe ipaddresspool valkey-pool` |
 | Shared IP is assigned but not reachable | MetalLB speaker/L2 | `kubectl -n metallb-system get pods -o wide`, check worker node health and L2Advertisement |
 | A specific port fails | Per-pod Service or pod readiness | `kubectl -n valkey get svc valkey-primary-1-ext -o yaml`, `kubectl -n valkey get endpoints` |
-| MOVED redirects loop or fail | Valkey cluster topology | `scripts/valkey-cluster-tests.sh --skip-failover`, `valkey-cli cluster nodes` |
+| MOVED redirects loop or fail | Valkey cluster topology | `scripts/k3s/verify/valkey-cluster-tests.sh --skip-failover`, `valkey-cli cluster nodes` |
 | Failure after worker loss | Storage/pod scheduling | `kubectl -n valkey get pods -o wide`, PVC/PV status, node status |
 
 ## Design summary

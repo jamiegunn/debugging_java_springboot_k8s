@@ -21,17 +21,17 @@ metrics (Micrometer/Prometheus).
 1. **Actuator (default).** `/actuator/threaddump` and `/actuator/heapdump`
    are built into Spring Boot and work with JRE-only images. Best when
    the pod is reachable and the app is responsive enough to serve HTTP.
-   Wrapped by `scripts/dump-actuator.sh` (`threads [--json]`,
+   Wrapped by `scripts/debug/capture/actuator.sh` (`threads [--json]`,
    `heap --confirm`).
 2. **jattach (when actuator is insufficient).** A single ~80 KB
    statically-linked binary that speaks the JVM Hotspot attach protocol.
    Gives access to the full jcmd command surface (`Thread.print -l`,
    `GC.heap_info`, `VM.native_memory summary`, `JFR.start`,
    `Compiler.codecache`, …) that actuator doesn't expose. **Must be
-   installed into the pod first** — see `scripts/dump-jattach.sh`.
+   installed into the pod first** — see `scripts/debug/capture/jattach.sh`.
 3. **JDK ephemeral container (last resort).** `kubectl debug --target=app
-  --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/dump-threads.sh`
-   and `scripts/dump-heap.sh`. Use when you need tools beyond jattach's
+  --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/debug/capture/jdk-threads.sh`
+   and `scripts/debug/capture/jdk-heap.sh`. Use when you need tools beyond jattach's
    reach (e.g., `jstack -F` for unresponsive JVMs, `jdb` for live
    debugging) or when policy forbids installing binaries into pods.
 
@@ -186,7 +186,7 @@ an in-cluster component:
   traffic never lands there). Unique ports preserve per-shard routing.
   This is the on-prem/dev stand-in for the cloud LB.
 - **The LB VM (`ddk3s-lb`)** is the external "F5/NetScaler" tier —
-  `scripts/k3s-lb.sh` provisions it. **keepalived (VRRP)** owns **one
+  `scripts/k3s/phases/lb.sh` provisions it. **keepalived (VRRP)** owns **one
   stable VIP** so clients always have a single address to dial; the VIP
   lives on the LB VM, INDEPENDENT of cluster-node health (a thrashing
   k3s node can't take it down). **HAProxy** on the same VM is the
@@ -231,7 +231,7 @@ address plays are deliberately split apart:
 - **`MIGRATE` must target the pod IP, not the hostname.** MIGRATE opens
   a node→node connection; the pod→VIP→HAProxy hairpin times out (IOERR).
   Client redirects (MOVED/ASK) still use the hostname; only MIGRATE
-  needs the pod IP (`scripts/valkey-cluster-tests.sh` derives it from
+  needs the pod IP (`scripts/k3s/verify/valkey-cluster-tests.sh` derives it from
   `CLUSTER NODES`).
 - **The app pins the Valkey hostname → VIP via `hostAliases`** in its
   Deployment, because Lettuce/netty's resolver mishandles Kubernetes
@@ -323,16 +323,16 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 |------|---------|
 | `app/` | Spring Boot service (Maven, single module). The "patient" under test. |
 | `app/.../valkey/` | Valkey ops package — streams, pub/sub, hash, zset, list + `ValkeyPlaygroundController` for direct testing |
-| `charts/debug-demo-app/` | The app, with HPA (chart default 1→10 @ 20% CPU; **capped to `maxReplicas: 4`** for this two-agent footprint via `k3s-charts.sh --set`), Valkey/Oracle/MQ wiring. Soft **pod-anti-affinity** (`spreadAcrossNodes`, default on) spreads replicas across the two agents; `affinity`/`tolerations` hooks override. A **`startupProbe`** (40 × 5s ≈ 200s, gates liveness/readiness) keeps a slow JVM boot under CPU contention from being liveness-killed into a CrashLoop. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
+| `charts/debug-demo-app/` | The app, with HPA (chart default 1→10 @ 20% CPU; **capped to `maxReplicas: 4`** for this two-agent footprint via `charts.sh --set`), Valkey/Oracle/MQ wiring. Soft **pod-anti-affinity** (`spreadAcrossNodes`, default on) spreads replicas across the two agents; `affinity`/`tolerations` hooks override. A **`startupProbe`** (40 × 5s ≈ 200s, gates liveness/readiness) keeps a slow JVM boot under CPU contention from being liveness-killed into a CrashLoop. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — Services share one pool IP and are distinguished by port; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP:port → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
 | `./tui` (root) + `scripts/k3s.sh` | Front door for the **cluster lifecycle**: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 1 = preflight, 9 = lb, `d` = JVM debug kit); `./tui <cmd>` forwards to the same commands. |
-| `./debug` (root) + `scripts/debug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./debug` opens `scripts/debug-tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |
-| `scripts/k3s-*.sh` | Phase scripts, in install order: `k3s-preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `k3s-install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `k3s-net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `k3s-platform.sh` (MetalLB + ingress-nginx + namespaces), `k3s-charts.sh` (the five charts; caps the app HPA at 4), `k3s-lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents; `up`/`down`/`status`), `k3s-uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
-| `scripts/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
-| `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), the debug kit (`dump-actuator.sh`, `dump-jattach.sh`, `dump-threads.sh`, `dump-heap.sh`, `memory-report.sh`, `snapshot.sh`, `tail-logs.sh`, `set-log-level.sh` — all take `-n`/`-l`/`--container`, all have `--help`), `run-unit-tests.sh`, `local-ci.sh` |
+| `./debug` (root) + `scripts/debug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./debug` opens `scripts/debug/ui/tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |
+| `scripts/k3s/phases/` (+ `verify/`, `tours/`, `ui/`) | Lifecycle **phase** scripts (in `phases/`), install order: `preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `platform.sh` (MetalLB + ingress-nginx + namespaces), `charts.sh` (the five charts; caps the app HPA at 4), `lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents), `uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion), `bundle-images.sh` (builds the air-gap bundle). **Verification** is `scripts/k3s/verify/` (`doctor.sh`, `smoke.sh`, `chaos.sh`, `docs-verify.sh`, `valkey-cluster-tests.sh`); the **menu** is `scripts/k3s/ui/tui.sh`; read-only **tours** in `scripts/k3s/tours/` (`api-tour.sh`, `valkey-tour.sh`). |
+| `scripts/k3s/phases/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
+| `scripts/debug/` + `scripts/dev/` | The **JVM debug kit** (cluster-agnostic, all take `-n`/`-l`/`--container`, all `--help`): `capture/` (`actuator.sh`, `jattach.sh`, `jdk-threads.sh`, `jdk-heap.sh`), `observe/` (`memory-report.sh`, `snapshot.sh`, `tail-logs.sh`, `set-log-level.sh`), `ui/tui.sh` (runbook-grouped menu). **Dev helpers** in `scripts/dev/`: `run-unit-tests.sh`, `local-ci.sh`. |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
 | `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, MetalLB, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
@@ -342,11 +342,11 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 ## How to install everything
 
 Everything runs **air-gapped**: no image is ever pulled inside a VM or
-pod. `scripts/bundle-images.sh` runs on the **Mac** (which has internet
+pod. `scripts/k3s/phases/bundle-images.sh` runs on the **Mac** (which has internet
 or a corporate mirror), `docker pull`+`save`s every image in
 `K3S_IMAGES` (defined in `scripts/lib/k3s-env.sh`), builds+saves the app
 image, and downloads the k3s binary + `k3s-airgap-images-<arch>.tar.zst`
-into `dumps/airgap/`. `scripts/k3s-cluster.sh` copies the bundle into
+into `dumps/airgap/`. `scripts/k3s/phases/cluster.sh` copies the bundle into
 each Lima VM, installs k3s with `INSTALL_K3S_SKIP_DOWNLOAD=true`, and
 `k3s ctr images import`s every tar into containerd. Charts run
 `imagePullPolicy: Never`/`IfNotPresent`; a pod that tried to pull would
@@ -362,7 +362,7 @@ ingress + Valkey Services, which must exist first. It is idempotent. The
 `install` phase orchestrates the `k3s-*.sh` scripts; the air-gap bundle
 is built by `scripts/k3s.sh bundle` (or on demand by `install`).
 
-**Pre-flight is step 0** — `scripts/k3s-preflight.sh` (also `./tui
+**Pre-flight is step 0** — `scripts/k3s/phases/preflight.sh` (also `./tui
 preflight`) checks and auto-fixes the Mac prerequisites so `./tui
 install` works even if you never opened the README: Homebrew, CLI tools
 (limactl/kubectl/helm/curl), **sudo/admin access** (sudoers + resolver
@@ -376,12 +376,12 @@ auto-fix. (socket_vmnet + Lima sudoers used to be an undocumented manual
 step; preflight now handles both.)
 
 **VIP is overridable + persistent.** `K3S_VIP` defaults to `.100`, which
-sits inside the Lima shared-network DHCP range (not reserved). `k3s-net.sh`
+sits inside the Lima shared-network DHCP range (not reserved). `net.sh`
 pre-flights it and aborts with an explicit fix if a foreign device (or one
 of our own VMs' DHCP address) already holds it. Override with
 `K3S_VIP=192.168.105.240 ./tui install`; the value persists to
 `dumps/k3s-vip` (precedence: env > that file > `.100`), so `doctor`, charts,
-and the TUI all agree on it afterward. `k3s-uninstall.sh` clears it.
+and the TUI all agree on it afterward. `uninstall.sh` clears it.
 
 ```sh
 # 0. Build the air-gap bundle on the Mac (needs docker + internet/mirror)
@@ -416,7 +416,7 @@ including `ddk3s-lb`, the Mac resolver, and the kubeconfig; verifies VM
 deletion).
 
 Local CI loop (push image + charts to in-cluster Artifactory): see
-`scripts/local-ci.sh` and the README — needs a one-time daemon.json
+`scripts/dev/local-ci.sh` and the README — needs a one-time daemon.json
 edit to allow the registry as insecure.
 
 ## Test tools: capturing memory/CPU diagnostics WITHOUT JDK
@@ -458,7 +458,7 @@ confirmation flag.
 
 ### jattach: capture path when actuator isn't enough
 
-`scripts/dump-jattach.sh` installs jattach into the pod (downloads the
+`scripts/debug/capture/jattach.sh` installs jattach into the pod (downloads the
 right Linux tarball from the upstream release on the host, `kubectl cp`s
 the binary in, sanity-checks it), then runs the requested action. The
 binary lands at `/tmp/jattach` and survives until pod restart, so
@@ -466,19 +466,19 @@ subsequent invocations skip the install step.
 
 ```sh
 # One-shot install only — useful to pre-stage before an incident
-scripts/dump-jattach.sh install -n debug-demo
+scripts/debug/capture/jattach.sh install -n debug-demo
 
 # Thread dump (writes ./dumps/threads/<pod>-jattach-thread-<ts>.txt)
-scripts/dump-jattach.sh threads -n debug-demo
+scripts/debug/capture/jattach.sh threads -n debug-demo
 
 # Heap dump — pauses JVM, requires --confirm
-scripts/dump-jattach.sh heap --confirm -n debug-demo
+scripts/debug/capture/jattach.sh heap --confirm -n debug-demo
 
 # Any jcmd command — output streams to stdout, capture as needed
-scripts/dump-jattach.sh jcmd "GC.heap_info" -n debug-demo
-scripts/dump-jattach.sh jcmd "VM.native_memory summary" -n debug-demo
-scripts/dump-jattach.sh jcmd "Compiler.codecache" -n debug-demo
-scripts/dump-jattach.sh jcmd "JFR.start duration=60s filename=/tmp/r.jfr" -n debug-demo
+scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
+scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
+scripts/debug/capture/jattach.sh jcmd "Compiler.codecache" -n debug-demo
+scripts/debug/capture/jattach.sh jcmd "JFR.start duration=60s filename=/tmp/r.jfr" -n debug-demo
 ```
 
 Key implementation details to preserve when extending the script:
@@ -600,7 +600,7 @@ kubectl get events -n debug-demo --sort-by=.lastTimestamp | tail -20
 
 What to look for: `CrashLoopBackOff`, `ImagePullBackOff` (in the
 air-gapped cluster this means an image tar was never imported — rerun
-`scripts/k3s-cluster.sh` image import), `OOMKilled` (in
+`scripts/k3s/phases/cluster.sh` image import), `OOMKilled` (in
 `lastState.terminated.reason`), `FailedScheduling` (insufficient
 resources), `Unhealthy` events (probe failures), high `restartCount`.
 
@@ -626,13 +626,13 @@ tool to investigate next.
 kubectl -n debug-demo logs <pod> --tail=200
 
 # All app replicas, follow
-scripts/tail-logs.sh                                 # uses stern if installed
+scripts/debug/observe/tail-logs.sh                                 # uses stern if installed
 kubectl -n debug-demo logs -f -l app.kubernetes.io/name=debug-demo-app --max-log-requests 10 --prefix
 
 # Toggle log levels at runtime — no restart
-scripts/set-log-level.sh com.example.debugdemo DEBUG
-scripts/set-log-level.sh org.hibernate.SQL TRACE     # see actual JDBC SQL
-scripts/set-log-level.sh ROOT INFO                   # back to baseline
+scripts/debug/observe/set-log-level.sh com.example.debugdemo DEBUG
+scripts/debug/observe/set-log-level.sh org.hibernate.SQL TRACE     # see actual JDBC SQL
+scripts/debug/observe/set-log-level.sh ROOT INFO                   # back to baseline
 ```
 
 **What to grep for**, by component:
@@ -699,7 +699,7 @@ Container memory limit          (set in Deployment.spec.resources.limits.memory)
 **Read it all at once:**
 
 ```sh
-scripts/memory-report.sh -n debug-demo
+scripts/debug/observe/memory-report.sh -n debug-demo
 ```
 
 The script reads cgroup `memory.current`/`memory.max` + every actuator
@@ -730,7 +730,7 @@ For the deeper native breakdown (requires
 the Dockerfile to keep production overhead minimal):
 
 ```sh
-scripts/dump-jattach.sh jcmd "VM.native_memory summary" -n debug-demo
+scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
 ```
 
 **Common pod-OOM patterns:**
@@ -740,7 +740,7 @@ scripts/dump-jattach.sh jcmd "VM.native_memory summary" -n debug-demo
 | Heap <70%, pod OOMKilled | Direct buffers / native leak | Direct row in report; NMT summary via jattach; thread dump for stuck NIO threads |
 | Heap <70%, OOMKilled after long runtime | Metaspace leak (classloader retention) | Metaspace row in report — trend over time |
 | Heap full, frequent GC | Allocation pressure or memory leak | hprof diff in MAT (Leak Suspects) |
-| RSS grows, heap stable | Code Cache fill (sustained JIT churn) | `scripts/dump-jattach.sh jcmd "Compiler.codecache"` |
+| RSS grows, heap stable | Code Cache fill (sustained JIT churn) | `scripts/debug/capture/jattach.sh jcmd "Compiler.codecache"` |
 | Sudden RSS spike → kill | Heap dump or Spring Batch chunk too large | `kubectl get events`; pre-trigger OOM hook may have left an hprof at `/tmp/heapdumps/` |
 
 ### Step 6 — capture a snapshot for offline analysis
@@ -749,10 +749,10 @@ When the live commands above point at the JVM but you can't keep
 poking at it, take a snapshot bundle. **One command does all of it:**
 
 ```sh
-scripts/snapshot.sh                        # → ./dumps/snapshot-<ts>/ (pod, health,
+scripts/debug/observe/snapshot.sh                        # → ./dumps/snapshot-<ts>/ (pod, health,
                                            #   metrics, threads, memory-report, jcmd outputs)
-scripts/snapshot.sh --heap --confirm       # + heap.hprof (PAUSES the JVM)
-scripts/snapshot.sh --no-jattach           # actuator-only (nothing installed in the pod)
+scripts/debug/observe/snapshot.sh --heap --confirm       # + heap.hprof (PAUSES the JVM)
+scripts/debug/observe/snapshot.sh --no-jattach           # actuator-only (nothing installed in the pod)
 ```
 
 The manual equivalent, for picking individual pieces:
@@ -766,18 +766,18 @@ mkdir -p "$SNAP"
 # Cheapest: actuator
 kubectl -n debug-demo exec "$POD" -- curl -s http://localhost:8080/actuator/metrics                              > "$SNAP/metrics.json"
 kubectl -n debug-demo exec "$POD" -- curl -s -H 'Accept: text/plain' http://localhost:8080/actuator/threaddump   > "$SNAP/threads.txt"
-scripts/memory-report.sh -n debug-demo                                                                          > "$SNAP/memory-report.txt"
+scripts/debug/observe/memory-report.sh -n debug-demo                                                                          > "$SNAP/memory-report.txt"
 
 # JVM-internal detail via jattach (skips actuator)
-scripts/dump-jattach.sh jcmd "GC.heap_info"               -n debug-demo > "$SNAP/gc-heap-info.txt"
-scripts/dump-jattach.sh jcmd "VM.flags"                   -n debug-demo > "$SNAP/vm-flags.txt"
-scripts/dump-jattach.sh jcmd "Compiler.codecache"         -n debug-demo > "$SNAP/codecache.txt"
-scripts/dump-jattach.sh jcmd "VM.classloader_stats"       -n debug-demo > "$SNAP/classloaders.txt"
+scripts/debug/capture/jattach.sh jcmd "GC.heap_info"               -n debug-demo > "$SNAP/gc-heap-info.txt"
+scripts/debug/capture/jattach.sh jcmd "VM.flags"                   -n debug-demo > "$SNAP/vm-flags.txt"
+scripts/debug/capture/jattach.sh jcmd "Compiler.codecache"         -n debug-demo > "$SNAP/codecache.txt"
+scripts/debug/capture/jattach.sh jcmd "VM.classloader_stats"       -n debug-demo > "$SNAP/classloaders.txt"
 # NMT only works if -XX:NativeMemoryTracking=summary is set in JAVA_OPTS
-scripts/dump-jattach.sh jcmd "VM.native_memory summary"   -n debug-demo > "$SNAP/nmt-summary.txt" 2>&1 || true
+scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary"   -n debug-demo > "$SNAP/nmt-summary.txt" 2>&1 || true
 
 # Heaviest: heap dump (PAUSES JVM — only in non-production or with explicit OK)
-scripts/dump-jattach.sh heap --confirm -n debug-demo
+scripts/debug/capture/jattach.sh heap --confirm -n debug-demo
 ```
 
 Feed the bundle to MAT (Leak Suspects on the hprof), VisualVM (load the
@@ -793,7 +793,7 @@ hostname via the CoreDNS stub; the Mac only resolves it if you ran
 `scripts/k3s.sh resolver`. To avoid depending on the Mac resolver — and
 so that `MOVED`/redirect hostnames always resolve — run `valkey-cli`
 **in-cluster** (kubectl exec into a Valkey pod), exactly as
-`scripts/valkey-tour.sh` and `scripts/valkey-cluster-tests.sh` do.
+`scripts/k3s/tours/valkey-tour.sh` and `scripts/k3s/verify/valkey-cluster-tests.sh` do.
 
 ```sh
 PASS=$(kubectl -n valkey get secret valkey -o jsonpath='{.data.password}' | base64 -d)
@@ -813,16 +813,16 @@ specific node (`CLUSTER *`, `INFO`, `LATENCY`, `SLOWLOG`, `CONFIG`,
 ### One-shot tour (read-only)
 
 ```sh
-scripts/valkey-tour.sh                       # everything (valkey-cli in-cluster, by hostname)
-scripts/valkey-tour.sh --section topology    # cluster_state, nodes, shards, role+uptime per node
-scripts/valkey-tour.sh --section strings     # which keys land on which shards; SET/GET with TTL
-scripts/valkey-tour.sh --section hash        # HSET/HINCRBY on customer:stats:{N}; hash-tag pinning demo
-scripts/valkey-tour.sh --section list        # LLEN + LRANGE of orders:recent
-scripts/valkey-tour.sh --section zset        # ZCARD + top-10 ZREVRANGE WITHSCORES
-scripts/valkey-tour.sh --section stream      # XLEN, XINFO STREAM/GROUPS, XRANGE/XREVRANGE
-scripts/valkey-tour.sh --section pubsub      # active channels + subscriber counts; sharded channels
-scripts/valkey-tour.sh --section info        # INFO Server/Clients/Memory/Stats/Replication/Cluster
-scripts/valkey-tour.sh --section latency     # --latency probe, LATENCY LATEST, SLOWLOG GET 5
+scripts/k3s/tours/valkey-tour.sh                       # everything (valkey-cli in-cluster, by hostname)
+scripts/k3s/tours/valkey-tour.sh --section topology    # cluster_state, nodes, shards, role+uptime per node
+scripts/k3s/tours/valkey-tour.sh --section strings     # which keys land on which shards; SET/GET with TTL
+scripts/k3s/tours/valkey-tour.sh --section hash        # HSET/HINCRBY on customer:stats:{N}; hash-tag pinning demo
+scripts/k3s/tours/valkey-tour.sh --section list        # LLEN + LRANGE of orders:recent
+scripts/k3s/tours/valkey-tour.sh --section zset        # ZCARD + top-10 ZREVRANGE WITHSCORES
+scripts/k3s/tours/valkey-tour.sh --section stream      # XLEN, XINFO STREAM/GROUPS, XRANGE/XREVRANGE
+scripts/k3s/tours/valkey-tour.sh --section pubsub      # active channels + subscriber counts; sharded channels
+scripts/k3s/tours/valkey-tour.sh --section info        # INFO Server/Clients/Memory/Stats/Replication/Cluster
+scripts/k3s/tours/valkey-tour.sh --section latency     # --latency probe, LATENCY LATEST, SLOWLOG GET 5
 ```
 
 ### Topology + health
@@ -991,7 +991,7 @@ sleep 30
 vk -p $PRIMARY_PORT info replication | grep -E '^role|^master_host'
 ```
 
-Note: `scripts/valkey-cluster-tests.sh` freezes a primary with
+Note: `scripts/k3s/verify/valkey-cluster-tests.sh` freezes a primary with
 `DEBUG SLEEP` rather than deleting the pod, because the StatefulSet
 heals a deleted pod faster than the 5s `cluster-node-timeout` — no
 election would ever happen. `MIGRATE` (slot-migration tests) targets the
@@ -1023,7 +1023,7 @@ out for node-to-node connections.
 - **Image:** runtime is `eclipse-temurin:21-jre-alpine`. Do not bake
   the JDK in. If a tool needs `jstack`/`jmap`, that tool is wrong for
   this project — use actuator (preferred), jattach via
-  `scripts/dump-jattach.sh` (when you need jcmd), or `kubectl debug`
+  `scripts/debug/capture/jattach.sh` (when you need jcmd), or `kubectl debug`
   with an off-image JDK container (last resort).
 - **jattach is a foreign binary in `/tmp`.** It's installed lazily by
   the dump script. Don't bake jattach into the image either — the
@@ -1055,7 +1055,7 @@ out for node-to-node connections.
   heap caps at ~0.73 GiB regardless of how much RAM the 7 GiB agent has.
   (Percentage-of-node only applies when NO limit is set.)
 - **HPA cap on this footprint:** the chart default is `maxReplicas: 10`
-  (for bigger clusters), but `k3s-charts.sh` caps it at **4** via
+  (for bigger clusters), but `charts.sh` caps it at **4** via
   `--set autoscaling.maxReplicas=4` so the fleet fits the two 7 GiB
   agents. A `startupProbe` (40 × 5s ≈ 200s) gates liveness/readiness so
   a slow JVM boot under CPU contention isn't liveness-killed into a
@@ -1066,18 +1066,18 @@ out for node-to-node connections.
 ## Build & test
 
 ```sh
-# scripts/run-unit-tests.sh auto-detects a JDK 21 (Mockito can't instrument
+# scripts/dev/run-unit-tests.sh auto-detects a JDK 21 (Mockito can't instrument
 # JDK 26+) and pins JAVA_HOME for the Maven run:
-scripts/run-unit-tests.sh                # unit (Mockito + @WebMvcTest), no docker
-scripts/run-unit-tests.sh --coverage     # + per-class test counts
-scripts/run-unit-tests.sh --integration  # + Testcontainers ITs (needs docker)
-scripts/run-unit-tests.sh -- -Dtest=Foo  # pass anything after -- to Maven
+scripts/dev/run-unit-tests.sh                # unit (Mockito + @WebMvcTest), no docker
+scripts/dev/run-unit-tests.sh --coverage     # + per-class test counts
+scripts/dev/run-unit-tests.sh --integration  # + Testcontainers ITs (needs docker)
+scripts/dev/run-unit-tests.sh -- -Dtest=Foo  # pass anything after -- to Maven
 # Raw: cd app && JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test
 ```
 
 Cluster-protocol semantics (MOVED, ASK via live slot migration, replica
 reads, failover + failback) are tested against the LIVE stack by
-`scripts/valkey-cluster-tests.sh` — deliberately not in JUnit, because
+`scripts/k3s/verify/valkey-cluster-tests.sh` — deliberately not in JUnit, because
 they need a real 6-node cluster and real failure detection. It runs all
 58 checks by hostname with `valkey-cli` **in-cluster** (kubectl exec, so
 the announced hostname resolves via CoreDNS); the failover section
@@ -1087,11 +1087,11 @@ than the 5s cluster-node-timeout — no election would ever happen. Slot
 `MIGRATE` uses the pod IP.
 
 Cluster/end-to-end verification is split across:
-`scripts/k3s-smoke.sh` (14 checks, all by hostname — HTTP via
-`curl --resolve`, Valkey in-cluster), `scripts/k3s-doctor.sh` (every
+`scripts/k3s/verify/smoke.sh` (14 checks, all by hostname — HTTP via
+`curl --resolve`, Valkey in-cluster), `scripts/k3s/verify/doctor.sh` (every
 layer, tooling → VMs → nodes → VIP → DNS → ingress → workloads/air-gap →
 Valkey → end-to-end, printing the fix command for anything broken), and
-`scripts/k3s-chaos.sh` (node-down, lb-down, valkey-freeze, backend
+`scripts/k3s/verify/chaos.sh` (node-down, lb-down, valkey-freeze, backend
 scale-downs). Each check echoes the exact kubectl/curl/valkey-cli
 command behind it so the suites double as a copy-pasteable cookbook.
 `scripts/k3s.sh` is the guided front door for all of them.
@@ -1115,7 +1115,7 @@ Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.
    - **Spring AOP self-invocation** for `@Cacheable`
    - **HPA + Recreate** silently disabling scale-out
    - **Air-gap image not imported** → `ImagePullBackOff` (rerun the
-     `k3s-cluster.sh` image-import step)
+     `cluster.sh` image-import step)
 4. For chart-level issues, `helm get manifest <release> -n <ns>` shows
    exactly what was applied; compare to template output via
    `helm template`.

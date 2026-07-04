@@ -51,7 +51,7 @@ K3S_VIP=192.168.105.100
 
 The VIP lives on the LB VM, not on a k3s worker and not on the control-plane node. That is intentional. If a k3s worker is starved, rebooted, or overloaded, the frontend address should not disappear just because the node is unhealthy.
 
-In this lab, keepalived is configured by `scripts/k3s-lb.sh` with a single VRRP instance:
+In this lab, keepalived is configured by `scripts/k3s/phases/lb.sh` with a single VRRP instance:
 
 ```text
 state MASTER
@@ -97,7 +97,7 @@ Without HAProxy, a client could connect to the keepalived VIP, but nothing would
 
 HAProxy turns the keepalived VIP into an actual external load balancer.
 
-`scripts/k3s-lb.sh` configures HAProxy to listen on the LB VM and bind frontend ports:
+`scripts/k3s/phases/lb.sh` configures HAProxy to listen on the LB VM and bind frontend ports:
 
 ```text
 VIP:80          -> worker ingress-nginx hostPort :80
@@ -193,7 +193,7 @@ lab's keepalived and HAProxy functions:
 | HAProxy HTTP frontend `:80` | F5 HTTP virtual server, profile, pool, and monitor |
 | HAProxy Valkey TCP frontends `:6379-6384` | F5 TCP virtual server or multiple listeners with TCP monitors |
 | HAProxy backend servers | F5 pool members or nodes |
-| `scripts/k3s-lb.sh` generated config | F5 configuration managed by the network/platform team |
+| `scripts/k3s/phases/lb.sh` generated config | F5 configuration managed by the network/platform team |
 
 The production frontend VIP and the Kubernetes backend IPs usually do not live
 in the same subnet. That is normal. The load balancer needs a backend path to
@@ -304,7 +304,7 @@ In the current lab, keep both keepalived and HAProxy. keepalived gives the stabl
 Check the LB VM tier:
 
 ```sh
-scripts/k3s-lb.sh status
+scripts/k3s/phases/lb.sh status
 ```
 
 Expected shape:
@@ -340,8 +340,8 @@ scripts/k3s.sh smoke
 
 | Symptom | Likely layer | First check |
 |---|---|---|
-| DNS resolves but connection refused | HAProxy not listening | `scripts/k3s-lb.sh status` |
-| VIP not reachable | keepalived or LB VM | `scripts/k3s-lb.sh status`, `limactl list ddk3s-lb` |
+| DNS resolves but connection refused | HAProxy not listening | `scripts/k3s/phases/lb.sh status` |
+| VIP not reachable | keepalived or LB VM | `scripts/k3s/phases/lb.sh status`, `limactl list ddk3s-lb` |
 | HTTP works on one worker but not through VIP | HAProxy HTTP backend | HAProxy config and ingress health checks |
 | Valkey hostname resolves but one port fails | HAProxy port mapping or Valkey Service | HAProxy config, `kubectl -n valkey get svc -o wide` |
 | Valkey Services have no backend IP | MetalLB | [docs/metallb-configuration.md](metallb-configuration.md) operational checks |

@@ -2,7 +2,7 @@
 
 Four independent charts. Install Oracle, IBM MQ, and Artifactory first (no
 inter-dependencies), then the app last (depends on Oracle + MQ). On the k3s
-stack all of this is driven for you by `scripts/k3s-charts.sh` (part of
+stack all of this is driven for you by `scripts/k3s/phases/charts.sh` (part of
 `scripts/k3s.sh install`), which points `helm` at `dumps/k3s.kubeconfig` and
 runs against the air-gapped, pre-imported images. The manual equivalent:
 
@@ -45,8 +45,8 @@ explicitly (`kubectl -n <ns> delete pvc --all`) for a clean slate.
   `oracle.existingSecret` / `mq.existingSecret` in `values.yaml` to use a
   pre-existing secret instead of one created by the chart.
 - The app `Deployment` sets `shareProcessNamespace: true` so debug
-  sidecars / ephemeral containers (`scripts/dump-threads.sh`,
-  `scripts/dump-heap.sh`) can see the JVM process. Side effect: PID 1 in
+  sidecars / ephemeral containers (`scripts/debug/capture/jdk-threads.sh`,
+  `scripts/debug/capture/jdk-heap.sh`) can see the JVM process. Side effect: PID 1 in
   the shared namespace is the `/pause` sandbox, NOT the JVM — every tool
   must discover the java PID dynamically (walk `/proc/*/comm`), never
   hardcode PID 1. It also pins
@@ -61,7 +61,7 @@ explicitly (`kubectl -n <ns> delete pvc --all`) for a clean slate.
 - Artifactory chart defaults: `admin / Admin123!`, web UI at port 8082,
   pre-creates `debug-demo-docker` and `debug-demo-helm` repos via a
   post-install Job. Needs ~1 GiB memory minimum. (Optional — only for the
-  `scripts/local-ci.sh` in-cluster registry loop; not installed by default.)
+  `scripts/dev/local-ci.sh` in-cluster registry loop; not installed by default.)
 - Valkey chart provisions 6 pods across two StatefulSets (`valkey-primary-{0..2}`
   and `valkey-secondary-{0..2}`). A post-install Job bootstraps the cluster
   with explicit `primary-N ↔ secondary-N` pairing. Each pod listens on a unique

@@ -78,7 +78,7 @@ config:
   # Extra raw lines appended to valkey.conf. Useful for tuning maxmemory etc.
   # enable-debug-command local: DEBUG (notably DEBUG SLEEP) is allowed from
   # connections originating inside the pod only (kubectl exec + valkey-cli to
-  # 127.0.0.1). scripts/valkey-cluster-tests.sh and scripts/chaos.sh use
+  # 127.0.0.1). scripts/k3s/verify/valkey-cluster-tests.sh and scripts/chaos.sh use
   # DEBUG SLEEP to freeze a primary's event loop — the only deterministic way
   # to trigger real failure detection + replica election here (a deleted pod
   # is resurrected by the StatefulSet faster than the 5s node-timeout).

@@ -71,13 +71,13 @@ can only complete `PING` or a single `GET` is not enough for this POC.
 
 Validation is split by depth:
 
-- `scripts/k3s-smoke.sh` proves the happy path: app order creation fans out to
+- `scripts/k3s/verify/smoke.sh` proves the happy path: app order creation fans out to
   Oracle, MQ, and Valkey; direct app KV `SET`/`GET` works; the cluster reports
   healthy; hostname-based MOVED targets are returned and reachable.
-- `scripts/valkey-tour.sh` is a read-oriented operational tour of strings,
+- `scripts/k3s/tours/valkey-tour.sh` is a read-oriented operational tour of strings,
   hashes, lists, sorted sets, streams, pub/sub, command stats, slowlog, and
   latency.
-- `scripts/valkey-cluster-tests.sh` is the deep cluster-semantics suite for
+- `scripts/k3s/verify/valkey-cluster-tests.sh` is the deep cluster-semantics suite for
   MOVED, ASK, slot migration, replicas, classic pub/sub, sharded pub/sub, and
   failover/failback.
 
@@ -311,7 +311,7 @@ kubectl --kubeconfig dumps/k3s.kubeconfig -n valkey get svc -o wide
 Check Valkey cluster topology:
 
 ```sh
-scripts/valkey-cluster-tests.sh --skip-failover
+scripts/k3s/verify/valkey-cluster-tests.sh --skip-failover
 ```
 
 Inspect HAProxy mapping:

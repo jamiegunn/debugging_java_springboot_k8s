@@ -61,7 +61,7 @@ one-liners in CLAUDE.md. See Gaps.
 Ran live (safe: it fails before creating anything):
 
 ```
-$ scripts/dump-threads.sh -n debug-demo
+$ scripts/debug/capture/jdk-threads.sh -n debug-demo
 [23:34:55] dumping threads from pod=app-debug-demo-app-6c6c4b5769-48shx ... (ephemeral=thread-dump-20260704T033455Z)
 The Pod "app-debug-demo-app-6c6c4b5769-48shx" is invalid: spec.ephemeralContainers[0].name:
 Invalid value: "thread-dump-20260704T033455Z": a lowercase RFC 1123 label must consist of
@@ -102,8 +102,8 @@ directly, no second exec.)
 (fixed only in bash 4.4). Proven live:
 
 ```
-$ scripts/dump-jattach.sh install
-scripts/dump-jattach.sh: line 73: FILTERED_ARGS[@]: unbound variable
+$ scripts/debug/capture/jattach.sh install
+scripts/debug/capture/jattach.sh: line 73: FILTERED_ARGS[@]: unbound variable
 ```
 
 Affected: `dump-jattach.sh:73` (any bare `install`/`threads` invocation —
@@ -183,7 +183,7 @@ image, MAT/VisualVM compatibility, Mockito notes) inherits this confusion.
 `dump-jattach.sh` is the flagship and it survived a live end-to-end run:
 
 ```
-$ scripts/dump-jattach.sh jcmd "GC.heap_info" -n debug-demo
+$ scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
 [23:33:37] using cached jattach: scripts/.cache/jattach-aarch64-v2.2
 [23:33:38] jattach installed and working (jattach 2.2 built on Jan 10 2024...)
 [23:33:38] JVM PID inside pod: 224
@@ -208,7 +208,7 @@ assumes a JDK in the image.
 ## 3. The "own front door" decision
 
 **Recommendation: yes — split a dedicated `./debug` front door
-(`scripts/debug.sh` + `scripts/debug-tui.sh`), and add one line to the main
+(`scripts/debug.sh` + `scripts/debug/ui/tui.sh`), and add one line to the main
 TUI that jumps into it.**
 
 For: (a) the debug kit is the project's product; the cluster is scaffolding —

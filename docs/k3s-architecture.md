@@ -106,7 +106,7 @@ MetalLB backend address is also shared across the per-pod Services.
 
 ## Air-gap: no image ever pulled inside a VM or pod
 
-`scripts/bundle-images.sh` runs on the **Mac** (which has internet or a
+`scripts/k3s/phases/bundle-images.sh` runs on the **Mac** (which has internet or a
 corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
 
 1. `docker pull` every third-party image in `K3S_IMAGES` (pinned refs) and
@@ -116,7 +116,7 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
    (pause, coredns, metrics-server, local-path-provisioner) for the pinned
    `K3S_VERSION`.
 
-`scripts/k3s-cluster.sh` then, per node, `limactl copy`s the bundle in and:
+`scripts/k3s/phases/cluster.sh` then, per node, `limactl copy`s the bundle in and:
 - places the k3s airgap images tar at `/var/lib/rancher/k3s/agent/images/`
   (k3s imports it automatically at startup — no pull),
 - installs k3s with `INSTALL_K3S_SKIP_DOWNLOAD=true` pointing at the copied
@@ -133,16 +133,16 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
 Charts run with `imagePullPolicy: Never` (or `IfNotPresent` against the
 pre-imported images). A pod that tries to pull would fail — which is the point:
 it proves nothing reaches out. The image list lives in `K3S_IMAGES`
-(`scripts/lib/k3s-env.sh`); `scripts/bundle-images.sh` builds the bundle and
-`scripts/k3s-cluster.sh` imports it.
+(`scripts/lib/k3s-env.sh`); `scripts/k3s/phases/bundle-images.sh` builds the bundle and
+`scripts/k3s/phases/cluster.sh` imports it.
 
 ## Phased implementation
 
 - [x] **P0 — foundation**: `scripts/lib/k3s-env.sh`, this doc,
-  `scripts/bundle-images.sh` (air-gap bundle), `scripts/k3s-cluster.sh` (VMs +
+  `scripts/k3s/phases/bundle-images.sh` (air-gap bundle), `scripts/k3s/phases/cluster.sh` (VMs +
   k3s + image import).
 - [x] **P1 — DNS**: dnsmasq on server, Mac `/etc/resolver`, CoreDNS stub zone —
-  all answering `*.debug-demo.local → VIP`. `scripts/k3s-net.sh` is **DNS-only**
+  all answering `*.debug-demo.local → VIP`. `scripts/k3s/phases/net.sh` is **DNS-only**
   now; the VIP itself is served by the LB tier (see the LB-tier phase below).
 - [x] **P2 — platform**: ingress-nginx DaemonSet chart values (VIP-fronted),
   namespaces, storage (local-path). Verify hostname resolution reaches the VIP.
@@ -162,18 +162,18 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   from the Mac follows MOVED by hostname and SET/GET round-trips, the app is UP
   through debug-demo.local, and POST /api/orders (Oracle + MQ + Valkey fan-out)
   returns 201 — all air-gapped, all by hostname.
-- [x] **P4 — installer**: `scripts/k3s-install.sh` orchestrates the full phase
-  chain and a final smoke; `scripts/k3s-uninstall.sh` (delete all VMs —
+- [x] **P4 — installer**: `scripts/k3s/phases/install.sh` orchestrates the full phase
+  chain and a final smoke; `scripts/k3s/phases/uninstall.sh` (delete all VMs —
   **including `ddk3s-lb`** — resolver, kubeconfig; retries and verifies each VM
   is actually gone). Current phase order:
-  **0 preflight** (`k3s-preflight.sh` — Mac prerequisite check + auto-setup;
-  see below) → **air-gap bundle** → **cluster** (`k3s-cluster.sh`, installs the
+  **0 preflight** (`preflight.sh` — Mac prerequisite check + auto-setup;
+  see below) → **air-gap bundle** → **cluster** (`cluster.sh`, installs the
   server **tainted** `node-role.kubernetes.io/control-plane=true:NoSchedule`) →
-  **DNS** (`k3s-net.sh`) → **platform** (ingress) → **charts** → **LB tier**
+  **DNS** (`net.sh`) → **platform** (ingress) → **charts** → **LB tier**
   (`k3s-lb.sh up` — creates `ddk3s-lb`, brings up keepalived + HAProxy pooled to
   the agents) → **verify + smoke**.
-- [x] **P5 — tests**: DONE. scripts/k3s-smoke.sh (14/14, all by hostname);
-  scripts/k3s-chaos.sh (node-down / lb-down / valkey-freeze / backend
+- [x] **P5 — tests**: DONE. scripts/k3s/verify/smoke.sh (14/14, all by hostname);
+  scripts/k3s/verify/chaos.sh (node-down / lb-down / valkey-freeze / backend
   scale-downs; node-down validated live — valkey stayed cluster_state:ok
   through the outage); valkey-cluster-tests.sh ported and ALL 58 checks pass
   (MOVED, ASK, migration, replicas, pub/sub, full crash-failover — client
@@ -181,14 +181,14 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   hairpin times out); api-tour.sh + valkey-tour.sh re-pointed at the VIP /
   in-cluster hostname. common.sh auto-targets the k3s kubeconfig for the
   whole suite.
-- [x] **P6 — troubleshooting kit**: scripts/k3s-doctor.sh — one command
+- [x] **P6 — troubleshooting kit**: scripts/k3s/verify/doctor.sh — one command
   checks every layer (tooling → VMs → nodes → VIP → DNS → MetalLB + ingress →
   workloads → Valkey cluster → end-to-end), and for anything broken prints the
   exact fix command. It counts passes dynamically; the only expected ✘ on a
   healthy stack is the optional Mac resolver (cleared by `./tui resolver`). `./tui` (root launcher) / `scripts/k3s.sh` is the single front
   door: bare `./tui` opens an interactive menu (option 1 = preflight, 9 = lb);
   subcommands are **preflight** / bundle / install / resolver / **lb** / doctor
-  / smoke / status / chaos / tour / valkey / uninstall. `k3s-doctor.sh`
+  / smoke / status / chaos / tour / valkey / uninstall. `doctor.sh`
   section 4 now checks the **LB VM's** VIP + HAProxy (not the k3s nodes);
   section 2 lists `ddk3s-lb`.
 
@@ -228,15 +228,15 @@ addressed by hostname.
   `-XX:MaxRAMPercentage=75` sizes the heap to ~0.73 GiB **of that 1 GiB limit**
   (MaxRAMPercentage reads the cgroup limit, not the 7 GiB node — it would only
   see the node if no limit were set).
-- **VIP pre-flight + override.** `k3s-lb.sh` refuses to claim the keepalived VIP
+- **VIP pre-flight + override.** `lb.sh` refuses to claim the keepalived VIP
   if a foreign device (or one of our own VMs' DHCP address) already holds it —
   the shared-network DHCP range isn't reserved — and prints the exact fix. The
   VIP is overridable (`K3S_VIP=… ./tui install`) and persists to `dumps/k3s-vip`
-  so every later command agrees on it. `k3s-preflight.sh` (install step 0)
+  so every later command agrees on it. `preflight.sh` (install step 0)
   additionally auto-sets-up the Mac side — Homebrew, CLI tools, **socket_vmnet**
   (the Lima shared-network backend), and the **Lima sudoers** file
   (`limactl sudoers --check` → `limactl sudoers | sudo tee /etc/sudoers.d/lima`),
   which used to be an undocumented manual step.
-- **Verified teardown.** `k3s-uninstall.sh` retries and verifies each VM
+- **Verified teardown.** `uninstall.sh` retries and verifies each VM
   (including `ddk3s-lb`) is actually gone (the old silent-`2>/dev/null`-delete
   could leave VMs — and the VIP — running under an "uninstall complete").

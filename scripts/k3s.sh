@@ -8,7 +8,7 @@
 #
 #   Get running
 #     preflight     check + auto-fix Mac prerequisites (socket_vmnet, sudoers, tools)
-#     bundle        build the air-gap image bundle on the Mac (scripts/bundle-images.sh)
+#     bundle        build the air-gap image bundle on the Mac (scripts/k3s/phases/bundle-images.sh)
 #     install       full install: preflight → VMs → k3s → VIP/DNS → ingress → charts → LB → smoke
 #     resolver      write the Mac /etc/resolver so hostnames resolve (sudo)
 #
@@ -20,8 +20,8 @@
 #
 #   Explore / break
 #     chaos         inject failures (node-down, lb-down, valkey-freeze, ...)
-#     tour          narrated API walk-through          (scripts/api-tour.sh)
-#     valkey        the Valkey cluster from outside     (scripts/valkey-tour.sh)
+#     tour          narrated API walk-through          (scripts/k3s/tours/api-tour.sh)
+#     valkey        the Valkey cluster from outside     (scripts/k3s/tours/valkey-tour.sh)
 #
 #   Tear down
 #     uninstall     delete the VMs, resolver, kubeconfig
@@ -39,20 +39,20 @@ usage() { sed -n '2,/^set /p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
-    tui|menu|"")  exec "$D/k3s-tui.sh" ;;
-    preflight)  exec "$D/k3s-preflight.sh" "$@" ;;   # check/fix Mac prerequisites
-    bundle)     exec "$D/bundle-images.sh" "$@" ;;
-    install)    exec "$D/k3s-install.sh" "$@" ;;
-    uninstall)  exec "$D/k3s-uninstall.sh" "$@" ;;
-    resolver)   exec "$D/k3s-net.sh" up ;;        # writes /etc/resolver (sudo)
-    lb)         exec "$D/k3s-lb.sh" "$@" ;;        # the LB tier: keepalived VIP + HAProxy
-    doctor)     exec "$D/k3s-doctor.sh" "$@" ;;
-    smoke)      exec "$D/k3s-smoke.sh" "$@" ;;
-    docs-verify) exec "$D/docs-verify.sh" "$@" ;;
-    status)     exec "$D/k3s-chaos.sh" status ;;
-    chaos)      exec "$D/k3s-chaos.sh" "$@" ;;
-    tour)       exec "$D/api-tour.sh" "$@" ;;
-    valkey)     exec "$D/valkey-tour.sh" "$@" ;;
+    tui|menu|"")  exec "$D/k3s/ui/tui.sh" ;;
+    preflight)  exec "$D/k3s/phases/preflight.sh" "$@" ;;   # check/fix Mac prerequisites
+    bundle)     exec "$D/k3s/phases/bundle-images.sh" "$@" ;;
+    install)    exec "$D/k3s/phases/install.sh" "$@" ;;
+    uninstall)  exec "$D/k3s/phases/uninstall.sh" "$@" ;;
+    resolver)   exec "$D/k3s/phases/net.sh" up ;;        # writes /etc/resolver (sudo)
+    lb)         exec "$D/k3s/phases/lb.sh" "$@" ;;        # the LB tier: keepalived VIP + HAProxy
+    doctor)     exec "$D/k3s/verify/doctor.sh" "$@" ;;
+    smoke)      exec "$D/k3s/verify/smoke.sh" "$@" ;;
+    docs-verify) exec "$D/k3s/verify/docs-verify.sh" "$@" ;;
+    status)     exec "$D/k3s/verify/chaos.sh" status ;;
+    chaos)      exec "$D/k3s/verify/chaos.sh" "$@" ;;
+    tour)       exec "$D/k3s/tours/api-tour.sh" "$@" ;;
+    valkey)     exec "$D/k3s/tours/valkey-tour.sh" "$@" ;;
     -h|--help)  usage ;;
     *) echo "unknown command: $cmd"; echo; usage; exit 64 ;;
 esac

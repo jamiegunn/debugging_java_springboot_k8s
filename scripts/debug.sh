@@ -57,7 +57,7 @@ fwd() { "$@" ${ARGS[@]+"${ARGS[@]}"}; }
 triage_parse() { parse_common_args ${ARGS[@]+"${ARGS[@]}"}; }
 
 case "$cmd" in
-    tui|menu|"")     exec "$D/debug-tui.sh" ;;
+    tui|menu|"")     exec "$D/debug/ui/tui.sh" ;;
 
     status)
         triage_parse
@@ -94,26 +94,26 @@ case "$cmd" in
 
     threads)
         case "$VIA" in
-            actuator) fwd "$D/dump-actuator.sh" threads ;;
-            jattach)  fwd "$D/dump-jattach.sh"  threads ;;
-            jdk)      fwd "$D/dump-threads.sh" ;;
+            actuator) fwd "$D/debug/capture/actuator.sh" threads ;;
+            jattach)  fwd "$D/debug/capture/jattach.sh"  threads ;;
+            jdk)      fwd "$D/debug/capture/jdk-threads.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
     heap)
         case "$VIA" in
-            actuator) fwd "$D/dump-actuator.sh" heap ;;
-            jattach)  fwd "$D/dump-jattach.sh"  heap ;;
-            jdk)      fwd "$D/dump-heap.sh" ;;
+            actuator) fwd "$D/debug/capture/actuator.sh" heap ;;
+            jattach)  fwd "$D/debug/capture/jattach.sh"  heap ;;
+            jdk)      fwd "$D/debug/capture/jdk-heap.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
-    jcmd)            fwd "$D/dump-jattach.sh" jcmd ;;
-    memory)          fwd "$D/memory-report.sh" ;;
-    snapshot)        fwd "$D/snapshot.sh" ;;
-    logs)            fwd "$D/tail-logs.sh" ;;
-    log-level)       fwd "$D/set-log-level.sh" ;;
-    install-jattach) fwd "$D/dump-jattach.sh" install ;;
+    jcmd)            fwd "$D/debug/capture/jattach.sh" jcmd ;;
+    memory)          fwd "$D/debug/observe/memory-report.sh" ;;
+    snapshot)        fwd "$D/debug/observe/snapshot.sh" ;;
+    logs)            fwd "$D/debug/observe/tail-logs.sh" ;;
+    log-level)       fwd "$D/debug/observe/set-log-level.sh" ;;
+    install-jattach) fwd "$D/debug/capture/jattach.sh" install ;;
 
     -h|--help)       usage_top ;;
     *) echo "unknown command: $cmd"; echo; usage_top; exit 64 ;;

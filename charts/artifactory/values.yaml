@@ -64,7 +64,7 @@ masterKey: "8b2b9e2dc43630b5978a07b02cf4110649fdaa6596ef85ffd6d30eab25667ce5"
 joinKey:   "cc8daeefde3d036daa618f3d45c940216c21c0ac5cb89989350b96d61ea52021"
 
 # Repos auto-created via a post-install Job hitting Artifactory's REST API.
-# Defaults match what scripts/local-ci.sh and .github/workflows/ci.yml expect.
+# Defaults match what scripts/dev/local-ci.sh and .github/workflows/ci.yml expect.
 repos:
   docker: debug-demo-docker
   helm: debug-demo-helm

@@ -2,7 +2,7 @@
 
 Verifies two things end to end:
 
-1. **Pre-flight** (`scripts/k3s-preflight.sh`, step 0 of `./tui install`) detects
+1. **Pre-flight** (`scripts/k3s/phases/preflight.sh`, step 0 of `./tui install`) detects
    every missing prerequisite and either **auto-fixes** it or prints the **exact
    command** to fix it.
 2. **The full install** stands the stack up, and **uninstall** tears it all down.
@@ -26,7 +26,7 @@ How each gap is handled:
 > after. The CLI-tool and bundle/Docker/github tests are isolated and safe.
 
 Run each test with `./tui preflight` (interactive: it asks before each fix) or
-`scripts/k3s-preflight.sh --check` (report only, changes nothing — best for just
+`scripts/k3s/phases/preflight.sh --check` (report only, changes nothing — best for just
 seeing the ✘ + fix command without auto-fixing).
 
 ---
@@ -39,7 +39,7 @@ from (Homebrew, Rancher Desktop's `~/.rd/bin`, etc.). `brew unlink` is NOT
 reliable: your `helm`/`kubectl` may not be Homebrew's.
 ```sh
 H="$(command -v helm)"; mv "$H" "$H.off"     # break: helm gone from PATH
-scripts/k3s-preflight.sh --check             # EXPECT: ✘ install CLI tools: helm  → brew install helm
+scripts/k3s/phases/preflight.sh --check             # EXPECT: ✘ install CLI tools: helm  → brew install helm
 mv "$H.off" "$H"                             # restore the original binary
 # (If you instead run `./tui preflight` and answer Y, it runs `brew install
 #  helm`, which installs a *Homebrew* copy — restore your original PATH order
@@ -50,14 +50,14 @@ mv "$H.off" "$H"                             # restore the original binary
 ```sh
 sudo rm -f /etc/sudoers.d/lima        # break
 limactl sudoers --check; echo $?      # EXPECT: non-zero (needs setup)
-scripts/k3s-preflight.sh --check      # EXPECT: ✘ configure Lima sudoers → limactl sudoers | sudo tee …
+scripts/k3s/phases/preflight.sh --check      # EXPECT: ✘ configure Lima sudoers → limactl sudoers | sudo tee …
 ./tui preflight                       # EXPECT: offers it; Y → sudo prompt → recreated, ✔  (this is the restore)
 ```
 
 ### A3. socket_vmnet missing  *(affects all Lima VMs — reinstall right after)*
 ```sh
 brew uninstall socket_vmnet           # break (heavier; unlink alone won't hide the keg path)
-scripts/k3s-preflight.sh --check      # EXPECT: ✘ install socket_vmnet → brew install socket_vmnet
+scripts/k3s/phases/preflight.sh --check      # EXPECT: ✘ install socket_vmnet → brew install socket_vmnet
 ./tui preflight                       # EXPECT: offers it; Y → reinstalled, ✔
 limactl sudoers | sudo tee /etc/sudoers.d/lima >/dev/null   # restore the sudoers it references
 ```
@@ -66,7 +66,7 @@ limactl sudoers | sudo tee /etc/sudoers.d/lima >/dev/null   # restore the sudoer
 ```sh
 mv dumps/airgap /tmp/airgap.bak       # break: bundle gone → Docker now required
 osascript -e 'quit app "Docker"' 2>/dev/null || killall Docker 2>/dev/null   # stop Docker
-scripts/k3s-preflight.sh --check      # EXPECT: ✘ Docker isn't running → open -a Docker
+scripts/k3s/phases/preflight.sh --check      # EXPECT: ✘ Docker isn't running → open -a Docker
 ./tui preflight                       # EXPECT: launches Docker, waits up to 60s, ✔ (if it starts)
 mv /tmp/airgap.bak dumps/airgap       # restore the bundle
 ```
@@ -75,7 +75,7 @@ mv /tmp/airgap.bak dumps/airgap       # restore the bundle
 ```sh
 mv dumps/airgap /tmp/airgap.bak                        # break: bundle gone → sources checked
 echo "127.0.0.1 github.com" | sudo tee -a /etc/hosts   # block github
-scripts/k3s-preflight.sh --check      # EXPECT: ✘ can't reach github.com → proxy/mirror + copy-bundle workaround
+scripts/k3s/phases/preflight.sh --check      # EXPECT: ✘ can't reach github.com → proxy/mirror + copy-bundle workaround
 # restore:
 sudo sed -i '' '/[[:space:]]github.com$/d' /etc/hosts
 mv /tmp/airgap.bak dumps/airgap
@@ -104,7 +104,7 @@ The sudoers/resolver steps then hard-fail (can't `sudo tee`), with the same comm
 
 ### A8. Everything present  *(the happy path)*
 ```sh
-scripts/k3s-preflight.sh              # EXPECT: 7 ✔ and "Pre-flight passed"
+scripts/k3s/phases/preflight.sh              # EXPECT: 7 ✔ and "Pre-flight passed"
 ```
 
 ---
@@ -133,7 +133,7 @@ scripts/k3s-preflight.sh              # EXPECT: 7 ✔ and "Pre-flight passed"
 ./tui smoke
 
 # 4. (optional) exhaustive Valkey protocol suite — expect 58/58
-scripts/valkey-cluster-tests.sh --skip-failover      # add nothing for the full failover cycle
+scripts/k3s/verify/valkey-cluster-tests.sh --skip-failover      # add nothing for the full failover cycle
 
 # 5. (optional) resilience drills
 ./tui chaos node-down agent-1        # stop a worker → pods reschedule; VIP unaffected (it's on ddk3s-lb)
