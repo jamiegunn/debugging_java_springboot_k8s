@@ -1,0 +1,252 @@
+#!/bin/sh
+# jdebug-local — JVM diagnostics from INSIDE the pod. No kubectl, no JDK, one file.
+#
+# Use this when you already have a shell in the container (kubectl exec -it, a
+# debug sidecar, an SSH-to-node/nsenter) but the image is JRE-only and there's no
+# kubectl to drive the normal `jdebug`. It talks to the app's own actuator on
+# localhost, a staged jattach binary, and /proc — nothing off-box.
+#
+# Get it into the pod any way you can, e.g. from outside:
+#   kubectl cp scripts/jdebug/jdebug-local <ns>/<pod>:/tmp/jdebug-local -c app
+#   kubectl exec -it <pod> -c app -- sh /tmp/jdebug-local health
+# or paste it into the shell. It is POSIX sh (runs under busybox ash).
+
+set -eu
+
+: "${ACTUATOR_BASE:=http://localhost:8080/actuator}"
+: "${JATTACH_BIN:=/tmp/jattach}"
+: "${OUT_DIR:=/tmp}"
+
+# --- helpers ----------------------------------------------------------------
+err()  { printf 'error: %s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+ts()   { date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s; }
+
+# find the JVM pid: pgrep, else scan /proc/*/comm, else PID 1.
+jvm_pid() {
+    if [ -n "${JVM_PID:-}" ]; then echo "$JVM_PID"; return; fi
+    if have pgrep; then p=$(pgrep -x java 2>/dev/null | head -1); [ -n "$p" ] && { echo "$p"; return; }; fi
+    for d in /proc/[0-9]*; do
+        [ -r "$d/comm" ] || continue
+        if [ "$(cat "$d/comm" 2>/dev/null)" = java ]; then echo "${d#/proc/}"; return; fi
+    done
+    echo 1
+}
+
+need_curl()   { have curl || { err "curl not found in this container — the actuator tiers need it"; exit 127; }; }
+need_jattach() {
+    [ -x "$JATTACH_BIN" ] && return 0
+    err "jattach not found at $JATTACH_BIN."
+    err "Stage it first — from OUTSIDE the pod: jdebug install-jattach   (or kubectl cp a jattach binary to $JATTACH_BIN)."
+    exit 3
+}
+
+# metric_value <name> [tag] — pull one number out of actuator /metrics (no python).
+metric_value() {
+    _u="$ACTUATOR_BASE/metrics/$1"; [ -n "${2:-}" ] && _u="$_u?tag=$2"
+    curl -fsS "$_u" 2>/dev/null | tr ',' '\n' | grep -m1 '"value"' | sed 's/.*"value"://; s/[^0-9.eE+-]//g'
+}
+mib() { awk -v v="${1:-0}" 'BEGIN{ if(v=="")v=0; printf "%.1f", v/1048576 }'; }
+
+# --- commands ---------------------------------------------------------------
+cmd_health() {
+    need_curl
+    curl -fsS "$ACTUATOR_BASE/health" || { err "actuator not reachable at $ACTUATOR_BASE"; exit 1; }
+    echo
+}
+
+cmd_threads() {
+    need_curl
+    # jstack-format (text/plain) to stdout — redirect to a file, or feed fastthread.io
+    curl -fsS -H 'Accept: text/plain' "$ACTUATOR_BASE/threaddump"
+}
+
+cmd_heap() {
+    need_curl
+    [ "${1:-}" = "--confirm" ] || { err "heap dump PAUSES the JVM (destructive in prod). Re-run: jdebug-local heap --confirm"; exit 2; }
+    out="$OUT_DIR/heap-$(ts).hprof"
+    curl -fsS "$ACTUATOR_BASE/heapdump" -o "$out"
+    echo "wrote $out  ($(wc -c <"$out" 2>/dev/null || echo '?') bytes) — pull it out with: kubectl cp <pod>:$out ./"
+}
+
+cmd_memory() {
+    need_curl
+    # container RSS + limit from cgroup (v2, then v1)
+    rss=""; lim=""
+    if [ -f /sys/fs/cgroup/memory.current ]; then
+        rss=$(cat /sys/fs/cgroup/memory.current 2>/dev/null); lim=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+    elif [ -f /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
+        rss=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null); lim=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)
+    fi
+    heap=$(metric_value jvm.memory.used area:heap)
+    nonheap=$(metric_value jvm.memory.used area:nonheap)
+    threads=$(metric_value jvm.threads.live)
+    echo "Container / JVM memory (this pod)"
+    [ -n "$rss" ] && printf '  container RSS     : %8s MiB   (cgroup — what the kernel OOM-kills on)\n' "$(mib "$rss")"
+    case "$lim" in ''|max) : ;; *) printf '  container limit   : %8s MiB\n' "$(mib "$lim")" ;; esac
+    printf '  JVM heap used     : %8s MiB\n' "$(mib "$heap")"
+    printf '  JVM non-heap used : %8s MiB   (metaspace, code cache, ...)\n' "$(mib "$nonheap")"
+    printf '  live threads      : %8s        (~1 MiB stack each)\n' "${threads:-?}"
+    echo "  (heap < limit but OOMKilled? look at non-heap, direct buffers, threads — jcmd VM.native_memory)"
+}
+
+cmd_metrics() {
+    need_curl
+    if [ -n "${1:-}" ]; then curl -fsS "$ACTUATOR_BASE/metrics/$1"; echo
+    else curl -fsS "$ACTUATOR_BASE/metrics" | tr ',' '\n' | sed -n 's/.*"\(jvm[^"]*\|process[^"]*\|system[^"]*\)".*/  \1/p' | sort -u; fi
+}
+
+cmd_jcmd() {
+    [ -n "${1:-}" ] || { err 'jcmd needs a command string, e.g.  jdebug-local jcmd "GC.heap_info"'; exit 2; }
+    need_jattach
+    "$JATTACH_BIN" "$(jvm_pid)" jcmd "$*"
+}
+
+cmd_snapshot() {
+    need_curl
+    heap=0; [ "${1:-}" = "--heap" ] && heap=1
+    dir="$OUT_DIR/jdebug-snapshot-$(ts)"; mkdir -p "$dir"
+    echo "collecting into $dir ..."
+    curl -fsS "$ACTUATOR_BASE/health"                          >"$dir/health.json"   2>/dev/null || true
+    curl -fsS -H 'Accept: text/plain' "$ACTUATOR_BASE/threaddump" >"$dir/threads.txt" 2>/dev/null || true
+    curl -fsS "$ACTUATOR_BASE/metrics"                         >"$dir/metrics.json"  2>/dev/null || true
+    cmd_memory >"$dir/memory.txt" 2>/dev/null || true
+    if [ -x "$JATTACH_BIN" ]; then
+        p=$(jvm_pid)
+        for c in "GC.heap_info" "VM.flags" "Compiler.codecache" "VM.native_memory summary"; do
+            "$JATTACH_BIN" "$p" jcmd "$c" >"$dir/jcmd-$(echo "$c" | tr ' .' '__').txt" 2>/dev/null || true
+        done
+    else echo "(jattach not staged — skipped jcmd; see: jdebug-local help jcmd)" >"$dir/jcmd-SKIPPED.txt"; fi
+    [ "$heap" = 1 ] && { echo "heap dump (pauses JVM)..."; curl -fsS "$ACTUATOR_BASE/heapdump" -o "$dir/heap.hprof" 2>/dev/null || true; }
+    ( cd "$OUT_DIR" && tar czf "$dir.tar.gz" "$(basename "$dir")" 2>/dev/null ) && echo "bundle: $dir.tar.gz" || echo "bundle dir: $dir"
+    echo "pull it out with: kubectl cp <pod>:$dir.tar.gz ./"
+}
+
+# --- help -------------------------------------------------------------------
+usage_full() {
+    cat <<'EOF'
+jdebug-local — JVM diagnostics from INSIDE the pod (no kubectl, no JDK, one file)
+
+  Talks to this pod's own JVM: the app's actuator on localhost, a staged jattach
+  binary, and /proc. Use it when you have a shell in the container but no kubectl
+  and a JRE-only image.
+
+USAGE
+  jdebug-local <command> [args]
+  jdebug-local help [command]      # this screen, or detailed help for one command
+
+COMMANDS
+  health              actuator health, per subsystem (db, redis, jms, ...)
+  threads             thread dump in jstack format (via actuator) → stdout
+  heap [--confirm]    heap dump (hprof) via actuator — PAUSES the JVM
+  memory              container RSS vs JVM heap / non-heap (cgroup + actuator)
+  metrics [name]      list JVM/process/system metrics, or print one metric
+  jcmd <command>      any jcmd via jattach, e.g. "GC.heap_info"     [needs jattach]
+  snapshot [--heap]   bundle health+threads+memory+jcmd into /tmp for offline use
+  help [command]      comprehensive help, or per-command detail
+
+CAPTURE TIERS
+  actuator  needs only curl + the app's /actuator endpoints (present in this image)
+  jattach   needs the ~80 KB jattach binary at /tmp/jattach — stage it from OUTSIDE
+            with `jdebug install-jattach`, or `kubectl cp` one in
+
+ENVIRONMENT
+  ACTUATOR_BASE   actuator base URL          (default http://localhost:8080/actuator)
+  JATTACH_BIN     path to the jattach binary (default /tmp/jattach)
+  JVM_PID         target pid                 (default: pgrep java, else /proc scan, else 1)
+  OUT_DIR         where dumps/bundles go      (default /tmp)
+
+EXAMPLES
+  jdebug-local health
+  jdebug-local threads > /tmp/threads.txt        # then analyze with fastthread.io
+  jdebug-local memory                            # heap<limit but OOMKilled? start here
+  jdebug-local jcmd "VM.native_memory summary"   # needs NMT + jattach
+  jdebug-local snapshot --heap                   # everything, zipped, in /tmp
+EOF
+}
+
+help_cmd() {
+    case "$1" in
+    health) cat <<'EOF'
+jdebug-local health — actuator health, per subsystem
+
+  GET $ACTUATOR_BASE/health. Shows overall status plus each configured indicator
+  (db, redis/valkey, jms/mq, diskSpace, liveness/readiness). A DOWN indicator
+  tells you which dependency to chase. No JVM pause, no binary needed.
+EOF
+    ;; threads) cat <<'EOF'
+jdebug-local threads — thread dump (jstack format)
+
+  GET $ACTUATOR_BASE/threaddump with Accept: text/plain, so the output is exactly
+  what jstack would produce — drop it into MAT/VisualVM or fastthread.io. Prints
+  to stdout; redirect to a file: jdebug-local threads > /tmp/threads.txt.
+  Cheap and safe (no pause). Good for deadlocks, blocked pools, hot stacks.
+EOF
+    ;; heap) cat <<'EOF'
+jdebug-local heap [--confirm] — heap dump (hprof)
+
+  GET $ACTUATOR_BASE/heapdump → $OUT_DIR/heap-<ts>.hprof. This FREEZES the JVM for
+  the dump duration (seconds on a small heap, minutes on multi-GB) — destructive
+  in production, so --confirm is required. Analyze offline in Eclipse MAT (Leak
+  Suspects) or VisualVM. Pull it out: kubectl cp <pod>:$OUT_DIR/heap-<ts>.hprof ./
+EOF
+    ;; memory) cat <<'EOF'
+jdebug-local memory — container RSS vs JVM heap/non-heap
+
+  Reconciles the number the kernel OOM-kills on (cgroup memory.current) against
+  the JVM's own view (jvm.memory.used heap + non-heap, jvm.threads.live from
+  actuator /metrics). The classic "heap is only 60% but the pod got OOMKilled"
+  gap lives in non-heap (metaspace/code cache), direct buffers, thread stacks,
+  and native — chase those next with `jcmd VM.native_memory summary`.
+EOF
+    ;; metrics) cat <<'EOF'
+jdebug-local metrics [name] — actuator metrics
+
+  No name: lists the jvm.* / process.* / system.* metric names. With a name:
+  prints that metric's measurements, e.g.
+    jdebug-local metrics jvm.gc.pause
+    jdebug-local metrics jvm.memory.used
+  (Add ?tag=... by curling $ACTUATOR_BASE/metrics/<name>?tag=area:heap directly.)
+EOF
+    ;; jcmd) cat <<'EOF'
+jdebug-local jcmd <command> — the full jcmd surface via jattach
+
+  Proxies a jcmd-syntax command into the JVM through jattach's Hotspot attach
+  socket. Needs the jattach binary at $JATTACH_BIN (stage from OUTSIDE with
+  `jdebug install-jattach`). Useful commands:
+    jdebug-local jcmd "GC.heap_info"
+    jdebug-local jcmd "Thread.print -l"
+    jdebug-local jcmd "VM.native_memory summary"      (needs -XX:NativeMemoryTracking)
+    jdebug-local jcmd "Compiler.codecache"
+    jdebug-local jcmd "JFR.start duration=60s filename=/tmp/r.jfr"
+  jattach attaches as the same uid as the JVM — run as that user.
+EOF
+    ;; snapshot) cat <<'EOF'
+jdebug-local snapshot [--heap] — one offline-analysis bundle
+
+  Collects health + thread dump + memory report + actuator metrics (and, if
+  jattach is staged, GC.heap_info / VM.flags / Compiler.codecache / NMT) into
+  $OUT_DIR/jdebug-snapshot-<ts>/ and tars it. --heap adds a heap dump (PAUSES the
+  JVM). Pull the tarball out and feed it to MAT / VisualVM / a text editor.
+EOF
+    ;; *) err "no such command: $1"; echo; usage_full ;;
+    esac
+}
+
+# --- dispatch ---------------------------------------------------------------
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+# `<cmd> --help` / `<cmd> -h` → per-command help
+case "${1:-}" in -h|--help) help_cmd "$cmd"; exit 0 ;; esac
+
+case "$cmd" in
+    health)   cmd_health ;;
+    threads)  cmd_threads ;;
+    heap)     cmd_heap "$@" ;;
+    memory)   cmd_memory ;;
+    metrics)  cmd_metrics "$@" ;;
+    jcmd)     cmd_jcmd "$@" ;;
+    snapshot) cmd_snapshot "$@" ;;
+    help)     [ $# -gt 0 ] && help_cmd "$1" || usage_full ;;
+    -h|--help|"") usage_full ;;
+    *) err "unknown command: $cmd"; echo; usage_full >&2; exit 64 ;;
+esac

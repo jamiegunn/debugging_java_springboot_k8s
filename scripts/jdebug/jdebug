@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# jdebug.sh — the front door for the JVM debug kit. Cluster-agnostic: works
+# jdebug — the front door for the JVM debug kit. Cluster-agnostic: works
 # against ANY Spring Boot pod on ANY cluster your KUBECONFIG points at (with
 # no KUBECONFIG set it auto-targets this repo's k3s kubeconfig if present).
 # Every command takes -n <ns> -l <selector> [--container <name>] [pod];
@@ -26,12 +26,18 @@
 #
 #   Setup
 #     install-jattach   pre-stage jattach into the pod before an incident
+#     push-local        copy the in-pod tool (jdebug-local) into the pod, for
+#                       when you'll have a shell but no kubectl (JRE-only image)
 #
 # Examples:
-#   scripts/jdebug.sh threads                        # actuator, this repo's app
-#   scripts/jdebug.sh heap --confirm --via jattach
-#   scripts/jdebug.sh snapshot -n prod -l app=payments
-#   scripts/jdebug.sh jcmd "VM.native_memory summary"
+#   jdebug threads                        # actuator, this repo's app
+#   jdebug heap --confirm --via jattach
+#   jdebug snapshot -n prod -l app=payments
+#   jdebug jcmd "VM.native_memory summary"
+#
+# No kubectl inside the pod? See jdebug-local (a single POSIX-sh file that runs
+# the same captures from within the container): jdebug push-local, then in the
+# pod `sh /tmp/jdebug-local help`.
 
 set -uo pipefail
 # Resolve through symlinks so `jdebug` works when symlinked onto PATH (install.sh).
@@ -117,6 +123,15 @@ case "$cmd" in
     logs)            fwd "$D/observe/tail-logs.sh" ;;
     log-level)       fwd "$D/observe/set-log-level.sh" ;;
     install-jattach) fwd "$D/capture/jattach.sh" install ;;
+
+    push-local)
+        triage_parse
+        POD="$(resolve_one_pod "${REMAINING_ARGS[0]:-}")"
+        show_cmd kubectl -n "$NAMESPACE" cp "$D/jdebug-local" "$POD:/tmp/jdebug-local" -c "$APP_CONTAINER"
+        kubectl -n "$NAMESPACE" cp "$D/jdebug-local" "$POD:/tmp/jdebug-local" -c "$APP_CONTAINER" \
+            && info "staged jdebug-local at $POD:/tmp/jdebug-local — now: kubectl -n $NAMESPACE exec -it $POD -c $APP_CONTAINER -- sh /tmp/jdebug-local help" \
+            || err "cp failed (no tar in the pod? paste the script into the shell instead)"
+        ;;
 
     -h|--help)       usage_top ;;
     *) echo "unknown command: $cmd"; echo; usage_top; exit 64 ;;

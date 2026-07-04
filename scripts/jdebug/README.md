@@ -68,6 +68,32 @@ arch), `kubectl cp`'d into the pod, and cached at
 and pass `--binary /path/to/jattach` (or set `$JATTACH_BINARY`). Override the
 version with `$JATTACH_VERSION`.
 
+## No kubectl inside the pod? (`jdebug-local`)
+
+`jdebug` is an **operator-side** tool — it drives the pod from *outside* via
+`kubectl exec`, so it needs kubectl + a kube context. When you only have a shell
+*inside* the container (JRE-only image, no kubectl — e.g. `kubectl exec -it`, a
+debug sidecar, or `nsenter` from the node), use **`jdebug-local`**: a single
+POSIX-`sh` file that runs the same captures against `localhost:8080/actuator`,
+`/tmp/jattach`, and `/proc` — nothing off-box.
+
+Get it in:
+```sh
+jdebug push-local                     # kubectl cp it to <pod>:/tmp/jdebug-local
+# or: kubectl cp scripts/jdebug/jdebug-local <ns>/<pod>:/tmp/jdebug-local -c app
+# or: just paste the file into the pod shell
+```
+Then, inside the pod:
+```sh
+sh /tmp/jdebug-local help             # comprehensive help; `help <cmd>` for detail
+sh /tmp/jdebug-local memory
+sh /tmp/jdebug-local threads > /tmp/threads.txt
+sh /tmp/jdebug-local jcmd "GC.heap_info"      # needs jattach staged (jdebug install-jattach)
+sh /tmp/jdebug-local snapshot --heap
+```
+The `jdk` tier isn't available in-pod (it needs `kubectl debug` from outside);
+the actuator + jattach + memory tiers all work.
+
 ## Requirements
 
 `kubectl` + `curl` on your PATH, a reachable kube context, and a pod that runs as
