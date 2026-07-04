@@ -34,11 +34,16 @@ seeing the ✘ + fix command without auto-fixing).
 ## Part A — pre-flight gap detection (break → verify → restore)
 
 ### A1. A CLI tool missing  *(safe, isolated)*
+Rename the binary out of the way — this works no matter where the tool came
+from (Homebrew, Rancher Desktop's `~/.rd/bin`, etc.). `brew unlink` is NOT
+reliable: your `helm`/`kubectl` may not be Homebrew's.
 ```sh
-brew unlink helm                      # break: `command -v helm` now fails
-scripts/k3s-preflight.sh --check      # EXPECT: ✘ install CLI tools: helm  → brew install helm
-./tui preflight                       # EXPECT: offers to run it; say Y → helm relinked, ✔
-brew link helm                        # restore (if you used --check)
+H="$(command -v helm)"; mv "$H" "$H.off"     # break: helm gone from PATH
+scripts/k3s-preflight.sh --check             # EXPECT: ✘ install CLI tools: helm  → brew install helm
+mv "$H.off" "$H"                             # restore the original binary
+# (If you instead run `./tui preflight` and answer Y, it runs `brew install
+#  helm`, which installs a *Homebrew* copy — restore your original PATH order
+#  or `brew uninstall helm` afterward.)
 ```
 
 ### A2. Lima sudoers missing  *(affects all Lima VMs — restore right after)*
