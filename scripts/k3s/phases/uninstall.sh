@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-uninstall.sh — reverse k3s-install.sh. Symmetric teardown:
+# uninstall.sh — reverse k3s-install.sh. Symmetric teardown:
 #   - remove the Mac /etc/resolver entry (sudo) + keepalived/dnsmasq on the VMs
 #   - delete the 3 Lima VMs (this takes the whole cluster, charts, PVCs with it)
 #   - remove the local kubeconfig

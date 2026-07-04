@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-cluster.sh — provision the 3 Lima VMs and install a k3s cluster on them,
+# cluster.sh — provision the 3 Lima VMs and install a k3s cluster on them,
 # FULLY OFFLINE from the air-gap bundle (scripts/k3s/phases/bundle-images.sh must have run
 # first). No VM or pod pulls anything from the internet.
 #

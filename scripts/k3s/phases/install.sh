@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-install.sh — P4. The one front door for the multi-node k3s stack. Chains
+# install.sh — P4. The one front door for the multi-node k3s stack. Chains
 # every phase, each of which is an idempotent standalone script:
 #
 #   1  pre-flight        scripts/k3s/phases/preflight.sh   (Mac prerequisites, auto-fix)

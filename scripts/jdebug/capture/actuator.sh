@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dump-actuator.sh — thread + heap dumps via Spring Boot Actuator.
+# actuator.sh — thread + heap dumps via Spring Boot Actuator.
 #
 # PREFERRED capture path (tier 1): JRE-only, nothing installed into the pod,
 # works whenever the app can still serve HTTP. When it can't, fall back to

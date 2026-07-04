@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-preflight.sh — Mac-side prerequisite check + auto-setup, run BEFORE the
+# preflight.sh — Mac-side prerequisite check + auto-setup, run BEFORE the
 # install touches any VM. Fully idempotent: run it any time; it only acts on
 # what's missing. Every unmet requirement prints the EXACT command to fix it —
 # and the safe ones (Homebrew installs, the Lima sudoers file) it offers to run

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-net.sh — the DNS layer. Makes *.debug-demo.local resolve to the VIP for
+# net.sh — the DNS layer. Makes *.debug-demo.local resolve to the VIP for
 # both the Mac and pods. (The VIP itself is served by the LB tier — see
 # scripts/k3s/phases/lb.sh; this script no longer runs keepalived.)
 #

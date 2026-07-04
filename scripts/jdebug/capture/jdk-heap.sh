@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dump-heap.sh — heap dump (hprof) via an ephemeral JDK container.
+# jdk-heap.sh — heap dump (hprof) via an ephemeral JDK container.
 #
 # WARNING — DESTRUCTIVE IN PRODUCTION: `jmap -dump:live` triggers a full GC
 # and pauses the JVM for the duration of the dump (seconds on a small heap,

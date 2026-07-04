@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dump-jattach.sh — capture JVM thread/heap dumps using jattach
+# jattach.sh — capture JVM thread/heap dumps using jattach
 # (https://github.com/jattach/jattach), a single statically-linked binary
 # (~80 KB) that speaks the JVM Hotspot attach protocol.
 #

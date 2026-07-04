@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-lb.sh — the LOAD-BALANCER TIER. A dedicated `ddk3s-lb` VM (the F5/NetScaler
+# lb.sh — the LOAD-BALANCER TIER. A dedicated `ddk3s-lb` VM (the F5/NetScaler
 # stand-in) that runs:
 #   - keepalived — owns the VIP (192.168.105.100). The VIP lives HERE, on the LB
 #     tier, NOT on the cluster nodes, so it's independent of cluster-node health

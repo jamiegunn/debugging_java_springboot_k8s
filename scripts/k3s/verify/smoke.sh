@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-smoke.sh — end-to-end verification of the multi-node k3s stack, ENTIRELY
+# smoke.sh — end-to-end verification of the multi-node k3s stack, ENTIRELY
 # BY HOSTNAME.
 #
 # Two entry styles, both hostname-based:

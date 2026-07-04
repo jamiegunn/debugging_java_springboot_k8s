@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dump-threads.sh — jstack thread dump via an ephemeral JDK container.
+# jdk-threads.sh — jstack thread dump via an ephemeral JDK container.
 #
 # LAST-RESORT capture path (tier 3). Prefer, in order:
 #   1. scripts/jdebug/capture/actuator.sh threads   (actuator, JRE-only, no install)

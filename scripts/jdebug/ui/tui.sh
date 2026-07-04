@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# debug-tui.sh — interactive menu over the JVM debug kit (scripts/jdebug/jdebug).
-# Cluster-agnostic: it drives whatever KUBECONFIG points at, defaulting to
-# this repo's k3s stack. Grouped by the troubleshooting runbook:
+# tui.sh — the jdebug interactive menu over the JVM debug kit
+# (scripts/jdebug/jdebug). Cluster-agnostic: it drives whatever kubectl context
+# is active. Grouped by the troubleshooting runbook:
 # triage → capture → memory → logs → snapshot. Launch via `./jdebug` or
 # `scripts/jdebug/jdebug` (no args).
 

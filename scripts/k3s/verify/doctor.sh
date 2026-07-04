@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-doctor.sh — one command that checks EVERY layer of the k3s stack, top to
+# doctor.sh — one command that checks EVERY layer of the k3s stack, top to
 # bottom, and for anything broken tells you the exact command to fix it. Run
 # this first whenever something's wrong; it walks the same path a request takes
 # (Mac → VIP → HAProxy → ingress / MetalLB IP → pod → backend) so the first ✘

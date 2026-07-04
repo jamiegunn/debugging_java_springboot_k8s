@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-charts.sh — P3. Install the application charts on the k3s cluster, fully
+# charts.sh — P3. Install the application charts on the k3s cluster, fully
 # offline (every image is pre-imported into containerd; IfNotPresent/Never
 # never reach out). Backends first (Oracle, IBM MQ, Valkey), then the app wired
 # to them + an Ingress on debug-demo.local (→ VIP → ingress-nginx → app).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-platform.sh — P2. Install the cluster platform: MetalLB (the in-cluster
+# platform.sh — P2. Install the cluster platform: MetalLB (the in-cluster
 # LoadBalancer fulfiller) + ingress-nginx. Fully offline — MetalLB is a vendored
 # manifest (k3s/manifests/), ingress a vendored chart (k3s/charts/*.tgz), and all
 # images are pre-imported into every node's containerd by k3s-cluster.sh.

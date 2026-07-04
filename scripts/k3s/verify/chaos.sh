@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-chaos.sh — chaos for the multi-node k3s stack. Beyond the single-node
+# chaos.sh — chaos for the multi-node k3s stack. Beyond the single-node
 # failures a single node could show, this drills a REAL cluster: kill a whole
 # worker node and watch its pods reschedule; drop the LB VM and watch the VIP
 # + external access go down. Break one thing at a time, LEAVE it broken, get

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# k3s-tui.sh — an interactive, dependency-free text UI over the whole k3s
+# tui.sh — an interactive, dependency-free text UI over the whole k3s
 # toolkit. Every action is a thin call to scripts/k3s.sh (or a focused
 # scripts/k3s-*.sh); the TUI just makes them discoverable and shows you the
 # exact command it runs before it runs it. Launch it with `scripts/k3s.sh` (no
