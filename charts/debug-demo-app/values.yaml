@@ -14,6 +14,14 @@ service:
 # External access is via the Ingress (below) → keepalived VIP → ingress-nginx.
 # No per-app LoadBalancer Service is needed on k3s.
 
+# Scheduling. The control-plane node is tainted NoSchedule, so workloads land on
+# the worker agents; spreadAcrossNodes adds soft pod-anti-affinity so replicas
+# don't pile onto one agent. Set `affinity` to override the whole block, or
+# `tolerations` if you ever need to run on a tainted node.
+spreadAcrossNodes: true
+affinity: {}
+tolerations: []
+
 resources:
   requests:
     cpu: 250m

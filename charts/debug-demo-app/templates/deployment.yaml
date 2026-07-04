@@ -20,6 +20,26 @@ spec:
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
       shareProcessNamespace: true
+      {{- if .Values.affinity }}
+      affinity: {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.spreadAcrossNodes }}
+      # Spread replicas across worker nodes so one node loss ≠ full outage.
+      # (The control-plane node is tainted, so this only ever spreads across
+      # the agents.) Preferred, not required, so it still schedules on a
+      # single-worker cluster.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "debug-demo-app.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.hostAliases }}
       # Pin external-style hostnames to the VIP in /etc/hosts. Lettuce/netty's
       # own DNS resolver mishandles Kubernetes ndots:5 search-domain expansion

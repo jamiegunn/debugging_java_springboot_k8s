@@ -137,11 +137,16 @@ install_server() {
     #     the VXLAN tx-checksum-offload bug on nested VMs that silently drops
     #     UDP (breaks ALL DNS while TCP works) — and it's faster.
     #   --tls-san VIP+host  → apiserver cert valid when reached via VIP/hostname
+    #   --node-taint control-plane:NoSchedule → keep ALL workloads (app, Oracle,
+    #     MQ, Valkey, ingress, klipper) OFF the control-plane node. It's small
+    #     (2 cpu/3 GiB) and must not be starved by workloads; they run on the
+    #     agents. Only untainted/tolerating system components (kubelet/flannel/
+    #     kube-proxy are in-process, not scheduled) stay; CoreDNS reschedules.
     vsh "$name" "
         cat > /etc/init.d/k3s <<EOS
 #!/sbin/openrc-run
 command=/usr/local/bin/k3s
-command_args=\"server --disable traefik --flannel-backend=host-gw --flannel-iface=$iface --node-ip $ip --advertise-address $ip --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
+command_args=\"server --disable traefik --flannel-backend=host-gw --flannel-iface=$iface --node-ip $ip --advertise-address $ip --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
 command_background=true
 pidfile=/run/k3s.pid
 output_log=/var/log/k3s.log

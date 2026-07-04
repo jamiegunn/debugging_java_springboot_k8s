@@ -96,10 +96,12 @@ EOF
 
 configure_haproxy() {
     info "  haproxy on $K3S_LB_VM: :80 → k3s ingress; :${VC_BASE}-$((VC_BASE+VC_COUNT-1)) → Valkey klipper"
-    # k3s node IPs = HAProxy backends
+    # Backends = the WORKER agents only. The control-plane node is tainted, so
+    # ingress-nginx and klipper svclb don't run there — pooling to it would just
+    # be a permanently-down backend.
     local ips=() vm ip
-    for vm in "${K3S_ALL_VMS[@]}"; do ip="$(k3s_vm_ip "$vm")"; [[ -n "$ip" ]] && ips+=("$ip"); done
-    [[ ${#ips[@]} -gt 0 ]] || { err "  no k3s node IPs — is the cluster up?"; return 1; }
+    for vm in "${K3S_AGENT_VMS[@]}"; do ip="$(k3s_vm_ip "$vm")"; [[ -n "$ip" ]] && ips+=("$ip"); done
+    [[ ${#ips[@]} -gt 0 ]] || { err "  no agent node IPs — is the cluster up?"; return 1; }
 
     # build the config on the host, then push it in
     local cfg; cfg="$(cat <<'HDR'
