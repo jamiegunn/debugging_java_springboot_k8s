@@ -170,7 +170,7 @@ diagnostic constraint.
   (`k3s-lb.sh up` — creates `ddk3s-lb`, brings up keepalived + HAProxy pooled to
   the agents) → **verify + smoke**.
 - [x] **P5 — tests**: DONE. scripts/k3s-smoke.sh (14/14, all by hostname);
-  scripts/k3s-chaos.sh (node-down / vip-failover / valkey-freeze / backend
+  scripts/k3s-chaos.sh (node-down / lb-down / valkey-freeze / backend
   scale-downs; node-down validated live — valkey stayed cluster_state:ok
   through the outage); valkey-cluster-tests.sh ported and ALL 58 checks pass
   (MOVED, ASK, migration, replicas, pub/sub, full crash-failover — client

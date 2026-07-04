@@ -1068,7 +1068,7 @@ Cluster/end-to-end verification is split across:
 `curl --resolve`, Valkey in-cluster), `scripts/k3s-doctor.sh` (every
 layer, tooling → VMs → nodes → VIP → DNS → ingress → workloads/air-gap →
 Valkey → end-to-end, printing the fix command for anything broken), and
-`scripts/k3s-chaos.sh` (node-down, vip-failover, valkey-freeze, backend
+`scripts/k3s-chaos.sh` (node-down, lb-down, valkey-freeze, backend
 scale-downs). Each check echoes the exact kubectl/curl/valkey-cli
 command behind it so the suites double as a copy-pasteable cookbook.
 `scripts/k3s.sh` is the guided front door for all of them.

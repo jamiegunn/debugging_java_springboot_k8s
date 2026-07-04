@@ -101,7 +101,7 @@ chaos_menu() {
 
    ${GN}1${OFF} node-down agent-1   ${DIM}stop a whole node → pods reschedule${OFF}
    ${GN}2${OFF} node-down agent-2
-   ${GN}3${OFF} vip-failover        ${DIM}stop the VIP holder → keepalived moves it${OFF}
+   ${GN}3${OFF} lb-down             ${DIM}stop the LB VM → VIP + access down (SPOF)${OFF}
    ${GN}4${OFF} valkey-freeze       ${DIM}freeze a primary → replica election${OFF}
    ${GN}5${OFF} oracle-down         ${GN}6${OFF} mq-down         ${GN}7${OFF} valkey-down
    ${GN}8${OFF} probe   ${DIM}observe by hostname${OFF}      ${GN}9${OFF} status
@@ -112,7 +112,7 @@ EOF
         case "$c" in
             1) run "$K3S" chaos node-down agent-1 ;;
             2) run "$K3S" chaos node-down agent-2 ;;
-            3) confirm "vip-failover stops the current VIP node — proceed?" && run "$K3S" chaos vip-failover ;;
+            3) confirm "lb-down stops the LB VM (VIP + external access go down) — proceed?" && run "$K3S" chaos lb-down ;;
             4) run "$K3S" chaos valkey-freeze ;;
             5) run "$K3S" chaos oracle-down ;;
             6) run "$K3S" chaos mq-down ;;
@@ -120,7 +120,7 @@ EOF
             8) run "$K3S" chaos probe ;;
             9) run "$K3S" chaos status ;;
             10) run "$K3S" chaos heal ;;
-            11) printf '  scenario (node-down/vip-failover/valkey-freeze/oracle-down/mq-down/valkey-down): '
+            11) printf '  scenario (node-down/lb-down/valkey-freeze/oracle-down/mq-down/valkey-down): '
                 local s; read -r s; [[ -n "$s" ]] && run "$K3S" chaos heal "$s" ;;
             b|B|"") return ;;
             *) continue ;;
