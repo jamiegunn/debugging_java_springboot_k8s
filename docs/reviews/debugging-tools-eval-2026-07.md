@@ -44,7 +44,7 @@ one-liners in CLAUDE.md. See Gaps.
 | 2 | Code quality & safety | **3/5** | `--confirm` gating and host-side-download patterns are right; bash-3.2 empty-array crash breaks documented invocations on a stock Mac; silent-zero metrics on scrape failure |
 | 3 | Ease of use & discoverability | **2/5** | consistent `-n/-l/--container` via lib; but only 1 of 6 tools has `--help`, and `--help` on the others streams logs / stack-traces / gets treated as a pod name |
 | 4 | TUI coverage of debug tools | **1/5** | zero (B) tools reachable from `./tui` or `k3s.sh`; the primary deliverable is invisible from the front door |
-| 5 | Own front door? | — | **Yes — split a `./debug` front door** (recommendation + menu below) |
+| 5 | Own front door? | — | **Yes — split a `./jdebug` front door** (recommendation + menu below) |
 | 6 | Portability / extraction | **2/5** | env-overridable defaults are close, but kubeconfig auto-targeting, hardcoded `:8080/actuator`, and the mixed lib block a 10-minute lift |
 | 7 | Consistency & conventions | **3/5** | naming and dump-file conventions hold; two different help/output/color house styles between (A/C) and (B) |
 | 8 | Stragglers / cruft | **4/5** | repo is clean (gitignore covers dumps/cache); cruft is mostly off-repo (leftover Lima VMs) + one wrong doc paragraph |
@@ -61,7 +61,7 @@ one-liners in CLAUDE.md. See Gaps.
 Ran live (safe: it fails before creating anything):
 
 ```
-$ scripts/debug/capture/jdk-threads.sh -n debug-demo
+$ scripts/jdebug/capture/jdk-threads.sh -n debug-demo
 [23:34:55] dumping threads from pod=app-debug-demo-app-6c6c4b5769-48shx ... (ephemeral=thread-dump-20260704T033455Z)
 The Pod "app-debug-demo-app-6c6c4b5769-48shx" is invalid: spec.ephemeralContainers[0].name:
 Invalid value: "thread-dump-20260704T033455Z": a lowercase RFC 1123 label must consist of
@@ -102,8 +102,8 @@ directly, no second exec.)
 (fixed only in bash 4.4). Proven live:
 
 ```
-$ scripts/debug/capture/jattach.sh install
-scripts/debug/capture/jattach.sh: line 73: FILTERED_ARGS[@]: unbound variable
+$ scripts/jdebug/capture/jattach.sh install
+scripts/jdebug/capture/jattach.sh: line 73: FILTERED_ARGS[@]: unbound variable
 ```
 
 Affected: `dump-jattach.sh:73` (any bare `install`/`threads` invocation —
@@ -183,7 +183,7 @@ image, MAT/VisualVM compatibility, Mockito notes) inherits this confusion.
 `dump-jattach.sh` is the flagship and it survived a live end-to-end run:
 
 ```
-$ scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
+$ scripts/jdebug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
 [23:33:37] using cached jattach: scripts/.cache/jattach-aarch64-v2.2
 [23:33:38] jattach installed and working (jattach 2.2 built on Jan 10 2024...)
 [23:33:38] JVM PID inside pod: 224
@@ -207,8 +207,8 @@ assumes a JDK in the image.
 
 ## 3. The "own front door" decision
 
-**Recommendation: yes — split a dedicated `./debug` front door
-(`scripts/debug.sh` + `scripts/debug/ui/tui.sh`), and add one line to the main
+**Recommendation: yes — split a dedicated `./jdebug` front door
+(`scripts/jdebug.sh` + `scripts/jdebug/ui/tui.sh`), and add one line to the main
 TUI that jumps into it.**
 
 For: (a) the debug kit is the project's product; the cluster is scaffolding —
@@ -245,7 +245,7 @@ debug-demo · JVM debug kit          target: ns=debug-demo  sel=app.kubernetes.i
 ```
 
 What moves where: `dump-*.sh`, `memory-report.sh`, `tail-logs.sh`,
-`set-log-level.sh` stay in place (or move under `scripts/debug/`);
+`set-log-level.sh` stay in place (or move under `scripts/jdebug/`);
 `debug.sh` dispatches to them exactly as `k3s.sh` dispatches to `k3s-*.sh`.
 `k3s-tui.sh` gains one menu item ("d → JVM debug kit") that execs
 `debug-tui.sh`. `k3s-doctor.sh`/`k3s-chaos.sh` stay in the lifecycle TUI —

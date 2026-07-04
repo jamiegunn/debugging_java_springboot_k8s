@@ -21,17 +21,17 @@ metrics (Micrometer/Prometheus).
 1. **Actuator (default).** `/actuator/threaddump` and `/actuator/heapdump`
    are built into Spring Boot and work with JRE-only images. Best when
    the pod is reachable and the app is responsive enough to serve HTTP.
-   Wrapped by `scripts/debug/capture/actuator.sh` (`threads [--json]`,
+   Wrapped by `scripts/jdebug/capture/actuator.sh` (`threads [--json]`,
    `heap --confirm`).
 2. **jattach (when actuator is insufficient).** A single ~80 KB
    statically-linked binary that speaks the JVM Hotspot attach protocol.
    Gives access to the full jcmd command surface (`Thread.print -l`,
    `GC.heap_info`, `VM.native_memory summary`, `JFR.start`,
    `Compiler.codecache`, …) that actuator doesn't expose. **Must be
-   installed into the pod first** — see `scripts/debug/capture/jattach.sh`.
+   installed into the pod first** — see `scripts/jdebug/capture/jattach.sh`.
 3. **JDK ephemeral container (last resort).** `kubectl debug --target=app
-  --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/debug/capture/jdk-threads.sh`
-   and `scripts/debug/capture/jdk-heap.sh`. Use when you need tools beyond jattach's
+  --image=eclipse-temurin:21-jdk-alpine ...` — `scripts/jdebug/capture/jdk-threads.sh`
+   and `scripts/jdebug/capture/jdk-heap.sh`. Use when you need tools beyond jattach's
    reach (e.g., `jstack -F` for unresponsive JVMs, `jdb` for live
    debugging) or when policy forbids installing binaries into pods.
 
@@ -329,10 +329,10 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — Services share one pool IP and are distinguished by port; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP:port → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
 | `./tui` (root) + `scripts/k3s.sh` | Front door for the **cluster lifecycle**: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 1 = preflight, 9 = lb, `d` = JVM debug kit); `./tui <cmd>` forwards to the same commands. |
-| `./debug` (root) + `scripts/debug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./debug` opens `scripts/debug/ui/tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |
+| `./jdebug` (root) + `scripts/jdebug.sh` | Front door for the **JVM debug kit** — cluster-agnostic (any Spring Boot pod, any KUBECONFIG): `status` / `health` / `top` / `threads` / `heap` / `jcmd` / `memory` / `snapshot` / `logs` / `log-level` / `install-jattach`. `threads`/`heap` take `--via actuator\|jattach\|jdk` (default actuator). Bare `./jdebug` opens `scripts/jdebug/ui/tui.sh`, an interactive menu grouped by the runbook (triage → capture → memory → logs → snapshot). |
 | `scripts/k3s/phases/` (+ `verify/`, `tours/`, `ui/`) | Lifecycle **phase** scripts (in `phases/`), install order: `preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `platform.sh` (MetalLB + ingress-nginx + namespaces), `charts.sh` (the five charts; caps the app HPA at 4), `lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents), `uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion), `bundle-images.sh` (builds the air-gap bundle). **Verification** is `scripts/k3s/verify/` (`doctor.sh`, `smoke.sh`, `chaos.sh`, `docs-verify.sh`, `valkey-cluster-tests.sh`); the **menu** is `scripts/k3s/ui/tui.sh`; read-only **tours** in `scripts/k3s/tours/` (`api-tour.sh`, `valkey-tour.sh`). |
 | `scripts/k3s/phases/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
-| `scripts/debug/` + `scripts/dev/` | The **JVM debug kit** (cluster-agnostic, all take `-n`/`-l`/`--container`, all `--help`): `capture/` (`actuator.sh`, `jattach.sh`, `jdk-threads.sh`, `jdk-heap.sh`), `observe/` (`memory-report.sh`, `snapshot.sh`, `tail-logs.sh`, `set-log-level.sh`), `ui/tui.sh` (runbook-grouped menu). **Dev helpers** in `scripts/dev/`: `run-unit-tests.sh`, `local-ci.sh`. |
+| `scripts/jdebug/` + `scripts/dev/` | The **JVM debug kit** (cluster-agnostic, all take `-n`/`-l`/`--container`, all `--help`): `capture/` (`actuator.sh`, `jattach.sh`, `jdk-threads.sh`, `jdk-heap.sh`), `observe/` (`memory-report.sh`, `snapshot.sh`, `tail-logs.sh`, `set-log-level.sh`), `ui/tui.sh` (runbook-grouped menu). **Dev helpers** in `scripts/dev/`: `run-unit-tests.sh`, `local-ci.sh`. |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
 | `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, MetalLB, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
@@ -458,7 +458,7 @@ confirmation flag.
 
 ### jattach: capture path when actuator isn't enough
 
-`scripts/debug/capture/jattach.sh` installs jattach into the pod (downloads the
+`scripts/jdebug/capture/jattach.sh` installs jattach into the pod (downloads the
 right Linux tarball from the upstream release on the host, `kubectl cp`s
 the binary in, sanity-checks it), then runs the requested action. The
 binary lands at `/tmp/jattach` and survives until pod restart, so
@@ -466,19 +466,19 @@ subsequent invocations skip the install step.
 
 ```sh
 # One-shot install only — useful to pre-stage before an incident
-scripts/debug/capture/jattach.sh install -n debug-demo
+scripts/jdebug/capture/jattach.sh install -n debug-demo
 
 # Thread dump (writes ./dumps/threads/<pod>-jattach-thread-<ts>.txt)
-scripts/debug/capture/jattach.sh threads -n debug-demo
+scripts/jdebug/capture/jattach.sh threads -n debug-demo
 
 # Heap dump — pauses JVM, requires --confirm
-scripts/debug/capture/jattach.sh heap --confirm -n debug-demo
+scripts/jdebug/capture/jattach.sh heap --confirm -n debug-demo
 
 # Any jcmd command — output streams to stdout, capture as needed
-scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
-scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
-scripts/debug/capture/jattach.sh jcmd "Compiler.codecache" -n debug-demo
-scripts/debug/capture/jattach.sh jcmd "JFR.start duration=60s filename=/tmp/r.jfr" -n debug-demo
+scripts/jdebug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo
+scripts/jdebug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
+scripts/jdebug/capture/jattach.sh jcmd "Compiler.codecache" -n debug-demo
+scripts/jdebug/capture/jattach.sh jcmd "JFR.start duration=60s filename=/tmp/r.jfr" -n debug-demo
 ```
 
 Key implementation details to preserve when extending the script:
@@ -626,13 +626,13 @@ tool to investigate next.
 kubectl -n debug-demo logs <pod> --tail=200
 
 # All app replicas, follow
-scripts/debug/observe/tail-logs.sh                                 # uses stern if installed
+scripts/jdebug/observe/tail-logs.sh                                 # uses stern if installed
 kubectl -n debug-demo logs -f -l app.kubernetes.io/name=debug-demo-app --max-log-requests 10 --prefix
 
 # Toggle log levels at runtime — no restart
-scripts/debug/observe/set-log-level.sh com.example.debugdemo DEBUG
-scripts/debug/observe/set-log-level.sh org.hibernate.SQL TRACE     # see actual JDBC SQL
-scripts/debug/observe/set-log-level.sh ROOT INFO                   # back to baseline
+scripts/jdebug/observe/set-log-level.sh com.example.debugdemo DEBUG
+scripts/jdebug/observe/set-log-level.sh org.hibernate.SQL TRACE     # see actual JDBC SQL
+scripts/jdebug/observe/set-log-level.sh ROOT INFO                   # back to baseline
 ```
 
 **What to grep for**, by component:
@@ -699,7 +699,7 @@ Container memory limit          (set in Deployment.spec.resources.limits.memory)
 **Read it all at once:**
 
 ```sh
-scripts/debug/observe/memory-report.sh -n debug-demo
+scripts/jdebug/observe/memory-report.sh -n debug-demo
 ```
 
 The script reads cgroup `memory.current`/`memory.max` + every actuator
@@ -730,7 +730,7 @@ For the deeper native breakdown (requires
 the Dockerfile to keep production overhead minimal):
 
 ```sh
-scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
+scripts/jdebug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
 ```
 
 **Common pod-OOM patterns:**
@@ -740,7 +740,7 @@ scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary" -n debug-demo
 | Heap <70%, pod OOMKilled | Direct buffers / native leak | Direct row in report; NMT summary via jattach; thread dump for stuck NIO threads |
 | Heap <70%, OOMKilled after long runtime | Metaspace leak (classloader retention) | Metaspace row in report — trend over time |
 | Heap full, frequent GC | Allocation pressure or memory leak | hprof diff in MAT (Leak Suspects) |
-| RSS grows, heap stable | Code Cache fill (sustained JIT churn) | `scripts/debug/capture/jattach.sh jcmd "Compiler.codecache"` |
+| RSS grows, heap stable | Code Cache fill (sustained JIT churn) | `scripts/jdebug/capture/jattach.sh jcmd "Compiler.codecache"` |
 | Sudden RSS spike → kill | Heap dump or Spring Batch chunk too large | `kubectl get events`; pre-trigger OOM hook may have left an hprof at `/tmp/heapdumps/` |
 
 ### Step 6 — capture a snapshot for offline analysis
@@ -749,10 +749,10 @@ When the live commands above point at the JVM but you can't keep
 poking at it, take a snapshot bundle. **One command does all of it:**
 
 ```sh
-scripts/debug/observe/snapshot.sh                        # → ./dumps/snapshot-<ts>/ (pod, health,
+scripts/jdebug/observe/snapshot.sh                        # → ./dumps/snapshot-<ts>/ (pod, health,
                                            #   metrics, threads, memory-report, jcmd outputs)
-scripts/debug/observe/snapshot.sh --heap --confirm       # + heap.hprof (PAUSES the JVM)
-scripts/debug/observe/snapshot.sh --no-jattach           # actuator-only (nothing installed in the pod)
+scripts/jdebug/observe/snapshot.sh --heap --confirm       # + heap.hprof (PAUSES the JVM)
+scripts/jdebug/observe/snapshot.sh --no-jattach           # actuator-only (nothing installed in the pod)
 ```
 
 The manual equivalent, for picking individual pieces:
@@ -766,18 +766,18 @@ mkdir -p "$SNAP"
 # Cheapest: actuator
 kubectl -n debug-demo exec "$POD" -- curl -s http://localhost:8080/actuator/metrics                              > "$SNAP/metrics.json"
 kubectl -n debug-demo exec "$POD" -- curl -s -H 'Accept: text/plain' http://localhost:8080/actuator/threaddump   > "$SNAP/threads.txt"
-scripts/debug/observe/memory-report.sh -n debug-demo                                                                          > "$SNAP/memory-report.txt"
+scripts/jdebug/observe/memory-report.sh -n debug-demo                                                                          > "$SNAP/memory-report.txt"
 
 # JVM-internal detail via jattach (skips actuator)
-scripts/debug/capture/jattach.sh jcmd "GC.heap_info"               -n debug-demo > "$SNAP/gc-heap-info.txt"
-scripts/debug/capture/jattach.sh jcmd "VM.flags"                   -n debug-demo > "$SNAP/vm-flags.txt"
-scripts/debug/capture/jattach.sh jcmd "Compiler.codecache"         -n debug-demo > "$SNAP/codecache.txt"
-scripts/debug/capture/jattach.sh jcmd "VM.classloader_stats"       -n debug-demo > "$SNAP/classloaders.txt"
+scripts/jdebug/capture/jattach.sh jcmd "GC.heap_info"               -n debug-demo > "$SNAP/gc-heap-info.txt"
+scripts/jdebug/capture/jattach.sh jcmd "VM.flags"                   -n debug-demo > "$SNAP/vm-flags.txt"
+scripts/jdebug/capture/jattach.sh jcmd "Compiler.codecache"         -n debug-demo > "$SNAP/codecache.txt"
+scripts/jdebug/capture/jattach.sh jcmd "VM.classloader_stats"       -n debug-demo > "$SNAP/classloaders.txt"
 # NMT only works if -XX:NativeMemoryTracking=summary is set in JAVA_OPTS
-scripts/debug/capture/jattach.sh jcmd "VM.native_memory summary"   -n debug-demo > "$SNAP/nmt-summary.txt" 2>&1 || true
+scripts/jdebug/capture/jattach.sh jcmd "VM.native_memory summary"   -n debug-demo > "$SNAP/nmt-summary.txt" 2>&1 || true
 
 # Heaviest: heap dump (PAUSES JVM — only in non-production or with explicit OK)
-scripts/debug/capture/jattach.sh heap --confirm -n debug-demo
+scripts/jdebug/capture/jattach.sh heap --confirm -n debug-demo
 ```
 
 Feed the bundle to MAT (Leak Suspects on the hprof), VisualVM (load the
@@ -1023,7 +1023,7 @@ out for node-to-node connections.
 - **Image:** runtime is `eclipse-temurin:21-jre-alpine`. Do not bake
   the JDK in. If a tool needs `jstack`/`jmap`, that tool is wrong for
   this project — use actuator (preferred), jattach via
-  `scripts/debug/capture/jattach.sh` (when you need jcmd), or `kubectl debug`
+  `scripts/jdebug/capture/jattach.sh` (when you need jcmd), or `kubectl debug`
   with an off-image JDK container (last resort).
 - **jattach is a foreign binary in `/tmp`.** It's installed lazily by
   the dump script. Don't bake jattach into the image either — the

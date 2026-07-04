@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# debug.sh — the front door for the JVM debug kit. Cluster-agnostic: works
+# jdebug.sh — the front door for the JVM debug kit. Cluster-agnostic: works
 # against ANY Spring Boot pod on ANY cluster your KUBECONFIG points at (with
 # no KUBECONFIG set it auto-targets this repo's k3s kubeconfig if present).
 # Every command takes -n <ns> -l <selector> [--container <name>] [pod];
@@ -28,10 +28,10 @@
 #     install-jattach   pre-stage jattach into the pod before an incident
 #
 # Examples:
-#   scripts/debug.sh threads                        # actuator, this repo's app
-#   scripts/debug.sh heap --confirm --via jattach
-#   scripts/debug.sh snapshot -n prod -l app=payments
-#   scripts/debug.sh jcmd "VM.native_memory summary"
+#   scripts/jdebug.sh threads                        # actuator, this repo's app
+#   scripts/jdebug.sh heap --confirm --via jattach
+#   scripts/jdebug.sh snapshot -n prod -l app=payments
+#   scripts/jdebug.sh jcmd "VM.native_memory summary"
 
 set -uo pipefail
 D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,7 +57,7 @@ fwd() { "$@" ${ARGS[@]+"${ARGS[@]}"}; }
 triage_parse() { parse_common_args ${ARGS[@]+"${ARGS[@]}"}; }
 
 case "$cmd" in
-    tui|menu|"")     exec "$D/debug/ui/tui.sh" ;;
+    tui|menu|"")     exec "$D/jdebug/ui/tui.sh" ;;
 
     status)
         triage_parse
@@ -94,26 +94,26 @@ case "$cmd" in
 
     threads)
         case "$VIA" in
-            actuator) fwd "$D/debug/capture/actuator.sh" threads ;;
-            jattach)  fwd "$D/debug/capture/jattach.sh"  threads ;;
-            jdk)      fwd "$D/debug/capture/jdk-threads.sh" ;;
+            actuator) fwd "$D/jdebug/capture/actuator.sh" threads ;;
+            jattach)  fwd "$D/jdebug/capture/jattach.sh"  threads ;;
+            jdk)      fwd "$D/jdebug/capture/jdk-threads.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
     heap)
         case "$VIA" in
-            actuator) fwd "$D/debug/capture/actuator.sh" heap ;;
-            jattach)  fwd "$D/debug/capture/jattach.sh"  heap ;;
-            jdk)      fwd "$D/debug/capture/jdk-heap.sh" ;;
+            actuator) fwd "$D/jdebug/capture/actuator.sh" heap ;;
+            jattach)  fwd "$D/jdebug/capture/jattach.sh"  heap ;;
+            jdk)      fwd "$D/jdebug/capture/jdk-heap.sh" ;;
             *) err "unknown --via '$VIA' (actuator|jattach|jdk)"; exit 64 ;;
         esac ;;
 
-    jcmd)            fwd "$D/debug/capture/jattach.sh" jcmd ;;
-    memory)          fwd "$D/debug/observe/memory-report.sh" ;;
-    snapshot)        fwd "$D/debug/observe/snapshot.sh" ;;
-    logs)            fwd "$D/debug/observe/tail-logs.sh" ;;
-    log-level)       fwd "$D/debug/observe/set-log-level.sh" ;;
-    install-jattach) fwd "$D/debug/capture/jattach.sh" install ;;
+    jcmd)            fwd "$D/jdebug/capture/jattach.sh" jcmd ;;
+    memory)          fwd "$D/jdebug/observe/memory-report.sh" ;;
+    snapshot)        fwd "$D/jdebug/observe/snapshot.sh" ;;
+    logs)            fwd "$D/jdebug/observe/tail-logs.sh" ;;
+    log-level)       fwd "$D/jdebug/observe/set-log-level.sh" ;;
+    install-jattach) fwd "$D/jdebug/capture/jattach.sh" install ;;
 
     -h|--help)       usage_top ;;
     *) echo "unknown command: $cmd"; echo; usage_top; exit 64 ;;

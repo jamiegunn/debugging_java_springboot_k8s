@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-#
-# debug — root launcher for the JVM debug kit. Bare `./debug` opens the
-# interactive menu; `./debug <cmd> [args]` forwards to scripts/debug.sh
-# (status, health, top, threads, heap, jcmd, memory, snapshot, logs,
-# log-level, install-jattach). `./debug --help` lists every command.
-exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/debug.sh" "$@"

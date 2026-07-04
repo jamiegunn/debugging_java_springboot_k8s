@@ -71,7 +71,7 @@ command you ran). A 5 needs proof, not vibes.
 5. **Should the debug tools have their OWN front door?** Argue both sides. The
    debug tools are conceptually independent of *this* cluster's lifecycle — they
    should work against **any** JVM-on-k8s pod. Decide: keep them in the one TUI,
-   add a "Debug" submenu, or split a dedicated `./debug` / `scripts/debug.sh`
+   add a "Debug" submenu, or split a dedicated `./jdebug` / `scripts/jdebug.sh`
    front door (+ its own TUI) that takes `-n/-l/--context` and is cluster-
    agnostic. If you recommend a split, **propose the concrete menu** (grouped by
    the runbook: triage → capture → memory anatomy → live metrics → logs →
@@ -119,9 +119,9 @@ command you ran). A 5 needs proof, not vibes.
 - Read each **(B)** script top to bottom. Don't skim.
 - Run `--help` on every tool; capture the output; grade it.
 - If a cluster is up (`./tui status` shows VMs Running), **dry-run the safe,
-  read-only tools** against it and paste real output: `scripts/debug/observe/memory-report.sh
-  -n debug-demo`, `scripts/debug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo`,
-  a `text/plain` actuator threaddump, `scripts/debug/observe/tail-logs.sh` (briefly). **Do
+  read-only tools** against it and paste real output: `scripts/jdebug/observe/memory-report.sh
+  -n debug-demo`, `scripts/jdebug/capture/jattach.sh jcmd "GC.heap_info" -n debug-demo`,
+  a `text/plain` actuator threaddump, `scripts/jdebug/observe/tail-logs.sh` (briefly). **Do
   NOT** run destructive ones (heap dump, chaos, scale-to-zero) — note that you
   skipped them and why.
 - `grep -rn` across the repo to prove orphans (a script/file referenced by

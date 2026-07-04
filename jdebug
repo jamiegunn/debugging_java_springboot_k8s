@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#
+# jdebug — root launcher for the JVM debug kit. Bare `./jdebug` opens the
+# interactive menu; `./jdebug <cmd> [args]` forwards to scripts/jdebug.sh
+# (status, health, top, threads, heap, jcmd, memory, snapshot, logs,
+# log-level, install-jattach). `./jdebug --help` lists every command.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/jdebug.sh" "$@"

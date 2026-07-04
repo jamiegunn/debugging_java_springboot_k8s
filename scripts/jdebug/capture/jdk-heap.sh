@@ -7,8 +7,8 @@
 # minutes on multi-GB). Requires explicit --confirm.
 #
 # LAST-RESORT capture path (tier 3). Prefer, in order:
-#   1. scripts/debug/capture/actuator.sh heap --confirm   (actuator, JRE-only)
-#   2. scripts/debug/capture/jattach.sh heap --confirm    (tiny binary, jcmd surface)
+#   1. scripts/jdebug/capture/actuator.sh heap --confirm   (actuator, JRE-only)
+#   2. scripts/jdebug/capture/jattach.sh heap --confirm    (tiny binary, jcmd surface)
 #   3. this script — when policy allows ephemeral containers but not
 #      installing binaries into pods.
 #

@@ -3,8 +3,8 @@
 # dump-threads.sh — jstack thread dump via an ephemeral JDK container.
 #
 # LAST-RESORT capture path (tier 3). Prefer, in order:
-#   1. scripts/debug/capture/actuator.sh threads   (actuator, JRE-only, no install)
-#   2. scripts/debug/capture/jattach.sh threads    (jcmd surface via a tiny binary)
+#   1. scripts/jdebug/capture/actuator.sh threads   (actuator, JRE-only, no install)
+#   2. scripts/jdebug/capture/jattach.sh threads    (jcmd surface via a tiny binary)
 #   3. this script — when you need the real jstack (e.g. `jstack -F` on a
 #      wedged JVM) and cluster policy allows ephemeral containers.
 #

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# debug-tui.sh — interactive menu over the JVM debug kit (scripts/debug.sh).
+# debug-tui.sh — interactive menu over the JVM debug kit (scripts/jdebug.sh).
 # Cluster-agnostic: it drives whatever KUBECONFIG points at, defaulting to
 # this repo's k3s stack. Grouped by the troubleshooting runbook:
-# triage → capture → memory → logs → snapshot. Launch via `./debug` or
-# `scripts/debug.sh` (no args).
+# triage → capture → memory → logs → snapshot. Launch via `./jdebug` or
+# `scripts/jdebug.sh` (no args).
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,7 @@ SCRIPTS_ROOT="$SCRIPT_DIR"; while [[ "$SCRIPTS_ROOT" != / && ! -f "$SCRIPTS_ROOT
 source "$SCRIPTS_ROOT/lib/common.sh"
 set +e   # interactive loop — never die on a failed action
 
-DBG="$SCRIPTS_ROOT/debug.sh"
+DBG="$SCRIPTS_ROOT/jdebug.sh"
 export NAMESPACE SELECTOR APP_CONTAINER   # 't' retargets; children inherit
 
 # --- colors (respect NO_COLOR / non-tty) -----------------------------------

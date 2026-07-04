@@ -4,8 +4,8 @@
 #
 # PREFERRED capture path (tier 1): JRE-only, nothing installed into the pod,
 # works whenever the app can still serve HTTP. When it can't, fall back to
-# scripts/debug/capture/jattach.sh (tier 2) or scripts/debug/capture/jdk-threads.sh /
-# scripts/debug/capture/jdk-heap.sh (tier 3, ephemeral JDK container).
+# scripts/jdebug/capture/jattach.sh (tier 2) or scripts/jdebug/capture/jdk-threads.sh /
+# scripts/jdebug/capture/jdk-heap.sh (tier 3, ephemeral JDK container).
 #
 # Usage:
 #   ./dump-actuator.sh threads [--json] [-n ns] [-l selector] [--container name] [pod]
@@ -81,7 +81,7 @@ case "$ACTION" in
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
                 curl -fsS -H "Accept: $ACCEPT" "$ACTUATOR_BASE/threaddump" > "$LOCAL_PATH"; then
             err "actuator threaddump failed — is the app serving HTTP? Fall back to:"
-            err "  scripts/debug/capture/jattach.sh threads -n $NAMESPACE $POD"
+            err "  scripts/jdebug/capture/jattach.sh threads -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"
             exit 1
         fi
@@ -102,7 +102,7 @@ case "$ACTION" in
         if ! kubectl -n "$NAMESPACE" exec "$POD" -c "$APP_CONTAINER" -- \
                 curl -fsS -o - "$ACTUATOR_BASE/heapdump" > "$LOCAL_PATH"; then
             err "actuator heapdump failed. Fall back to:"
-            err "  scripts/debug/capture/jattach.sh heap --confirm -n $NAMESPACE $POD"
+            err "  scripts/jdebug/capture/jattach.sh heap --confirm -n $NAMESPACE $POD"
             rm -f "$LOCAL_PATH"
             exit 1
         fi

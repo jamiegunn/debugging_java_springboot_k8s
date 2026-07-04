@@ -176,7 +176,7 @@ if want diag; then
     show "$BASE/actuator/metrics/jvm.gc.pause"
 
     step "Log levels at runtime — no restart" \
-         "scripts/debug/observe/set-log-level.sh com.example.debugdemo DEBUG   (then watch: scripts/debug/observe/tail-logs.sh)"
+         "scripts/jdebug/observe/set-log-level.sh com.example.debugdemo DEBUG   (then watch: scripts/jdebug/observe/tail-logs.sh)"
 fi
 
 echo

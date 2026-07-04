@@ -34,7 +34,7 @@ Kubernetes-level MetalLB shared-IP design. The front door is `scripts/k3s.sh`.
 | `charts/ibm-mq/` | Helm chart for IBM MQ. |
 | `charts/artifactory/` | Helm chart for JFrog Artifactory OSS (local Docker + Helm registry). |
 | `charts/valkey/` | Valkey 8 — 6-node cluster (3 primaries + 3 secondaries). Each pod listens on its own unique client port (6379-6384) and announces its **pod IP + port** for gossip/replication (direct pod-to-pod) while clients get **hostname endpoints** (`valkey.debug-demo.local:<port>`) via `cluster-announce-hostname`. |
-| `scripts/` | Ops + debug tools, grouped by behavior: routers `k3s.sh`/`debug.sh` at top; `k3s/{phases,verify,tours,ui}/` (lifecycle), `debug/{capture,observe,ui}/` (the JVM kit), `dev/` (test/CI helpers), `lib/` (shared). See `scripts/README.md` for the full map. |
+| `scripts/` | Ops + debug tools, grouped by behavior: routers `k3s.sh`/`jdebug.sh` at top; `k3s/{phases,verify,tours,ui}/` (lifecycle), `jdebug/{capture,observe,ui}/` (the JVM kit), `dev/` (test/CI helpers), `lib/` (shared). See `scripts/README.md` for the full map. |
 | `scripts/lib/k3s-env.sh` | Central config for the whole k3s stack (VM sizes, hostnames, image list, versions) — override via env. |
 | `docs/k3s-architecture.md` | Full design reference: topology, VIP/DNS, air-gap, the hostname Valkey model. |
 | `docs/networking-l2-primer.md` | Background primer: L2 vs routed vs NAT, ARP, and why the flat lab network makes the VIP + MetalLB IP directly reachable. |
@@ -483,9 +483,9 @@ kubectl -n valkey exec valkey-primary-0 -- valkey-cli -a $PASS --scan --pattern 
 
 ## Debug tooling
 
-The debug kit has its own front door: **`./debug`** opens an interactive
+The debug kit has its own front door: **`./jdebug`** opens an interactive
 menu grouped by the runbook (triage → capture → memory → logs → snapshot);
-`./debug <cmd>` runs any tool directly. It is cluster-agnostic — every tool
+`./jdebug <cmd>` runs any tool directly. It is cluster-agnostic — every tool
 takes `-n <ns>` / `-l <selector>` / `--container <name>` (and a `--help`),
 defaulting to this repo's app (`debug-demo` /
 `app.kubernetes.io/name=debug-demo-app`) on whatever cluster your
@@ -495,37 +495,37 @@ the three-tier capture story (actuator → jattach → JDK ephemeral
 container).**
 
 ```sh
-./debug                                    # interactive menu
-./debug status                             # pod status + recent events
-./debug health                             # actuator health incl. per-subsystem checks
-./debug threads                            # thread dump (tier 1: actuator); --via jattach|jdk
-./debug snapshot                           # one-shot incident bundle (see below)
+./jdebug                                    # interactive menu
+./jdebug status                             # pod status + recent events
+./jdebug health                             # actuator health incl. per-subsystem checks
+./jdebug threads                            # thread dump (tier 1: actuator); --via jattach|jdk
+./jdebug snapshot                           # one-shot incident bundle (see below)
 
 # Logs + log-level toggle
-scripts/debug/observe/tail-logs.sh                                    # multi-replica log stream, prefers stern
-scripts/debug/observe/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level via /actuator/loggers
+scripts/jdebug/observe/tail-logs.sh                                    # multi-replica log stream, prefers stern
+scripts/jdebug/observe/set-log-level.sh com.example.debugdemo DEBUG    # runtime log-level via /actuator/loggers
 
 # Memory triage — heap vs everything else, reconciled to container RSS
-scripts/debug/observe/memory-report.sh                                # one-shot table (cgroup + actuator)
+scripts/jdebug/observe/memory-report.sh                                # one-shot table (cgroup + actuator)
 
 # JVM dumps, tier 1 (PREFERRED) — actuator, JRE-only, nothing installed
-scripts/debug/capture/actuator.sh threads                        # text/plain jstack-style; --json for structured
-scripts/debug/capture/actuator.sh heap --confirm                 # hprof download (PAUSES the JVM)
+scripts/jdebug/capture/actuator.sh threads                        # text/plain jstack-style; --json for structured
+scripts/jdebug/capture/actuator.sh heap --confirm                 # hprof download (PAUSES the JVM)
 
 # JVM dumps, tier 2 — jattach: full jcmd surface via a ~80 KB static binary
-scripts/debug/capture/jattach.sh install                         # one-time install of jattach into the pod
-scripts/debug/capture/jattach.sh threads                         # Thread.print via jattach
-scripts/debug/capture/jattach.sh heap --confirm                  # jmap-equivalent dump (pauses JVM)
-scripts/debug/capture/jattach.sh jcmd "GC.heap_info"             # any jcmd-style command
+scripts/jdebug/capture/jattach.sh install                         # one-time install of jattach into the pod
+scripts/jdebug/capture/jattach.sh threads                         # Thread.print via jattach
+scripts/jdebug/capture/jattach.sh heap --confirm                  # jmap-equivalent dump (pauses JVM)
+scripts/jdebug/capture/jattach.sh jcmd "GC.heap_info"             # any jcmd-style command
 
 # JVM dumps, tier 3 (last resort) — kubectl debug + ephemeral JDK container
-scripts/debug/capture/jdk-threads.sh                                 # ./dumps/threads/<pod>-jdk-thread-*.txt
-scripts/debug/capture/jdk-heap.sh --confirm                          # ./dumps/heap/<pod>-jdk-heap-*.hprof
+scripts/jdebug/capture/jdk-threads.sh                                 # ./dumps/threads/<pod>-jdk-thread-*.txt
+scripts/jdebug/capture/jdk-heap.sh --confirm                          # ./dumps/heap/<pod>-jdk-heap-*.hprof
 
 # One-shot incident bundle (runbook Step 6): pod events + health + metrics +
 # threaddump + memory anatomy + jcmd outputs, for offline MAT/VisualVM/fastthread
-scripts/debug/observe/snapshot.sh                                     # → ./dumps/snapshot-<ts>/
-scripts/debug/observe/snapshot.sh --heap --confirm                    # + heap.hprof (pauses JVM)
+scripts/jdebug/observe/snapshot.sh                                     # → ./dumps/snapshot-<ts>/
+scripts/jdebug/observe/snapshot.sh --heap --confirm                    # + heap.hprof (pauses JVM)
 
 # In-cluster CI loop against the local Artifactory
 scripts/dev/local-ci.sh                                     # build app image, push image + charts

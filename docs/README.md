@@ -2,7 +2,7 @@
 
 These documents describe the **k3s/Lima testbed** that the repository runs on.
 The testbed is scaffolding: the actual deliverable is the **debugging,
-validation, and operational tooling** (`scripts/`, the `./debug` JVM debug kit,
+validation, and operational tooling** (`scripts/`, the `./jdebug` JVM debug kit,
 and the runbook in the top-level `CLAUDE.md`). Read these when you want to
 understand *how the lab routes traffic and stores state* and *what the
 production-shaped equivalents would be* — not as a production Kubernetes
@@ -53,5 +53,5 @@ because a "shared MetalLB IP" claim was once silently false).
 
 **The point of the repo isn't the cluster.** For the debugging capability the
 testbed exists to exercise — thread/heap capture without a JDK, memory anatomy,
-snapshot bundling — run `./debug` (the JVM debug kit) or read the runbook in
+snapshot bundling — run `./jdebug` (the JVM debug kit) or read the runbook in
 [`../CLAUDE.md`](../CLAUDE.md).

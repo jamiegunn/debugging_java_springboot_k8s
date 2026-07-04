@@ -170,7 +170,7 @@ echo
 echo "Hints:"
 echo "  - If 'Unaccounted' is large AND growing → likely native leak (JNI, direct buffer)"
 echo "    Enable NMT in JAVA_OPTS (-XX:NativeMemoryTracking=summary) then run:"
-echo "    scripts/debug/capture/jattach.sh jcmd 'VM.native_memory summary' -n $NAMESPACE"
+echo "    scripts/jdebug/capture/jattach.sh jcmd 'VM.native_memory summary' -n $NAMESPACE"
 echo "  - If 'Metaspace' is large AND growing → classloader leak (Spring devtools, hot reloads)"
 echo "  - If 'direct buffers' is large → check Lettuce / Tomcat NIO config"
 echo "  - If RSS / limit > 90% under steady load → bump limits or reduce -Xmx"

@@ -16,8 +16,8 @@ or documentation.
 
 ## Goals
 
-- Preserve the stable public entrypoints: `./tui`, `./debug`, `scripts/k3s.sh`,
-  and `scripts/debug.sh`.
+- Preserve the stable public entrypoints: `./tui`, `./jdebug`, `scripts/k3s.sh`,
+  and `scripts/jdebug.sh`.
 - Separate install/mutation scripts from verification, tours, diagnostics, and
   developer workflow helpers.
 - Make disruptive commands visibly different from read-only commands.
@@ -41,7 +41,7 @@ scripts/
   reorganization-plan.md
 
   k3s.sh                    # compatibility/public router
-  debug.sh                  # compatibility/public router
+  jdebug.sh                  # compatibility/public router
 
   lib/
     common.sh
@@ -72,7 +72,7 @@ scripts/
     ui/
       tui.sh
 
-  debug/
+  jdebug/
     ui/
       tui.sh
 
@@ -172,20 +172,20 @@ Move the cluster-agnostic JVM diagnostic tools after the k3s scripts are stable.
 
 | Current path | New path |
 |---|---|
-| `scripts/debug-tui.sh` | `scripts/debug/ui/tui.sh` |
-| `scripts/dump-actuator.sh` | `scripts/debug/capture/actuator.sh` |
-| `scripts/dump-jattach.sh` | `scripts/debug/capture/jattach.sh` |
-| `scripts/dump-threads.sh` | `scripts/debug/capture/jdk-threads.sh` |
-| `scripts/dump-heap.sh` | `scripts/debug/capture/jdk-heap.sh` |
-| `scripts/memory-report.sh` | `scripts/debug/observe/memory-report.sh` |
-| `scripts/snapshot.sh` | `scripts/debug/observe/snapshot.sh` |
-| `scripts/tail-logs.sh` | `scripts/debug/observe/tail-logs.sh` |
-| `scripts/set-log-level.sh` | `scripts/debug/observe/set-log-level.sh` |
+| `scripts/debug-tui.sh` | `scripts/jdebug/ui/tui.sh` |
+| `scripts/dump-actuator.sh` | `scripts/jdebug/capture/actuator.sh` |
+| `scripts/dump-jattach.sh` | `scripts/jdebug/capture/jattach.sh` |
+| `scripts/dump-threads.sh` | `scripts/jdebug/capture/jdk-threads.sh` |
+| `scripts/dump-heap.sh` | `scripts/jdebug/capture/jdk-heap.sh` |
+| `scripts/memory-report.sh` | `scripts/jdebug/observe/memory-report.sh` |
+| `scripts/snapshot.sh` | `scripts/jdebug/observe/snapshot.sh` |
+| `scripts/tail-logs.sh` | `scripts/jdebug/observe/tail-logs.sh` |
+| `scripts/set-log-level.sh` | `scripts/jdebug/observe/set-log-level.sh` |
 
 Implementation notes:
 
-- Keep `scripts/debug.sh` at the top level.
-- Update `scripts/debug.sh` to call the new paths.
+- Keep `scripts/jdebug.sh` at the top level.
+- Update `scripts/jdebug.sh` to call the new paths.
 - Keep old top-level debug script paths as wrappers.
 - Ensure moved scripts can still source `scripts/lib/common.sh` from their new
   depth.
@@ -193,17 +193,17 @@ Implementation notes:
 Suggested validation:
 
 ```sh
-bash -n scripts/debug.sh scripts/debug/**/*.sh scripts/dump-*.sh scripts/*report.sh scripts/snapshot.sh scripts/tail-logs.sh scripts/set-log-level.sh
-scripts/debug.sh --help
-scripts/debug.sh status
+bash -n scripts/jdebug.sh scripts/jdebug/**/*.sh scripts/dump-*.sh scripts/*report.sh scripts/snapshot.sh scripts/tail-logs.sh scripts/set-log-level.sh
+scripts/jdebug.sh --help
+scripts/jdebug.sh status
 ```
 
 When a live app pod is available, also run:
 
 ```sh
-scripts/debug.sh health
-scripts/debug.sh threads --via actuator
-scripts/debug.sh memory
+scripts/jdebug.sh health
+scripts/jdebug.sh threads --via actuator
+scripts/jdebug.sh memory
 ```
 
 ### Phase 3: move developer workflow helpers
@@ -234,8 +234,8 @@ ready.
 
 After wrappers are in place, update docs in two layers:
 
-1. User-facing docs should prefer public routers: `./tui`, `./debug`,
-   `scripts/k3s.sh`, and `scripts/debug.sh`.
+1. User-facing docs should prefer public routers: `./tui`, `./jdebug`,
+   `scripts/k3s.sh`, and `scripts/jdebug.sh`.
 2. Deep implementation docs may reference new implementation paths when useful,
    but should mention that old paths remain wrappers.
 
@@ -258,21 +258,21 @@ REPO_ROOT="$(cd "$SCRIPTS_ROOT/.." && pwd)"
 ```
 
 The exact number of `..` segments depends on the target directory. Validate this
-carefully for scripts moved under `scripts/k3s/phases`, `scripts/debug/capture`,
-and `scripts/debug/observe`.
+carefully for scripts moved under `scripts/k3s/phases`, `scripts/jdebug/capture`,
+and `scripts/jdebug/observe`.
 
 ## Acceptance criteria
 
 - Public commands still work:
   - `./tui`
-  - `./debug`
+  - `./jdebug`
   - `scripts/k3s.sh --help`
-  - `scripts/debug.sh --help`
+  - `scripts/jdebug.sh --help`
 - Existing top-level script paths still work as wrappers.
 - `bash -n` passes for routers, moved scripts, and wrappers.
 - Markdown links pass for `README.md`, `docs/*.md`, and `scripts/*.md`.
 - With a live stack, `scripts/k3s.sh doctor` and `scripts/k3s.sh smoke` pass.
-- With a live app pod, `scripts/debug.sh health` and actuator thread capture
+- With a live app pod, `scripts/jdebug.sh health` and actuator thread capture
   still work.
 
 ## Recommended first implementation commit

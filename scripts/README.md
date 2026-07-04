@@ -7,17 +7,17 @@ subdirectory that names what it does. `lib/` is shared config + helpers.
 ```
 scripts/
   k3s.sh          # router: k3s lab lifecycle          (public)
-  debug.sh        # router: JVM debug kit              (public)
+  jdebug.sh        # router: JVM debug kit              (public)
   lib/            # common.sh, k3s-env.sh              (shared)
   k3s/
     phases/       # install/mutation, in order         (mutating)
     verify/       # doctor, smoke, chaos, docs-verify  (read-only / disruptive)
     tours/        # narrated read-only walk-throughs   (read-only)
     ui/           # tui.sh (the ./tui menu)            (interactive)
-  debug/
+  jdebug/
     capture/      # thread/heap capture (actuator/jattach/jdk)
     observe/      # memory report, snapshot, logs, log-level
-    ui/           # tui.sh (the ./debug menu)
+    ui/           # tui.sh (the ./jdebug menu)
   dev/            # run-unit-tests, local-ci
 ```
 
@@ -32,7 +32,7 @@ Prefer these from the repo root; the rest are lower-level implementation command
 | Command | Purpose |
 |---|---|
 | `./tui` / `scripts/k3s.sh <cmd>` | k3s lab lifecycle (interactive menu / router). |
-| `./debug` / `scripts/debug.sh <cmd>` | JVM debug kit — cluster-agnostic (any Spring Boot pod / KUBECONFIG). |
+| `./jdebug` / `scripts/jdebug.sh <cmd>` | JVM debug kit — cluster-agnostic (any Spring Boot pod / KUBECONFIG). |
 
 ## Behavior classes
 
@@ -70,17 +70,17 @@ bundle) · `cluster.sh` (Lima VMs + k3s + image import) · `net.sh` (DNS + resol
 
 ### `k3s/ui/` — `tui.sh`, the interactive menu behind `./tui`.
 
-### `debug/capture/` — Capture (JRE-only first)
+### `jdebug/capture/` — Capture (JRE-only first)
 `actuator.sh` (preferred; heap pauses the JVM) · `jattach.sh` (installs jattach
 on demand; heap pauses) · `jdk-threads.sh` / `jdk-heap.sh` (last-resort ephemeral
 JDK container; heap pauses).
 
-### `debug/observe/`
+### `jdebug/observe/`
 `memory-report.sh` (Read-only — cgroup RSS vs JVM anatomy) · `snapshot.sh`
 (Capture — offline bundle; `--heap` is disruptive) · `tail-logs.sh` (Read-only) ·
 `set-log-level.sh` (Mutating — runtime logger levels via actuator).
 
-### `debug/ui/` — `tui.sh`, the interactive menu behind `./debug`.
+### `jdebug/ui/` — `tui.sh`, the interactive menu behind `./jdebug`.
 
 ### `dev/` — Developer
 `run-unit-tests.sh` (Maven tests with a pinned JDK) · `local-ci.sh` (CI against
