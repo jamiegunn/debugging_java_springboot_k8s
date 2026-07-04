@@ -144,7 +144,7 @@ failure at a time so you can investigate:
 ```sh
 scripts/k3s.sh chaos status              # what's up right now: VMs, VIP owner, nodes
 scripts/k3s.sh chaos node-down agent-1   # stop a VM — pods reschedule onto survivors
-scripts/k3s.sh chaos vip-failover        # stop the VIP holder — keepalived moves the VIP
+scripts/k3s.sh chaos lb-down             # stop the LB VM — VIP + access down (SPOF drill)
 scripts/k3s.sh chaos valkey-freeze       # freeze a primary — real election (self-heals)
 scripts/k3s.sh chaos heal                # restore everything
 ```
@@ -277,7 +277,7 @@ scripts/k3s.sh resolver     # write the Mac /etc/resolver so hostnames resolve (
 scripts/k3s.sh doctor       # one-shot health check across EVERY layer (start here if broken)
 scripts/k3s.sh smoke        # 14-check end-to-end verification, all by hostname
 scripts/k3s.sh status       # VMs + VIP owner + nodes
-scripts/k3s.sh chaos ...    # inject failures (node-down, vip-failover, valkey-freeze, ...)
+scripts/k3s.sh chaos ...    # inject failures (node-down, lb-down, valkey-freeze, ...)
 scripts/k3s.sh tour         # narrated API walk-through (api-tour.sh)
 scripts/k3s.sh valkey       # the Valkey cluster from outside (valkey-tour.sh)
 scripts/k3s.sh uninstall    # delete the VMs, resolver, kubeconfig

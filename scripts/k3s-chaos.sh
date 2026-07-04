@@ -8,7 +8,7 @@
 #
 # Scenarios:
 #   node-down <agent>   stop an agent VM → its pods reschedule onto the others
-#   vip-failover        stop the node holding the VIP → keepalived moves it,
+#   lb-down             stop the LB VM → VIP + external access down (SPOF drill),
 #                       HTTP keeps working on the same hostname
 #   valkey-freeze       DEBUG SLEEP a Valkey primary → replica election
 #   oracle-down / mq-down / valkey-down   scale a backend to 0
@@ -43,9 +43,8 @@ cmd()  { printf '  \033[36m$ %s\033[0m\n' "$*"; }
 run()  { cmd "$1"; bash -c "$1" 2>&1 | sed 's/^/      /' | head -"${2:-12}"; echo; }
 
 vip_owner() {
-    for vm in "${K3S_ALL_VMS[@]}"; do
-        limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP" && { echo "$vm"; return; }
-    done
+    # The VIP lives on the LB tier (ddk3s-lb), not the k3s nodes.
+    limactl shell "$K3S_LB_VM" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP" && { echo "$K3S_LB_VM"; return; }
     echo "(none)"
 }
 
@@ -73,8 +72,8 @@ probe() {
 }
 
 status() {
-    sect "Cluster"
-    for vm in "${K3S_ALL_VMS[@]}"; do
+    sect "Cluster + LB tier"
+    for vm in "${K3S_ALL_VMS[@]}" "$K3S_LB_VM"; do
         st="$(limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null | awk -v n="$vm" '$1==n{print $2}')"
         printf '  %-16s %s%s\n' "$vm" "$st" "$([ "$vm" = "$(vip_owner)" ] && echo '  ← VIP')"
     done
@@ -88,8 +87,8 @@ agent_arg() { case "$1" in agent-1|agent-2) echo "${K3S_VM_PREFIX}-$1";; ddk3s-*
 break_node_down() {
     local vm; vm="$(agent_arg "${1:-agent-1}")"
     sect "BREAK: node-down ($vm)"
-    note "stopping a whole node — its pods must reschedule onto the survivors."
-    [[ "$vm" == "$(vip_owner)" ]] && note "(this node holds the VIP — keepalived will move it)"
+    note "stopping a whole worker node — its pods must reschedule onto the survivor."
+    note "(the VIP is unaffected — it lives on the LB VM, and HAProxy routes around this node)"
     run "limactl stop $vm"
     sleep 10
 }
@@ -108,25 +107,26 @@ kubectl wait --for=condition=Ready node/lima-$vm --timeout=180s
 EOF
 }
 
-break_vip_failover() {
-    sect "BREAK: vip-failover"
-    local owner; owner="$(vip_owner)"
-    note "the VIP is on $owner; stopping it forces keepalived to elect a new holder."
-    run "limactl stop $owner"
-    sleep 8
-    note "VIP now on: $(vip_owner)  (HTTP on http://${APP_HOST}/ should still work)"
+break_lb_down() {
+    sect "BREAK: lb-down ($K3S_LB_VM)"
+    note "stopping the LB VM. It's a SINGLE load-balancer (no HA pair), so the"
+    note "VIP + all external access go DOWN — this drills the LB as a SPOF."
+    note "(the k3s cluster + workloads keep running; only the front door is gone)"
+    run "limactl stop $K3S_LB_VM"
+    sleep 5
 }
-debug_vip_failover() { cat <<EOF
-# Which node holds the VIP now?
-scripts/k3s-chaos.sh status
-# HTTP by hostname should still resolve+serve (keepalived moved the VIP):
-curl --resolve ${APP_HOST}:80:${K3S_VIP} http://${APP_HOST}/actuator/health
+debug_lb_down() { cat <<EOF
+# The VIP is gone (nothing holds it), so external HTTP/Valkey fail:
+scripts/k3s-chaos.sh status                 # $K3S_LB_VM Stopped, VIP (none)
+curl --resolve ${APP_HOST}:80:${K3S_VIP} http://${APP_HOST}/actuator/health   # fails
+# But the cluster itself is fine — check from inside:
+kubectl get nodes ; kubectl -n debug-demo get pods
+# (For LB HA in prod you'd run a second ddk3s-lb with keepalived VRRP.)
 EOF
 }
-heal_vip_failover() { cat <<EOF
-# Bring the stopped node back; keepalived may or may not move the VIP back
-# (priority server 150 > agents), which is fine.
-for vm in ${K3S_ALL_VMS[*]}; do limactl start \$vm 2>/dev/null; done
+heal_lb_down() { cat <<EOF
+limactl start $K3S_LB_VM
+scripts/k3s-lb.sh up        # re-assert keepalived VIP + HAProxy backends
 EOF
 }
 
@@ -177,7 +177,7 @@ EOF
 run_break() {
     case "$1" in
         node-down)     break_node_down "${2:-}";  probe; sect "DEBUG"; debug_node_down "${2:-}" | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done; sect "HEAL — run: scripts/k3s-chaos.sh heal node-down"; heal_node_down "${2:-}" | while IFS= read -r l; do cmd "$l"; done ;;
-        vip-failover)  break_vip_failover; probe; sect "DEBUG"; debug_vip_failover | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done; sect "HEAL — run: scripts/k3s-chaos.sh heal vip-failover"; heal_vip_failover | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done ;;
+        lb-down)       break_lb_down; probe; sect "DEBUG"; debug_lb_down | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done; sect "HEAL — run: scripts/k3s-chaos.sh heal lb-down"; heal_lb_down | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done ;;
         valkey-freeze) break_valkey_freeze; probe; sect "DEBUG"; debug_valkey_freeze | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done; note "self-healing; heal restores canonical roles" ;;
         oracle-down|mq-down|valkey-down) ns="${1%-down}"; break_backend "$ns"; probe; sect "DEBUG"; debug_backend "$ns" | while IFS= read -r l; do case "$l" in \#*) note "${l#\# }";; *) cmd "$l";; esac; done; sect "HEAL — run: scripts/k3s-chaos.sh heal $1"; heal_backend "$ns" | while IFS= read -r l; do cmd "$l"; done ;;
         *) err "unknown scenario: $1"; exit 64 ;;
@@ -187,7 +187,7 @@ run_break() {
 run_heal() {
     case "$1" in
         node-down)     eval "$(heal_node_down "${2:-}")" 2>&1 | tail -2 ;;
-        vip-failover)  for vm in "${K3S_ALL_VMS[@]}"; do limactl start "$vm" >/dev/null 2>&1; done; echo "  nodes started" ;;
+        lb-down)       limactl start "$K3S_LB_VM" >/dev/null 2>&1; "$SCRIPT_DIR/k3s-lb.sh" up >/dev/null 2>&1; echo "  LB VM started + VIP/HAProxy re-asserted" ;;
         valkey-freeze) kubectl -n valkey exec valkey-primary-1 -- valkey-cli -a "$VK_PASS" cluster failover >/dev/null 2>&1; echo "  failover issued" ;;
         oracle-down)   kubectl -n oracle scale statefulset oracle-oracle --replicas=1 >/dev/null 2>&1; echo "  oracle scaled up" ;;
         mq-down)       kubectl -n mq scale statefulset ibm-mq-ibm-mq --replicas=1 >/dev/null 2>&1; echo "  mq scaled up" ;;
@@ -213,7 +213,7 @@ menu() {
         sect "k3s-chaos"
         cat <<'EOF'
   1) node-down agent-1   stop a whole node (pods reschedule)
-  2) vip-failover        stop the VIP holder (keepalived moves it)
+  2) lb-down             stop the LB VM (VIP + access down — SPOF drill)
   3) valkey-freeze       freeze a primary (self-heals)
   4) oracle-down   5) mq-down   6) valkey-down
   p) probe   s) status   h) heal <scenario> (blank=all)   q) quit
@@ -221,7 +221,7 @@ EOF
         printf '> '; read -r c rest
         case "$c" in
             1) run_break node-down "${rest:-agent-1}" ;;
-            2) run_break vip-failover ;;
+            2) run_break lb-down ;;
             3) run_break valkey-freeze ;;
             4) run_break oracle-down ;; 5) run_break mq-down ;; 6) run_break valkey-down ;;
             p) probe ;; s) status ;;
