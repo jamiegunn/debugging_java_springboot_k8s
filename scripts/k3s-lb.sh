@@ -122,10 +122,18 @@ configure_haproxy() {
 global
     maxconn 8192
 defaults
-    timeout connect 5s
+    timeout connect 3s
+    timeout check   2s
     timeout client  1h
     timeout server  1h
-    retries 2
+    retries         3
+    # Survive a node kill: a request that lands on a dead backend RETRIES a live
+    # one (option redispatch) instead of failing — without this, roundrobin sends
+    # ~half the traffic into the dead node and those requests time out. The
+    # default-server line evicts a hard-down node in ~2-4s (fall 2 × inter 1s),
+    # not the ~15s that 5s-connect × fall-3 defaults took.
+    option redispatch
+    default-server inter 1s downinter 2s fall 2 rise 2
 
 # HTTP → the k3s ingress-nginx hostPort :80 on every node (health-checked, so
 # HAProxy routes around a node whose ingress is down/starved).
