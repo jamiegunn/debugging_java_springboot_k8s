@@ -60,7 +60,7 @@ install order is whatever fits the user's flow.
    │ (gvenzl)    │      │ (amd64,     │  │  primary-{0,1,2}         │
    │ + Postgres- │      │  Rosetta)   │  │  secondary-{0,1,2}       │
    │   style PVC │      │             │  │ per-pod LoadBalancer via │
-   │   seeding   │      │             │  │  klipper; hostname ann.  │
+   │   seeding   │      │             │  │  MetalLB; hostname ann.  │
    └─────────────┘      └─────────────┘  └──────────────────────────┘
 
   artifactory namespace
@@ -90,7 +90,7 @@ images:
                      │  keepalived (MASTER, prio 150)│
                      │  HAProxy:                     │
                      │   :80        → agents' ingress (httpchk /healthz)
-                     │   :6379-6384 → agents' klipper (Valkey, per-port)
+                     │   :6379-6384 → shards' MetalLB IPs (Valkey, per-port)
                      └──────────────┬───────────────┘
                                     │ backend pool = the WORKER AGENTS only
         ┌───────────────────────────┼───────────────────────────┐
@@ -98,8 +98,8 @@ images:
    │ ddk3s-server │      │  ddk3s-agent-1    │     │ ddk3s-agent-2 │
    │ k3s server   │      │  k3s agent        │     │ k3s agent     │
    │ control-plane│      │  worker           │     │ worker        │
-   │ TAINTED      │      │  ingress, klipper,│     │ ingress,      │
-   │ NoSchedule   │      │  app, Oracle, MQ, │     │ klipper, app, │
+   │ TAINTED      │      │  ingress, MetalLB,│     │ ingress,      │
+   │ NoSchedule   │      │  app, Oracle, MQ, │     │ MetalLB, app, │
    │ (no workloads)      │  Valkey           │     │ Oracle, MQ,   │
    │ dnsmasq      │      │  7 GB / 3 cpu     │     │ Valkey        │
    │ 3 GB / 2 cpu │      └───────────────────┘     │ 7 GB / 3 cpu  │
@@ -109,11 +109,13 @@ images:
    design). HAProxy health-checks the agents and routes around a
    down/starved one. The control-plane node is tainted
    `node-role.kubernetes.io/control-plane=true:NoSchedule`, so all
-   workloads — app, Oracle, MQ, Valkey, ingress-nginx DaemonSet, klipper
-   svclb — run on the two agents only; HAProxy pools to the agents
-   accordingly. ingress-nginx is a DaemonSet on hostPort 80/443; klipper
-   (k3s servicelb) fulfills type=LoadBalancer for the per-pod Valkey
-   Services. keepalived self-daemonizes (`keepalived --use-file=...`),
+   workloads — app, Oracle, MQ, Valkey, ingress-nginx DaemonSet, MetalLB
+   speaker — run on the two agents only; HAProxy pools to the agents
+   accordingly. ingress-nginx is a DaemonSet on hostPort 80/443; MetalLB
+   (L2/ARP mode; k3s servicelb/klipper is disabled) fulfills
+   type=LoadBalancer for the per-pod Valkey Services, each getting its
+   own pool IP announced from the agents. keepalived self-daemonizes
+   (`keepalived --use-file=...`),
    holding the VIP by VRRP priority — no ingress health-track script.
 ```
 
@@ -137,7 +139,7 @@ both resolving to `K3S_VIP=192.168.105.100`.
   checked `/healthz`) and routes around a down one. `Ingress`/
   `IngressClass` do host/path routing (`host: debug-demo.local`).
 - **Valkey** — `client → valkey.debug-demo.local:<port> → VIP (LB VM) →
-  HAProxy TCP → agent klipper → owning pod`. Client TCP only; the
+  HAProxy TCP → shard's MetalLB IP → owning pod`. Client TCP only; the
   cluster **bus is pod-to-pod** on the CNI network (see below).
 
 Who resolves what:
@@ -166,7 +168,7 @@ pod→node-shared-IP UDP fails on this topology.
   nginx-ingress for another (Traefik, Contour, Envoy) is a controller
   swap, not an app-config change.
 
-### LB tier + klipper: who fulfills `type=LoadBalancer`
+### LB tier + MetalLB: who fulfills `type=LoadBalancer`
 
 A `Service type=LoadBalancer` is *a request*, not an implementation.
 On cloud k8s (EKS/GKE/AKS) the cloud-controller-manager fulfills it by
@@ -174,26 +176,29 @@ provisioning an ELB/NLB/GLB and writing the IP back. Here there is no
 cloud controller, so the job is split between an external LB tier and
 an in-cluster component:
 
-- **klipper (k3s servicelb)** fulfills `type: LoadBalancer` — it runs
-  one `svclb` pod per **agent** that forwards each Service's port to the
-  backing pod. This is the on-prem/dev stand-in for the cloud LB (it
-  replaces what MetalLB did in the old single-node setup). It does not
-  run on the tainted control-plane node.
+- **MetalLB (L2/ARP mode; k3s servicelb/klipper is disabled)** fulfills
+  `type: LoadBalancer` — it assigns each Service its own IP from a pool
+  (`METALLB_POOL`, default `192.168.105.200-.209`) and ARP-announces it
+  from the agents only (an `L2Advertisement` whose `nodeSelector`
+  excludes the tainted control-plane, so Valkey client traffic never
+  lands there). No shared-IP annotations, no per-pod IPs — one pool IP
+  per shard. This is the on-prem/dev stand-in for the cloud LB.
 - **The LB VM (`ddk3s-lb`)** is the external "F5/NetScaler" tier —
   `scripts/k3s-lb.sh` provisions it. **keepalived (VRRP)** owns **one
   stable VIP** so clients always have a single address to dial; the VIP
   lives on the LB VM, INDEPENDENT of cluster-node health (a thrashing
   k3s node can't take it down). **HAProxy** on the same VM is the
   backend-pool: `:80` → the agents' ingress (health-checked `/healthz`,
-  so a down/starved node is dropped), TCP `:6379-6384` → the agents'
-  klipper LBs (per-shard by port; MOVED-by-hostname preserved). This is
+  so a down/starved node is dropped), TCP `:6379-6384` → each shard's
+  MetalLB IP (per-shard by port; MOVED-by-hostname preserved). This is
   the classic "external VIP → backend pool of cluster nodes" model.
 
-They are **complementary, not either/or**: klipper does port→pod
-forwarding on every agent, the LB VM's HAProxy pools across agents and
-keepalived pins the single dialable VIP. The Helm charts don't change
-moving to a real cloud LB — the Valkey per-pod Services stay
-`type: LoadBalancer`; only the fulfiller differs.
+They are **complementary, not either/or**: MetalLB assigns and ARP-
+announces a per-shard IP on the agents, the LB VM's HAProxy maps each
+VIP port to that shard's MetalLB IP and keepalived pins the single
+dialable VIP. The Helm charts don't change moving to a real cloud LB —
+the Valkey per-pod Services stay `type: LoadBalancer`; only the
+fulfiller differs.
 
 ### Valkey networking — unique listen ports, pod-IP gossip, hostname endpoints
 
@@ -209,19 +214,20 @@ address plays are deliberately split apart:
   ONE node) comes from the **port**, not a distinct IP.
 - **Gossip and replication are direct pod-to-pod on the CNI network.**
   Each pod announces its **pod IP + its own client/bus ports**, so the
-  cluster bus and replica sync go straight pod→pod — the VIP and klipper
+  cluster bus and replica sync go straight pod→pod — the VIP and MetalLB
   are OUT of the bus path. This is what makes replica joins reliable;
-  announcing the VIP hung them (the pod→VIP→klipper hairpin stalls).
+  announcing the VIP hung them (the pod→VIP→HAProxy hairpin stalls).
   Only the **client** port is exposed through a Service.
 - **Clients get hostname endpoints.** The chart sets
   `cluster-announce-hostname valkey.debug-demo.local` +
   `cluster-preferred-endpoint-type hostname`, so `CLUSTER SHARDS` /
   `CLUSTER NODES` / `MOVED` return `valkey.debug-demo.local:<port>`.
   Every client (Mac or pod) resolves that to the VIP and dials the
-  port, where a per-pod `LoadBalancer` Service (klipper, `targetPort` =
-  that pod's unique client port) lands it on the owning pod.
+  port, where HAProxy maps it to that shard's per-pod `LoadBalancer`
+  Service (MetalLB assigns its pool IP; `targetPort` = that pod's unique
+  client port), landing it on the owning pod.
 - **`MIGRATE` must target the pod IP, not the hostname.** MIGRATE opens
-  a node→node connection; the pod→VIP→klipper hairpin times out (IOERR).
+  a node→node connection; the pod→VIP→HAProxy hairpin times out (IOERR).
   Client redirects (MOVED/ASK) still use the hostname; only MIGRATE
   needs the pod IP (`scripts/valkey-cluster-tests.sh` derives it from
   `CLUSTER NODES`).
@@ -231,10 +237,12 @@ address plays are deliberately split apart:
   `UnknownHostException`).
 
 No L7 proxy can sit in the Valkey path — the wire protocol is stateful
-TCP. Retired from the chart vs. the old single-node setup: MetalLB
+TCP. Retired from the chart vs. the old single-node setup: MetalLB's
 shared-IP annotations, `perPodIP` mode, the dev VIP shim, and any fixed
-announce port. See `docs/k3s-architecture.md` for the packet-level
-walk-through.
+announce port. MetalLB itself is back as the LoadBalancer fulfiller, but
+now each shard gets its OWN pool IP (no shared-IP annotations, no
+perPodIP), fronted by the VIP. See `docs/k3s-architecture.md` for the
+packet-level walk-through.
 
 ## OpenAPI / Swagger UI
 
@@ -316,14 +324,14 @@ The working pattern is custom `ProtocolKeyword` + `IntegerOutput` +
 | `charts/debug-demo-app/` | The app, with HPA (chart default 1→10 @ 20% CPU; **capped to `maxReplicas: 4`** for this two-agent footprint via `k3s-charts.sh --set`), Valkey/Oracle/MQ wiring. Soft **pod-anti-affinity** (`spreadAcrossNodes`, default on) spreads replicas across the two agents; `affinity`/`tolerations` hooks override. A **`startupProbe`** (40 × 5s ≈ 200s, gates liveness/readiness) keeps a slow JVM boot under CPU contention from being liveness-killed into a CrashLoop. **ClusterIP Service + Ingress** — external traffic arrives via ingress-nginx (DaemonSet, hostPort 80/443) behind the VIP. Pins the Valkey hostname → VIP via `hostAliases`. |
 | `charts/oracle/` | Oracle Free with PVC-seeding initContainer (image pre-bakes the DB). |
 | `charts/ibm-mq/` | IBM MQ amd64 (no arm64 image; runs under Rosetta on Apple Silicon). |
-| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (klipper). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → klipper → owning pod. |
+| `charts/valkey/` | 6-node Valkey 8 cluster; primary-N ↔ secondary-N pairing; **per-pod LoadBalancer** (MetalLB, L2 mode — each shard gets its own pool IP; klipper is disabled). Each pod listens on a unique client port (6379-6384) + bus port (16379-16384), announces its **pod IP + ports** for direct pod-to-pod gossip/replication, and announces `valkey.debug-demo.local` (`cluster-announce-hostname` + `cluster-preferred-endpoint-type hostname`) so clients get hostname endpoints → VIP → HAProxy → MetalLB IP → owning pod. |
 | `charts/artifactory/` | JFrog Container Registry + Postgres sidecar; local Docker + Helm repo. |
 | `./tui` (root) + `scripts/k3s.sh` | Single front door: `tui` / `preflight` / `bundle` / `install` / `resolver` / `lb` / `doctor` / `smoke` / `status` / `chaos` / `tour` / `valkey` / `uninstall`. Bare `scripts/k3s.sh` or `./tui` opens the interactive menu (option 0 = preflight, 12 = lb); `./tui <cmd>` forwards to the same commands. |
-| `scripts/k3s-*.sh` | Phase scripts, in install order: `k3s-preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `k3s-install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `k3s-net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `k3s-platform.sh` (ingress-nginx + namespaces + storage), `k3s-charts.sh` (the five charts; caps the app HPA at 4), `k3s-lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents; `up`/`down`/`status`), `k3s-uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
+| `scripts/k3s-*.sh` | Phase scripts, in install order: `k3s-preflight.sh` (Mac prerequisites — auto-fixes socket_vmnet + Lima sudoers), `k3s-install.sh` (orchestrator: preflight → bundle → cluster → DNS → platform → charts → LB → verify), `k3s-cluster.sh` (Lima VMs + k3s + air-gap image import; taints the control-plane node `NoSchedule`), `k3s-net.sh` (**DNS-only**: dnsmasq + CoreDNS stub + Mac resolver → VIP; no longer runs keepalived), `k3s-platform.sh` (MetalLB + ingress-nginx + namespaces), `k3s-charts.sh` (the five charts; caps the app HPA at 4), `k3s-lb.sh` (the `ddk3s-lb` VM: keepalived VIP + HAProxy → agents; `up`/`down`/`status`), `k3s-uninstall.sh` (deletes the cluster VMs **and `ddk3s-lb`**, verifies deletion). Plus `k3s-tui.sh` (interactive menu), `k3s-doctor.sh`, `k3s-smoke.sh`, `k3s-chaos.sh`. |
 | `scripts/bundle-images.sh` | Builds the air-gap bundle on the Mac (`docker pull`+`save` every image in `K3S_IMAGES`, builds+saves the app image, downloads the k3s binary + airgap tar) into `dumps/airgap/`. |
 | `scripts/` (other) | `api-tour.sh` (narrated API walk-through via VIP), `valkey-tour.sh` / `valkey-cluster-tests.sh` (MOVED/ASK/failover, valkey-cli **in-cluster** by hostname), `dump-threads.sh`, `dump-heap.sh`, `dump-jattach.sh`, `memory-report.sh`, `tail-logs.sh`, `set-log-level.sh`, `run-unit-tests.sh`, `local-ci.sh` |
 | `scripts/lib/` | `k3s-env.sh` (all config: VIP, hostnames, ports, `K3S_IMAGES`, versions), `common.sh` (auto-targets `dumps/k3s.kubeconfig`) |
-| `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, klipper, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
+| `docs/k3s-architecture.md` | Full topology: LB VM (keepalived VIP + HAProxy) + tainted control-plane + 2 agents, MetalLB, dnsmasq/CoreDNS, air-gap, Valkey hostname model. |
 | `harness/pipeline.yaml` | Harness CD pipeline (Native Helm). |
 | `.github/workflows/` | CI: PR validation + main build → Artifactory. |
 | `~/.claude/projects/.../memory/k8s_gotchas.md` | Non-obvious workarounds — read this first when something breaks. |
@@ -768,7 +776,7 @@ this bundle for each failure mode.
 ## Valkey runbook — investigating the cluster
 
 Valkey announces **hostname endpoints** (`valkey.debug-demo.local:<port>`),
-which resolve to the VIP → klipper → the owning pod. Pods resolve that
+which resolve to the VIP → HAProxy → MetalLB IP → the owning pod. Pods resolve that
 hostname via the CoreDNS stub; the Mac only resolves it if you ran
 `scripts/k3s.sh resolver`. To avoid depending on the Mac resolver — and
 so that `MOVED`/redirect hostnames always resolve — run `valkey-cli`
@@ -975,7 +983,7 @@ Note: `scripts/valkey-cluster-tests.sh` freezes a primary with
 `DEBUG SLEEP` rather than deleting the pod, because the StatefulSet
 heals a deleted pod faster than the 5s `cluster-node-timeout` — no
 election would ever happen. `MIGRATE` (slot-migration tests) targets the
-**pod IP**, not the hostname, because the pod→VIP→klipper hairpin times
+**pod IP**, not the hostname, because the pod→VIP→HAProxy hairpin times
 out for node-to-node connections.
 
 ### When something looks wrong
@@ -983,7 +991,7 @@ out for node-to-node connections.
 | Symptom | First check |
 |---|---|
 | `valkey-cli` connects but most commands time out | `cluster info` — if `cluster_state:fail`, a primary lost quorum, or the bus (pod-to-pod) is blocked |
-| `MOVED` to a hostname that won't connect | run valkey-cli **in-cluster** so CoreDNS resolves the announced hostname; check `scripts/k3s.sh doctor` for VIP/DNS/klipper health, or that pod is down |
+| `MOVED` to a hostname that won't connect | run valkey-cli **in-cluster** so CoreDNS resolves the announced hostname; check `scripts/k3s.sh doctor` for VIP/DNS/MetalLB health, or that pod is down |
 | `XADD` works but `XREADGROUP` returns nothing | the consumer-group offset is past the new entries OR no consumer is registered yet — `xinfo groups stream:name` |
 | `PUBSUB NUMSUB` shows 0 subscribers but app receives messages | each app replica has its own subscriber connection; `NUMSUB` from a different node may not reflect peers — try the same query against each primary |
 | Lots of `MOVED` traffic in `info commandstats` | client isn't cluster-aware (missing `-c` for cli, or Lettuce topology refresh disabled) |
@@ -1014,7 +1022,7 @@ out for node-to-node connections.
 - **Everything by hostname, never IP.** Tests, tours, and runbook
   commands address `debug-demo.local` / `valkey.debug-demo.local`
   (→ VIP). The one exception is `MIGRATE`, which needs the target pod
-  IP (the pod→VIP→klipper hairpin times out for node-to-node
+  IP (the pod→VIP→HAProxy hairpin times out for node-to-node
   connections).
 - **Air-gapped by design.** No image is pulled inside a VM or pod;
   charts run `imagePullPolicy: Never`/`IfNotPresent` against images
@@ -1099,7 +1107,7 @@ Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.
 4. For chart-level issues, `helm get manifest <release> -n <ns>` shows
    exactly what was applied; compare to template output via
    `helm template`.
-5. For the networking design (keepalived VIP, klipper, dnsmasq/CoreDNS,
+5. For the networking design (keepalived VIP, MetalLB, dnsmasq/CoreDNS,
    flannel host-gw, the Valkey hostname model), see
    `docs/k3s-architecture.md`.
 ```

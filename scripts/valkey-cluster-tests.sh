@@ -68,7 +68,7 @@ source "$SCRIPT_DIR/lib/k3s-env.sh" 2>/dev/null || true
 # On k3s the endpoints are HOSTNAMES (valkey.debug-demo.local:port → VIP). The
 # Mac can't resolve them without /etc/resolver, so we run valkey-cli INSIDE the
 # cluster (kubectl exec into a valkey pod), where CoreDNS resolves the hostname
-# → VIP → klipper → the target pod. No Mac valkey-cli needed.
+# → VIP → HAProxy → MetalLB IP → the target pod. No Mac valkey-cli needed.
 VK_EXEC=(kubectl -n "${VALKEY_NS:-valkey}" exec -i valkey-primary-0 -- valkey-cli)
 VHOST="${VALKEY_HOST:-valkey.debug-demo.local}"
 
@@ -126,7 +126,8 @@ tcase() {
 }
 
 # vk <host:port> <args...> — pinned to one announced endpoint (no redirects),
-# run IN-CLUSTER so the hostname resolves via CoreDNS → VIP → klipper → pod.
+# run IN-CLUSTER so the hostname resolves via CoreDNS → VIP → HAProxy → MetalLB
+# IP → pod.
 vk()  { local ep="$1"; shift; _cmd "kubectl -n valkey exec valkey-primary-0 -- valkey-cli -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "${VK_EXEC[@]}" -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
 # vkc <host:port> <args...> — cluster-aware (-c follows MOVED/ASK by hostname)
 vkc() { local ep="$1"; shift; _cmd "kubectl -n valkey exec valkey-primary-0 -- valkey-cli -c -h ${ep%%:*} -p ${ep##*:} -a \"\$PASS\" $*"; "${VK_EXEC[@]}" -c -h "${ep%%:*}" -p "${ep##*:}" -a "$VK_PASS" --no-auth-warning "$@" 2>&1; }
@@ -169,8 +170,8 @@ owner_ep_of_slot() { vk "$SEED" cluster nodes | awk -v s="$1" -v h="$VHOST" '
 slot_map() { vk "$SEED" cluster nodes | awk '/master/ && NF>8 {out=$1":"; for(i=9;i<=NF;i++) out=out $i ","; print out}' | sort; }
 # pod_ip_of_ep <hostname:port> — the POD IP behind an announced endpoint (from
 # CLUSTER NODES). MIGRATE must use this, not the hostname: MIGRATE opens a
-# node→node connection and the pod→VIP→klipper hairpin times out (IOERR) — the
-# same klipper svclb limitation that made us keep the cluster bus pod-to-pod.
+# node→node connection and the pod→VIP→HAProxy hairpin times out (IOERR) — the
+# same VIP-hairpin limitation that made us keep the cluster bus pod-to-pod.
 # Client redirects (MOVED/ASK) still use the hostname; only MIGRATE needs the IP.
 pod_ip_of_ep() { local port="${1##*:}"; vk "$SEED" cluster nodes | awk -v p="$port" '{split($2,x,"@"); n=split(x[1],a,":"); if(a[n]==p){print a[1]; exit}}'; }
 other_primary() { local avoid="$1" ep; for ep in "${PRIMARIES[@]}"; do [[ "$ep" != "$avoid" ]] && { echo "$ep"; return; }; done; }
@@ -307,8 +308,8 @@ t_ping_all() {
 }
 tcase "PING answers on all 6 announced endpoints (by hostname)" \
     "the announced endpoint IS the product — if it doesn't answer, nothing else matters" \
-    "the full chain works per node: hostname → VIP → klipper → the owning pod" \
-    "a Service/klipper port not programmed for one port; a pod not Ready" \
+    "the full chain works per node: hostname → VIP → HAProxy → MetalLB IP → the owning pod" \
+    "a Service/MetalLB IP not programmed for one port; a pod not Ready" \
     t_ping_all
 
 t_bus_ports() {

@@ -118,7 +118,7 @@ actually co-locates keys (real CRC16 slot math in `ValkeyKeysTest`).
 Cluster-protocol tests run against the live stack, not in JUnit — 58
 checks, each narrating why it runs / what it proves / how it fails. All
 client ops go **by hostname, in-cluster** (`kubectl exec` so names resolve
-via CoreDNS); `MIGRATE` targets the pod IP because the pod→VIP→klipper
+via CoreDNS); `MIGRATE` targets the pod IP because the pod→VIP→HAProxy
 hairpin times out:
 
 ```sh
@@ -261,7 +261,7 @@ What `install` chains (orchestrated by `scripts/k3s-install.sh`):
    in-cluster registry loop — and is skipped by default).
 7. **LB tier** (`k3s-lb.sh`) — creates the `ddk3s-lb` VM running keepalived
    (owns the VIP `192.168.105.100`) + HAProxy (pools HTTP `:80` to the
-   agents' ingress and Valkey TCP `:6379-6384` to the agents' klipper).
+   agents' ingress and Valkey TCP `:6379-6384` to each shard's MetalLB IP).
    Runs last, since it pools to the ingress + Valkey that must already exist.
 8. **Smoke** — `scripts/k3s-smoke.sh` (14 checks, all by hostname).
 
@@ -392,7 +392,7 @@ scripts/k3s.sh uninstall    # delete all 4 VMs (3 k3s + ddk3s-lb), the Mac /etc/
                     │ ddk3s-lb   (1 cpu / 1 GiB)        │  ← F5/NetScaler stand-in
                     │ keepalived  — owns VIP .100       │
                     │ HAProxy     — :80 → agents' ingress
-                    │               :6379-6384 → klipper│
+                    │               :6379-6384 → MetalLB│
                     └──────────────┬───────────────────┘
                                    │  pools to the WORKER agents only
         ┌──────────────────────────┼──────────────────────────┐
@@ -400,7 +400,7 @@ scripts/k3s.sh uninstall    # delete all 4 VMs (3 k3s + ddk3s-lb), the Mac /etc/
    │ ddk3s-server │      │  ddk3s-agent-1    │     │ ddk3s-agent-2 │
    │ k3s server   │      │  k3s agent        │     │ k3s agent     │
    │ control-plane│      │  worker           │     │ worker        │
-   │ TAINTED —    │      │  ingress, klipper,│     │ ingress, klipper,
+   │ TAINTED —    │      │  ingress, MetalLB,│     │ ingress, MetalLB,
    │ NoSchedule   │      │  app, Oracle, MQ, │     │ app, Oracle, MQ,
    │ dnsmasq      │      │  Valkey           │     │ Valkey        │
    │ 3 GB / 2 cpu │      │  7 GB / 3 cpu     │     │ 7 GB / 3 cpu  │
@@ -426,19 +426,19 @@ Key pieces:
   **HAProxy** fronts HTTP (`:80`, health-checked, so it routes around a
   starved/down node) and Valkey TCP (`:6379-6384`). Both pool to the
   **worker agents only** — the control-plane node is tainted, so ingress
-  and klipper don't run there.
+  runs there only on the agents and MetalLB never ARP-announces there.
 - **The control-plane server is tainted** (`node-role.kubernetes.io/control-plane=true:NoSchedule`),
   so ALL workloads (app, Oracle, MQ, Valkey, ingress-nginx DaemonSet,
-  klipper svclb) run on the two worker agents; the small 3 GiB server
+  MetalLB speaker) run on the two worker agents; the small 3 GiB server
   runs only in-process k3s components. Without the taint the app JVM
   starved the server.
 - **flannel host-gw** backend (not VXLAN — VXLAN's tx-checksum-offload bug
   drops UDP on nested VMs and breaks cluster DNS), pinned with
   `--flannel-iface=lima0`.
-- **klipper (k3s servicelb)** fulfills `type: LoadBalancer` Services (this
-  replaces MetalLB from the old single-node setup) on the agents; HAProxy
-  on the LB tier is what actually forwards external traffic to those
-  klipper ports.
+- **MetalLB (L2/ARP mode)** fulfills `type: LoadBalancer` Services (k3s's
+  built-in klipper/servicelb is disabled) — each shard gets its own IP from a
+  pool, ARP-announced from the agents only (no shared-IP annotations, no per-pod
+  IPs); HAProxy on the LB tier maps each external port to that shard's MetalLB IP.
 
 ### DNS — everything is a hostname
 
@@ -492,18 +492,19 @@ The subtle part is how addresses work:
 - **Each pod listens on its own unique port**: client `6379+idx`
   (primary-0 = 6379 … secondary-2 = 6384), bus `16379+idx`. It announces
   its **pod IP + those ports**, so **gossip and replication run direct
-  pod-to-pod on the CNI network** — the VIP and klipper are out of the bus
+  pod-to-pod on the CNI network** — the VIP and MetalLB are out of the bus
   path. (That is what makes replica joins reliable; announcing the VIP
   used to hang them.)
 - **Clients get hostname endpoints**: `cluster-announce-hostname` +
   `cluster-preferred-endpoint-type hostname`, so `CLUSTER SHARDS` / `MOVED`
-  return `valkey.debug-demo.local:<port>` → VIP → klipper → the owning pod
-  (each pod has a per-pod `LoadBalancer` Service whose `targetPort` is that
-  pod's unique client port; only the client port is exposed — the bus stays
-  pod-to-pod). Per-shard addressability comes from the **port**.
+  return `valkey.debug-demo.local:<port>` → VIP → HAProxy → MetalLB IP → the
+  owning pod (each pod has a per-pod `LoadBalancer` Service, fulfilled by
+  MetalLB with its own pool IP, whose `targetPort` is that pod's unique client
+  port; only the client port is exposed — the bus stays pod-to-pod). Per-shard
+  addressability comes from the **port**.
 - **`MIGRATE` targets the pod IP**, not the hostname: MIGRATE opens a
-  node→node connection and the pod→VIP→klipper hairpin times out (IOERR) —
-  the same klipper limit that keeps the bus pod-to-pod.
+  node→node connection and the pod→VIP→HAProxy hairpin times out (IOERR) —
+  the same VIP-hairpin limit that keeps the bus pod-to-pod.
 - **The app pins `valkey.debug-demo.local → VIP`** via `hostAliases` in its
   Deployment, because Lettuce/netty's resolver mishandles Kubernetes
   `ndots:5` search-domain expansion (getent resolves it, netty throws

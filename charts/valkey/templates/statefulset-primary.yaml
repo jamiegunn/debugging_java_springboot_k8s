@@ -30,11 +30,11 @@ spec:
               # Each pod LISTENS on its own unique port (base+idx client,
               # busbase+idx bus) and announces its POD IP + those ports. So the
               # cluster bus and replication are DIRECT pod-to-pod on the CNI
-              # network — the VIP and klipper are out of the gossip path
+              # network — the VIP and MetalLB are out of the gossip path
               # entirely (that's what made replica joins hang before). Clients
               # still get valkey.debug-demo.local:<port> (hostname from
-              # valkey.conf); that resolves to the VIP → klipper → this pod,
-              # whose Service targetPort is this same unique port.
+              # valkey.conf); that resolves to the VIP → HAProxy → MetalLB IP →
+              # this pod, whose Service targetPort is this same unique port.
               {{- if .Values.loadBalancer.enabled }}
               IDX=$((ORDINAL + ORDINAL_OFFSET))
               LISTEN_PORT=$((BASE_CLIENT_PORT + IDX))

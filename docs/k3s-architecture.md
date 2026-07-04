@@ -31,23 +31,25 @@ routes or a proxy. The shared network removes that boundary entirely.)
                               │
                      ddk3s-lb  (1 cpu/1 GiB)   ← keepalived + HAProxy
                      :80 → agents' ingress
-                     :6379-6384 → agents' klipper (Valkey)
+                     :6379-6384 → shards' MetalLB IPs (Valkey)
                               │
         ┌─────────────────────┼─────────────────────┐
    ddk3s-server            ddk3s-agent-1         ddk3s-agent-2
    control-plane            worker (7 GiB)        worker (7 GiB)
-   TAINTED NoSchedule       ingress, klipper,     ingress, klipper,
+   TAINTED NoSchedule       ingress, MetalLB,     ingress, MetalLB,
    (no workloads)           app, Oracle, MQ,      app, Oracle, MQ,
    3 GiB / 2 cpu            Valkey                Valkey
 ```
 
 All 4 VMs + the Mac sit on Lima's `shared` L2 segment (socket_vmnet,
 `192.168.105.0/24`) — directly reachable from the Mac and between VMs, no NAT,
-no routes. ingress-nginx runs as a DaemonSet (hostPort 80/443) and klipper
-servicelb binds the Valkey ports on **the two worker agents** (the server is
-tainted, so neither lands there); HAProxy on the LB VM health-checks and pools
-to those agents. Valkey Services target their pods; the port (6379-6384, +bus
-16379-16384) selects the shard, kube-proxy DNATs to the owning pod.
+no routes. ingress-nginx runs as a DaemonSet (hostPort 80/443) and MetalLB
+(L2/ARP mode; k3s servicelb/klipper is disabled) assigns each Valkey Service its
+own pool IP and ARP-announces it from **the two worker agents** (its
+`L2Advertisement` excludes the tainted server, so neither lands there); HAProxy
+on the LB VM health-checks and pools to those agents. Each Valkey Service gets
+its own MetalLB IP; the port (6379-6384, +bus 16379-16384) still selects the
+shard from the client's view, kube-proxy DNATs to the owning pod.
 
 - **keepalived** runs on `ddk3s-lb` only — one VRRP instance
   (`virtual_router_id 51`), state MASTER, priority 150, holding the VIP. It is
@@ -58,8 +60,8 @@ to those agents. Valkey Services target their pods; the port (6379-6384, +bus
 - **HAProxy** on `ddk3s-lb` is the backend-pool half of the "external VIP →
   cluster nodes" model: `:80` HTTP round-robins (with `GET /healthz` checks) to
   each agent's ingress, so it routes around a starved/down node; one TCP
-  frontend per Valkey client port passes 6379-6384 through to the agents'
-  klipper LBs (per-shard by port; MOVED-by-hostname preserved).
+  frontend per Valkey client port maps 6379-6384 to that shard's MetalLB IP
+  (per-shard by port; MOVED-by-hostname preserved).
 - **dnsmasq** runs as a host service on the server node. It answers
   `debug-demo.local`, `valkey.debug-demo.local`, `*.debug-demo.local` → the
   VIP. The Mac points at it via `/etc/resolver/debug-demo.local`; the cluster
@@ -79,9 +81,10 @@ Valkey 8 supports hostname endpoints: set `cluster-announce-hostname
 valkey.debug-demo.local` and `cluster-preferred-endpoint-type hostname`. Then
 `CLUSTER SHARDS`/`CLUSTER NODES`/`MOVED` return `valkey.debug-demo.local:6380`,
 which every client (Mac or pod) resolves to the VIP and dials on that port,
-where kube-proxy DNATs to the owning pod. Per-shard addressability comes from
-the **port** (6379-6384), exactly as the current `sharedIP-perPort` model —
-only the shared *address* is now a hostname→VIP instead of a MetalLB IP.
+where HAProxy forwards to that shard's MetalLB IP and kube-proxy DNATs to the
+owning pod. Per-shard addressability comes from the **port** (6379-6384); the
+client-facing *address* is a single hostname→VIP, while each shard's own MetalLB
+IP stays internal behind HAProxy (no shared-IP annotations, no per-pod IPs).
 
 ## Air-gap: no image ever pulled inside a VM or pod
 
@@ -99,12 +102,13 @@ corporate mirror) and produces a self-contained bundle in `dumps/airgap/`:
 - places the k3s airgap images tar at `/var/lib/rancher/k3s/agent/images/`
   (k3s imports it automatically at startup — no pull),
 - installs k3s with `INSTALL_K3S_SKIP_DOWNLOAD=true` pointing at the copied
-  binary, `--disable traefik` (we use ingress-nginx), and the server node with
+  binary, `--disable traefik,servicelb` (we use ingress-nginx for HTTP and
+  MetalLB for LoadBalancer Services), and the server node with
   `--node-taint node-role.kubernetes.io/control-plane=true:NoSchedule` so all
-  workloads land on the agents. klipper servicelb is KEPT: it forwards each
-  LoadBalancer Service's port to the pod on every (untainted) node, and HAProxy
-  on the LB tier pools those node ports behind the one stable VIP
-  (complementary, not either/or),
+  workloads land on the agents. MetalLB (L2 mode) fulfills each LoadBalancer
+  Service by assigning it a pool IP and ARP-announcing it from the agents only;
+  HAProxy on the LB tier maps VIP:port → that shard's MetalLB IP, behind the one
+  stable VIP (complementary, not either/or),
 - imports every app/backend image tar into containerd via
   `k3s ctr images import`.
 
@@ -127,10 +131,10 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
 - [x] **P3 — charts** — DONE and VALIDATED END TO END. Each Valkey pod
   listens on its own unique port (base+idx) and announces its POD IP + that
   port, so gossip/replication are DIRECT pod-to-pod on the CNI network (VIP and
-  klipper are out of the bus path — the earlier VIP-announce hung replica
+  MetalLB are out of the bus path — the earlier VIP-announce hung replica
   joins). Clients get valkey.debug-demo.local:<port> (hostname endpoints),
-  which resolves to the VIP → klipper → the owning pod (Service targetPort = the
-  pod's unique port). The app pins the Valkey hostname → VIP via hostAliases,
+  which resolves to the VIP → HAProxy → MetalLB IP → the owning pod (Service
+  targetPort = the pod's unique port). The app pins the Valkey hostname → VIP via hostAliases,
   because Lettuce/netty's resolver mishandles Kubernetes ndots:5 search-domain
   expansion (getent resolves it, netty doesn't). Live proof on the 3-node k3s
   cluster: 6-node Valkey cluster forms (cluster_state:ok, 3 masters + 3 paired
@@ -153,7 +157,7 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   scale-downs; node-down validated live — valkey stayed cluster_state:ok
   through the outage); valkey-cluster-tests.sh ported and ALL 58 checks pass
   (MOVED, ASK, migration, replicas, pub/sub, full crash-failover — client
-  ops by hostname in-cluster, MIGRATE by pod-IP since the pod→VIP→klipper
+  ops by hostname in-cluster, MIGRATE by pod-IP since the pod→VIP→HAProxy
   hairpin times out); api-tour.sh + valkey-tour.sh re-pointed at the VIP /
   in-cluster hostname. common.sh auto-targets the k3s kubeconfig for the
   whole suite.
@@ -190,7 +194,8 @@ addressed by hostname.
 - **Control-plane taint + app scheduling for two agents.** The server is
   tainted `node-role.kubernetes.io/control-plane=true:NoSchedule`, so **all**
   workloads land on the two worker agents (CoreDNS reschedules onto an agent;
-  ingress + klipper don't run on the server, which is why HAProxy pools to the
+  ingress runs on the agents and MetalLB's `L2Advertisement` excludes the
+  server, so it never ARP-announces there — which is why HAProxy pools to the
   agents only). To fit that footprint, `charts/debug-demo-app` adds soft
   **pod-anti-affinity** (`spreadAcrossNodes`, default on) so replicas spread
   across the two agents (plus `affinity`/`tolerations` value hooks); the **HPA

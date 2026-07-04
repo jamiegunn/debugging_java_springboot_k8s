@@ -7,8 +7,9 @@
 #   - HTTP from the Mac: curl --resolve debug-demo.local:80:<VIP>  (Host header
 #     is the hostname; no /etc/resolver needed for this path).
 #   - Valkey: run valkey-cli INSIDE the cluster (vkexec), so
-#     valkey.debug-demo.local resolves via CoreDNS → VIP → klipper → pod. No Mac
-#     /etc/resolver needed either. Exercises the real hostname client model.
+#     valkey.debug-demo.local resolves via CoreDNS → VIP → HAProxy → MetalLB IP
+#     → pod. No Mac /etc/resolver needed either. Exercises the real hostname
+#     client model.
 #
 # Each check prints [PASS]/[FAIL]; exit code = number of failures.
 #

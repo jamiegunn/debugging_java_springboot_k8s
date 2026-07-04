@@ -115,9 +115,14 @@ scripts/k3s-preflight.sh              # EXPECT: 7 ✔ and "Pre-flight passed"
 # 0. prerequisites (auto-fixes / instructs anything missing)
 ./tui preflight
 
+# 0b. RE-BUNDLE (needed once after the MetalLB change): the MetalLB controller +
+#     speaker images were added to K3S_IMAGES, so an existing dumps/airgap bundle
+#     is missing them. Rebuild it (needs internet) before installing:
+./tui bundle
+
 # 1. full install — preflight → bundle → 3 k3s VMs + LB VM → k3s → DNS →
-#    ingress → charts → LB tier → smoke  (~15-20 min first time; the bundle
-#    build needs internet, everything after is air-gapped)
+#    platform (MetalLB + ingress) → charts → LB tier → smoke  (~15-20 min first
+#    time; the bundle build needs internet, everything after is air-gapped)
 ./tui install
 
 # 2. health across every layer (VMs, VIP on ddk3s-lb, DNS, ingress, workloads,
@@ -163,4 +168,7 @@ K3S_VIP=192.168.105.240 ./tui install   # install onto a different VIP; it persi
   after `./tui resolver`)
 - `./tui smoke` → `Passed: 14  Failed: 0`
 - 4 VMs Running: `ddk3s-server` (tainted control-plane), `ddk3s-agent-1/2` (workers), `ddk3s-lb` (VIP + HAProxy)
+- **MetalLB**: `kubectl -n metallb-system get pods` → controller + speakers Running;
+  `kubectl -n valkey get svc` → all 6 LoadBalancer Services have an EXTERNAL-IP
+  from `192.168.105.200-.209` (doctor section 6 checks this)
 - After `./tui uninstall`: `limactl list` shows no `ddk3s-*` instances

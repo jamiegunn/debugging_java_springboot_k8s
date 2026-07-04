@@ -54,12 +54,19 @@ K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 # --- versions (pinned; air-gap bundles these exact refs) --------------------
 : "${K3S_VERSION:=v1.31.5+k3s1}"          # k3s release tag (binary + airgap tar)
 : "${NGINX_INGRESS_VERSION:=4.11.3}"      # helm chart; controller v1.11.3
+: "${METALLB_VERSION:=v0.14.9}"           # native manifest (k3s/manifests) + images
+# MetalLB L2 IP pool for the Valkey LoadBalancer Services. Must avoid the VIP
+# (.100) and the VMs' DHCP leases (low addresses); a high static range is safe.
+: "${METALLB_POOL:=${LIMA_SHARED_SUBNET}.200-${LIMA_SHARED_SUBNET}.209}"
 
 # Third-party images pulled on the Mac, saved to tars, imported into every
 # node's containerd (NOTHING is pulled from the internet inside a VM/pod).
-# NOTE: no MetalLB (keepalived replaces it), no haproxy/busybox VIP-shim
-# (the real VIP is directly reachable now).
+# NOTE: MetalLB fulfills the Valkey type:LoadBalancer Services in-cluster (k3s
+# servicelb/klipper is DISABLED at install); the ddk3s-lb keepalived VIP +
+# HAProxy front MetalLB's per-shard IPs. No VIP-shim (VIP is directly reachable).
 K3S_IMAGES=(
+    "quay.io/metallb/controller:${METALLB_VERSION}"
+    "quay.io/metallb/speaker:${METALLB_VERSION}"
     "registry.k8s.io/ingress-nginx/controller:v1.11.3@sha256:d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7"
     "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4@sha256:a9f03b34a3cbfbb26d103a14046ab2c5130a80c3d69d526ff8063d2b37b9fd3f"
     "gvenzl/oracle-free:23-slim-faststart"

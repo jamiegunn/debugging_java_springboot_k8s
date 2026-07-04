@@ -8,8 +8,8 @@
 #   1. create + start ddk3s-server, ddk3s-agent-1, ddk3s-agent-2 (Lima shared net)
 #   2. copy the air-gap bundle (k3s binary, k3s core images tar, all image tars)
 #      into every VM
-#   3. install k3s SERVER offline (--disable traefik only; servicelb/klipper is
-#      KEPT to fulfill the Valkey LoadBalancer Services) → grab node-token
+#   3. install k3s SERVER offline (--disable traefik,servicelb; MetalLB fulfills
+#      the Valkey LoadBalancer Services instead of klipper) → grab node-token
 #   4. install k3s AGENTS offline, joined to the server
 #   5. import every app/backend image tar into each node's containerd
 #   6. write a kubeconfig to dumps/k3s.kubeconfig (server reachable by VIP-less
@@ -128,18 +128,17 @@ install_server() {
     # Fully offline: the binary is at /usr/local/bin/k3s and the core images
     # tar is in the agent/images dir (k3s auto-loads it — no pull). Alpine uses
     # openrc, so run k3s server as an openrc service directly.
-    #   --disable traefik   → we use ingress-nginx
-    #   servicelb (klipper) KEPT → it hostPort-binds each LoadBalancer Service's
-    #     port on every node and forwards to the pod; keepalived floats a VIP
-    #     across the nodes so there's one stable address. klipper + keepalived
-    #     are complementary (port→pod forwarding + floating VIP), not either/or.
+    #   --disable traefik,servicelb → we use ingress-nginx for HTTP, and MetalLB
+    #     (not klipper) to fulfill the Valkey type:LoadBalancer Services. MetalLB
+    #     assigns each shard a real IP from an L2 pool; the ddk3s-lb keepalived
+    #     VIP + HAProxy front those IPs so clients still dial one stable address.
     #   --flannel-backend=host-gw → the nodes are L2-adjacent on the shared
     #     subnet, so flannel routes pod CIDRs directly (no VXLAN). This avoids
     #     the VXLAN tx-checksum-offload bug on nested VMs that silently drops
     #     UDP (breaks ALL DNS while TCP works) — and it's faster.
     #   --tls-san VIP+host  → apiserver cert valid when reached via VIP/hostname
     #   --node-taint control-plane:NoSchedule → keep ALL workloads (app, Oracle,
-    #     MQ, Valkey, ingress, klipper) OFF the control-plane node. It's small
+    #     MQ, Valkey, ingress-nginx) OFF the control-plane node. It's small
     #     (2 cpu/3 GiB) and must not be starved by workloads; they run on the
     #     agents. Only untainted/tolerating system components (kubelet/flannel/
     #     kube-proxy are in-process, not scheduled) stay; CoreDNS reschedules.
@@ -147,7 +146,7 @@ install_server() {
         cat > /etc/init.d/k3s <<EOS
 #!/sbin/openrc-run
 command=/usr/local/bin/k3s
-command_args=\"server --disable traefik --flannel-backend=host-gw --flannel-iface=$iface --node-ip $ip --advertise-address $ip --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
+command_args=\"server --disable traefik --disable servicelb --flannel-backend=host-gw --flannel-iface=$iface --node-ip $ip --advertise-address $ip --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule --tls-san $K3S_VIP --tls-san $BASE_DOMAIN --tls-san $ip --write-kubeconfig-mode 644\"
 command_background=true
 pidfile=/run/k3s.pid
 output_log=/var/log/k3s.log

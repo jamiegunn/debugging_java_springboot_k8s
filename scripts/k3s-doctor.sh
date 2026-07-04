@@ -3,8 +3,8 @@
 # k3s-doctor.sh — one command that checks EVERY layer of the k3s stack, top to
 # bottom, and for anything broken tells you the exact command to fix it. Run
 # this first whenever something's wrong; it walks the same path a request takes
-# (Mac → VIP → ingress/klipper → pod → backend) so the first ✘ is usually the
-# root cause.
+# (Mac → VIP → HAProxy → ingress / MetalLB IP → pod → backend) so the first ✘
+# is usually the root cause.
 #
 # Layers checked:
 #   1 tooling + kubeconfig      limactl/kubectl/curl, k3s kubeconfig present
@@ -12,7 +12,7 @@
 #   3 k3s nodes                 all 3 Ready
 #   4 LB tier                   ddk3s-lb holds the VIP + HAProxy; VIP reachable
 #   5 DNS                       Mac resolver + CoreDNS stub → names resolve
-#   6 platform                  ingress DaemonSet serving; HTTP on the VIP
+#   6 platform                  MetalLB IPs assigned; ingress serving; HTTP on VIP
 #   7 workloads                 oracle/mq/valkey/app pods Ready; no ImagePull*
 #   8 valkey cluster            state ok, 6 nodes, hostname endpoints
 #   9 end to end                app UP + fan-out by hostname
@@ -76,7 +76,11 @@ if kubectl -n kube-system get cm coredns-custom >/dev/null 2>&1; then
     [[ "$got" == "$K3S_VIP" ]] && ok "pods resolve $VALKEY_HOST → VIP (CoreDNS stub)" || bad "pods can't resolve $VALKEY_HOST (got '${got:-nothing}')" "scripts/k3s-net.sh up   (CoreDNS stub); kubectl -n kube-system rollout restart deploy/coredns"
 else bad "CoreDNS custom stub missing" "scripts/k3s-net.sh up"; fi
 
-sect "6. Platform (ingress-nginx)"
+sect "6. Platform (MetalLB + ingress-nginx)"
+mc="$(kubectl -n metallb-system get deploy controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+[[ "${mc:-0}" -ge 1 ]] && ok "MetalLB controller Ready" || bad "MetalLB controller not Ready" "scripts/k3s-platform.sh up; kubectl -n metallb-system get pods"
+lbn="$(kubectl -n valkey get svc -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}' 2>/dev/null | grep -c '\.')"
+[[ "${lbn:-0}" -ge "$VALKEY_NODE_COUNT" ]] && ok "MetalLB assigned IPs to $lbn Valkey Services" || bad "only ${lbn:-0}/$VALKEY_NODE_COUNT Valkey Services have a MetalLB IP" "kubectl -n valkey get svc; kubectl -n metallb-system get ipaddresspool"
 ir="$(kubectl -n ingress-nginx get ds ingress-nginx-controller -o jsonpath='{.status.numberReady}' 2>/dev/null)"
 [[ "${ir:-0}" -ge 1 ]] && ok "ingress DaemonSet Ready (${ir} pods)" || bad "ingress not Ready" "scripts/k3s-platform.sh up; kubectl -n ingress-nginx get pods"
 code="$(curl -s -o /dev/null -w '%{http_code}' -m5 "http://${K3S_VIP}/healthz" 2>/dev/null)"

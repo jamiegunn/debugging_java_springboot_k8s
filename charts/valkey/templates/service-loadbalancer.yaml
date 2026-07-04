@@ -5,19 +5,23 @@
   `statefulset.kubernetes.io/pod-name` label, exposing a UNIQUE client port
   (basePorts.client + idx, idx counts primaries 0..n-1 then secondaries n..2n-1).
 
-  On k3s these are fulfilled by klipper (servicelb): it hostPort-binds each
-  Service's port on every node and forwards to the pod. keepalived floats one
-  VIP across the nodes, and dnsmasq resolves valkey.debug-demo.local → that VIP.
-  So a client dials valkey.debug-demo.local:6380 → VIP → klipper(:6380) → the
-  primary-1 pod. Per-shard addressability comes from the PORT; the address is a
-  hostname → VIP (no MetalLB, no per-pod IPs, no allow-shared-ip).
+  On k3s these are fulfilled by MetalLB (L2/ARP mode; k3s servicelb/klipper is
+  disabled): MetalLB assigns each Service its OWN real IP from a pool and
+  announces it via ARP from the agents only. keepalived floats one VIP on the
+  ddk3s-lb VM, HAProxy maps VIP:port → that shard's MetalLB IP, and dnsmasq
+  resolves valkey.debug-demo.local → the VIP. So a client dials
+  valkey.debug-demo.local:6380 → VIP → HAProxy → <MetalLB IP for primary-1>:6380
+  → the primary-1 pod. Per-shard addressability comes from the PORT; the
+  address the client sees is a hostname → VIP. This uses MetalLB WITHOUT
+  shared-IP annotations or per-pod IPs — each shard gets its own pool IP.
 
   Only the CLIENT port is exposed, and its targetPort is the pod's UNIQUE
   listen port (base+idx) — the pod actually listens there, so no remap is
-  needed. Clients: valkey.debug-demo.local:6380 → VIP → klipper → pod-1:6380.
-  The cluster BUS is NOT here: gossip/replication go direct pod-to-pod on the
-  CNI network (announce = pod IP), so the VIP and klipper are out of the bus
-  path entirely — which is what lets replicas join reliably.
+  needed. Clients: valkey.debug-demo.local:6380 → VIP → HAProxy → MetalLB IP →
+  pod-1:6380. The cluster BUS is NOT here: gossip/replication go direct
+  pod-to-pod on the CNI network (announce = pod IP), so the VIP, HAProxy, and
+  MetalLB are out of the bus path entirely — which is what lets replicas join
+  reliably.
 */}}
 {{- $cbase := int .Values.loadBalancer.basePorts.client }}
 {{- $n := int .Values.replicaCount }}

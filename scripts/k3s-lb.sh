@@ -5,9 +5,9 @@
 #   - keepalived — owns the VIP (192.168.105.100). The VIP lives HERE, on the LB
 #     tier, NOT on the cluster nodes, so it's independent of cluster-node health
 #     and load (a thrashing k3s node can't take the VIP down).
-#   - HAProxy — pools HTTP :80 to the k3s ingress on every node, and passes the
-#     Valkey client ports (6379-6384) through to the klipper LBs. This is the
-#     "external VIP → backend pool of cluster nodes" model (Pattern A/C).
+#   - HAProxy — pools HTTP :80 to the k3s ingress on every node, and forwards the
+#     Valkey client ports (6379-6384) to the per-shard IPs MetalLB assigned each
+#     Valkey LoadBalancer Service. The classic "external VIP → backend pool" model.
 #
 # Usage:
 #   ./k3s-lb.sh up       # create the LB VM, wire keepalived + haproxy → k3s nodes
@@ -95,13 +95,27 @@ EOF
 }
 
 configure_haproxy() {
-    info "  haproxy on $K3S_LB_VM: :80 → k3s ingress; :${VC_BASE}-$((VC_BASE+VC_COUNT-1)) → Valkey klipper"
-    # Backends = the WORKER agents only. The control-plane node is tainted, so
-    # ingress-nginx and klipper svclb don't run there — pooling to it would just
-    # be a permanently-down backend.
+    info "  haproxy on $K3S_LB_VM: :80 → k3s ingress; :${VC_BASE}-$((VC_BASE+VC_COUNT-1)) → Valkey MetalLB IPs"
+    # HTTP backend = the WORKER agents' ingress hostPort (the control-plane is
+    # tainted, so ingress-nginx doesn't run there — pooling to it would be a
+    # permanently-down backend).
     local ips=() vm ip
     for vm in "${K3S_AGENT_VMS[@]}"; do ip="$(k3s_vm_ip "$vm")"; [[ -n "$ip" ]] && ips+=("$ip"); done
     [[ ${#ips[@]} -gt 0 ]] || { err "  no agent node IPs — is the cluster up?"; return 1; }
+
+    # Valkey backend = the per-shard IP MetalLB assigned each LoadBalancer
+    # Service (port→IP). Retry: charts just created the Services and MetalLB
+    # assigns quickly but not instantly.
+    local jp='{range .items[?(@.spec.type=="LoadBalancer")]}{.spec.ports[0].port}{" "}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}'
+    declare -A vk_ip; local tries vp vkip
+    for tries in $(seq 1 20); do
+        vk_ip=()
+        while read -r vp vkip; do [[ -n "$vp" && -n "$vkip" ]] && vk_ip[$vp]="$vkip"; done \
+            < <(kubectl -n valkey get svc -o jsonpath="$jp" 2>/dev/null)
+        [[ ${#vk_ip[@]} -ge $VC_COUNT ]] && break
+        sleep 3
+    done
+    [[ ${#vk_ip[@]} -ge $VC_COUNT ]] || err "  only ${#vk_ip[@]}/$VC_COUNT Valkey MetalLB IPs assigned yet — kubectl -n valkey get svc"
 
     # build the config on the host, then push it in
     local cfg; cfg="$(cat <<'HDR'
@@ -129,14 +143,16 @@ HDR
     local i=1
     for ip in "${ips[@]}"; do cfg+=$'\n'"    server node$i $ip:80 check"; i=$((i+1)); done
 
-    # Valkey: one TCP frontend/backend per client port. klipper binds each port
-    # on every node and routes it to the owning shard's pod, so round-robin
-    # across nodes for a given port always lands on the same shard.
+    # Valkey: one TCP frontend/backend per client port → that shard's single
+    # MetalLB IP. MetalLB (L2) announces the IP from an agent and moves it on
+    # failure; HAProxy just follows the IP:port, so per-shard addressability is
+    # preserved (the IP identifies the shard, as the port did under klipper).
     local p
     for ((p=VC_BASE; p<VC_BASE+VC_COUNT; p++)); do
         cfg+=$'\n\n'"frontend valkey_${p}"$'\n'"    mode tcp"$'\n'"    bind *:${p}"$'\n'"    default_backend valkey_${p}_be"
-        cfg+=$'\n'"backend valkey_${p}_be"$'\n'"    mode tcp"$'\n'"    balance roundrobin"
-        i=1; for ip in "${ips[@]}"; do cfg+=$'\n'"    server node$i $ip:${p} check"; i=$((i+1)); done
+        cfg+=$'\n'"backend valkey_${p}_be"$'\n'"    mode tcp"
+        if [[ -n "${vk_ip[$p]:-}" ]]; then cfg+=$'\n'"    server shard ${vk_ip[$p]}:${p} check"
+        else cfg+=$'\n'"    # no MetalLB IP assigned for port ${p} yet"; fi
     done
 
     printf '%s\n' "$cfg" | vsh "$K3S_LB_VM" "cat > /etc/haproxy/haproxy.cfg

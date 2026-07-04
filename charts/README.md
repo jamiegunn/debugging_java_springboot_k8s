@@ -29,9 +29,11 @@ helm upgrade --install app         ./debug-demo-app -n debug-demo --create-names
 ```
 
 `type: LoadBalancer` Services (the Valkey per-pod endpoints) are fulfilled by
-k3s's built-in **klipper (servicelb)** — no MetalLB. External reach is via the
-**keepalived VIP `192.168.105.100`**; Valkey's per-pod Services are addressed by
-port and announced as `valkey.debug-demo.local:<port>`.
+**MetalLB** (L2/ARP mode; k3s's built-in klipper/servicelb is disabled) — each
+shard gets its own IP from a pool (no shared-IP annotations, no per-pod IPs).
+External reach is via the **keepalived VIP `192.168.105.100`** on the LB VM,
+whose HAProxy maps each port to that shard's MetalLB IP; Valkey's per-pod
+Services are addressed by port and announced as `valkey.debug-demo.local:<port>`.
 
 To uninstall: `scripts/k3s.sh uninstall`, or `helm uninstall` each release. The
 Oracle and MQ StatefulSets keep their PVCs after `helm uninstall`; delete them
@@ -63,4 +65,5 @@ explicitly (`kubectl -n <ns> delete pvc --all`) for a clean slate.
   port (client `6379+idx`, bus `16379+idx`) and announces its **pod IP** for
   gossip/replication (direct pod-to-pod on the CNI network) plus the
   **hostname** `valkey.debug-demo.local` for clients — so `CLUSTER SHARDS` /
-  `MOVED` hand clients a resolvable name, routed VIP → klipper → the owning pod.
+  `MOVED` hand clients a resolvable name, routed VIP → HAProxy → MetalLB IP →
+  the owning pod.

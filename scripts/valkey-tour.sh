@@ -3,7 +3,8 @@
 # valkey-tour.sh — read-only investigation of the running Valkey cluster,
 # entirely BY HOSTNAME. valkey-cli runs in-cluster (kubectl exec) so the
 # announced hostname (valkey.debug-demo.local) resolves via CoreDNS → VIP →
-# klipper → the owning pod; nodes are distinguished by port (6379-6384).
+# HAProxy → MetalLB IP → the owning pod; nodes are distinguished by port
+# (6379-6384).
 #
 # Use this when you want a comprehensive snapshot: topology, every op type
 # the chart wires up, MOVED redirect behavior, latency, slow queries, big
@@ -67,8 +68,9 @@ if [[ -z "$PASS" ]]; then
 fi
 
 # Run valkey-cli IN-CLUSTER (kubectl exec into a valkey pod) so the announced
-# HOSTNAME resolves via CoreDNS → VIP → klipper → pod — no Mac /etc/resolver or
-# host routes needed. The seed hostname distinguishes nodes by PORT.
+# HOSTNAME resolves via CoreDNS → VIP → HAProxy → MetalLB IP → pod — no Mac
+# /etc/resolver or host routes needed. The seed hostname distinguishes nodes by
+# PORT.
 VK_EXEC=(kubectl -n "${VALKEY_NS:-valkey}" exec -i valkey-primary-0 -- valkey-cli)
 
 # Connectivity check first — fail fast with a useful message
