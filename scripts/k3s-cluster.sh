@@ -8,7 +8,8 @@
 #   1. create + start ddk3s-server, ddk3s-agent-1, ddk3s-agent-2 (Lima shared net)
 #   2. copy the air-gap bundle (k3s binary, k3s core images tar, all image tars)
 #      into every VM
-#   3. install k3s SERVER offline (--disable traefik,servicelb) → grab node-token
+#   3. install k3s SERVER offline (--disable traefik only; servicelb/klipper is
+#      KEPT to fulfill the Valkey LoadBalancer Services) → grab node-token
 #   4. install k3s AGENTS offline, joined to the server
 #   5. import every app/backend image tar into each node's containerd
 #   6. write a kubeconfig to dumps/k3s.kubeconfig (server reachable by VIP-less
