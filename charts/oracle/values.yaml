@@ -1,5 +1,5 @@
 image:
-  repository: container-registry.oracle.com/database/free
+  repository: gvenzl/oracle-free
   tag: "latest"
   pullPolicy: IfNotPresent
 
