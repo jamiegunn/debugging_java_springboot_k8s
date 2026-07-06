@@ -1106,7 +1106,7 @@ Oracle Free + IBM MQ. They're bound to `mvn verify` via Failsafe.
    dnsmasq, CoreDNS stub, node Ready, pods Ready, ingress serving,
    Valkey cluster_state, each hostname resolving+dialing) and prints the
    exact fix command for anything broken.
-2. Read `~/.claude/projects/-Users-techdesigns-dev-debugging-java-springboot-k8s/memory/k8s_gotchas.md`
+2. Read `~/.claude/projects/debugging-java-springboot-k8s/memory/k8s_gotchas.md`
    — most "surprises" are documented there with the root cause.
 3. The most common categories of breakage:
    - **Volume mount hiding image content** (Oracle PVC, MQ MQSC,

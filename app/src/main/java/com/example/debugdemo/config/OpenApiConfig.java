@@ -21,7 +21,7 @@ class OpenApiConfig {
                         .description("Spring Boot 3.3 service used as the target for JVM debugging tooling on k8s. "
                                 + "Exercises Oracle (JDBC), IBM MQ (JMS), and Valkey cluster (streams, pub/sub, hash, "
                                 + "zset, list) so the diagnostic scripts have realistic integration surface to operate on.")
-                        .contact(new Contact().name("debug-demo").url("https://github.com/jamiegunn/debugging_java_springboot_k8s"))
+                        .contact(new Contact().name("debug-demo").url("https://github.com/debugging_java_springboot_k8s"))
                         .license(new License().name("Apache-2.0")))
                 .tags(List.of(
                         new Tag().name("customers").description("Customer CRUD — exercises Oracle JDBC + Spring Cache (Valkey)"),
