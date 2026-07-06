@@ -1,13 +1,13 @@
 # Scripts Directory
 
 Operational + diagnostic tooling, **organized by behavior** so intent is obvious
-from the path. Two routers stay at the top; everything else lives in a
-subdirectory that names what it does. `lib/` is shared config + helpers.
+from the path. The k3s lab router stays at the top; the JVM debug kit is a
+self-contained subtree with its own router. `lib/` is shared config + helpers.
 
 ```
 scripts/
   k3s.sh          # router: k3s lab lifecycle          (public)
-  jdebug.sh        # router: JVM debug kit              (public)
+  jdebug/         # JVM debug kit; public router is jdebug/jdebug
   lib/            # common.sh, k3s-env.sh              (shared)
   k3s/
     phases/       # install/mutation, in order         (mutating)

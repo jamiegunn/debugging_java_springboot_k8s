@@ -2,7 +2,7 @@
 #
 # k3s.sh — the ONE front door for the multi-node k3s stack. Everything you need,
 # in the order you need it. Each command is a thin wrapper over a focused script
-# (see scripts/k3s-*.sh); run `k3s.sh <cmd> --help` for that script's options.
+# under scripts/k3s/; run `k3s.sh <cmd> --help` for that script's options.
 #
 # Run with NO arguments (or `tui`) for an interactive menu over everything.
 #

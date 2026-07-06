@@ -34,7 +34,7 @@ Kubernetes-level MetalLB shared-IP design. The front door is `scripts/k3s.sh`.
 | `charts/ibm-mq/` | Helm chart for IBM MQ. |
 | `charts/artifactory/` | Helm chart for JFrog Artifactory OSS (local Docker + Helm registry). |
 | `charts/valkey/` | Valkey 8 — 6-node cluster (3 primaries + 3 secondaries). Each pod listens on its own unique client port (6379-6384) and announces its **pod IP + port** for gossip/replication (direct pod-to-pod) while clients get **hostname endpoints** (`valkey.debug-demo.local:<port>`) via `cluster-announce-hostname`. |
-| `scripts/` | Ops + debug tools, grouped by behavior: routers `k3s.sh`/`jdebug.sh` at top; `k3s/{phases,verify,tours,ui}/` (lifecycle), `jdebug/{capture,observe,ui}/` (the JVM kit), `dev/` (test/CI helpers), `lib/` (shared). See `scripts/README.md` for the full map. |
+| `scripts/` | Ops + debug tools, grouped by behavior: `k3s.sh` at top for the lab lifecycle, `scripts/jdebug/jdebug` for the JVM kit, `k3s/{phases,verify,tours,ui}/` (lifecycle), `jdebug/{capture,observe,ui}/` (the JVM kit), `dev/` (test/CI helpers), `lib/` (shared). See `scripts/README.md` for the full map. |
 | `scripts/lib/k3s-env.sh` | Central config for the whole k3s stack (VM sizes, hostnames, image list, versions) — override via env. |
 | `docs/k3s-architecture.md` | Full design reference: topology, VIP/DNS, air-gap, the hostname Valkey model. |
 | `docs/networking-l2-primer.md` | Background primer: L2 vs routed vs NAT, ARP, and why the flat lab network makes the VIP + MetalLB IP directly reachable. |
@@ -595,10 +595,10 @@ setting.
 
 ## CI / CD
 
-- **PR**: `.github/workflows/pr.yml` runs `mvn verify`, `helm lint`, shellcheck.
+- **PR**: `.github/workflows/pr.yml` runs `mvn verify`, `helm lint` for the CI-packaged charts (`debug-demo-app`, `oracle`, `ibm-mq`), and shellcheck.
 - **main / tag**: `.github/workflows/ci.yml` builds + pushes the image to
-  JFrog Docker repo, packages all charts and uploads them to JFrog Helm
-  repo, then notifies Harness.
+  JFrog Docker repo, packages the CI deploy charts (`debug-demo-app`, `oracle`,
+  `ibm-mq`) and uploads them to JFrog Helm repo, then notifies Harness.
 - **Harness**: `harness/pipeline.yaml` deploys Oracle → IBM MQ → the app
   using Native Helm. `prod` is gated by an approval stage.
 

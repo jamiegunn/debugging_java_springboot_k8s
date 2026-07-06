@@ -170,7 +170,7 @@ it proves nothing reaches out. The image list lives in `K3S_IMAGES`
   see below) → **air-gap bundle** → **cluster** (`cluster.sh`, installs the
   server **tainted** `node-role.kubernetes.io/control-plane=true:NoSchedule`) →
   **DNS** (`net.sh`) → **platform** (ingress) → **charts** → **LB tier**
-  (`k3s-lb.sh up` — creates `ddk3s-lb`, brings up keepalived + HAProxy pooled to
+  (`scripts/k3s.sh lb up` — creates `ddk3s-lb`, brings up keepalived + HAProxy pooled to
   the agents) → **verify + smoke**.
 - [x] **P5 — tests**: DONE. scripts/k3s/verify/smoke.sh (14/14, all by hostname);
   scripts/k3s/verify/chaos.sh (node-down / lb-down / valkey-freeze / backend
@@ -219,7 +219,7 @@ addressed by hostname.
   agents only). To fit that footprint, `charts/debug-demo-app` adds soft
   **pod-anti-affinity** (`spreadAcrossNodes`, default on) so replicas spread
   across the two agents (plus `affinity`/`tolerations` value hooks); the **HPA
-  is capped at `maxReplicas: 4`** via `k3s-charts.sh --set` (chart default stays
+  is capped at `maxReplicas: 4`** via `scripts/k3s/phases/charts.sh --set` (chart default stays
   10 for larger clusters); and a **`startupProbe`** (default 40 × 5s ≈ 200s)
   gates liveness/readiness so a slow JVM boot under CPU contention isn't
   liveness-killed into a CrashLoop.
