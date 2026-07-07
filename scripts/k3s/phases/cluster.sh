@@ -129,18 +129,35 @@ copy_bundle() {
 import_images() {
     local name="$1"
     info "  $name: importing image tars into containerd..."
-    # Surface the REAL ctr error + the tar size on failure (a truncated/short tar
-    # from a bad copy, or "no space", reads very differently from a format error).
-    # Don't swallow stderr — a silent "FAILED" is undebuggable.
+    # Self-diagnosing: on failure, classify the cause (corrupt/truncated tar vs.
+    # no disk space vs. other) and print it — a silent swallowed "FAILED" is
+    # undebuggable. postgres is optional (Artifactory-only), so its failure is
+    # reported but does NOT fail the phase. Returns non-zero if a REQUIRED image
+    # failed, so the orchestrator can halt with the fix.
     vsh "$name" '
+        rc=0
         for t in '"$BUNDLE_DEST"'/images/*.tar; do
             [ -e "$t" ] || continue
+            b=$(basename "$t")
             if /usr/local/bin/k3s ctr images import "$t" >/dev/null 2>/tmp/ctr-import.err; then
-                echo "    imported $(basename "$t")"
-            else
-                echo "    FAILED   $(basename "$t") [$(du -h "$t" 2>/dev/null | cut -f1)]: $(tail -1 /tmp/ctr-import.err)" >&2
+                echo "    imported $b"; continue
             fi
-        done'
+            # auto-recover: a Docker containerd-store `docker save` is a MULTI-arch
+            # archive; if ctr could not select the default platform, force all.
+            if /usr/local/bin/k3s ctr images import --all-platforms "$t" >/dev/null 2>/tmp/ctr-import.err; then
+                echo "    imported $b (all-platforms retry)"; continue
+            fi
+            sz=$(du -h "$t" 2>/dev/null | cut -f1)
+            errln=$(tail -1 /tmp/ctr-import.err 2>/dev/null)
+            if ! tar -tf "$t" >/dev/null 2>&1; then reason="corrupt/truncated tar (rebuild the bundle)"
+            elif echo "$errln" | grep -qi "no space"; then reason="NO DISK SPACE on this node"
+            else reason="$errln"; fi
+            case "$b" in
+                postgres_*|*artifactory*) echo "    FAILED (optional) $b [$sz]: $reason" >&2 ;;
+                *)                        echo "    FAILED $b [$sz]: $reason" >&2; rc=1 ;;
+            esac
+        done
+        exit $rc'
 }
 
 install_server() {
@@ -238,7 +255,20 @@ cmd_up() {
     for vm in "${K3S_AGENT_VMS[@]}"; do install_agent "$vm"; done
 
     info "   [5/6] importing images into every node..."
-    for vm in "${K3S_ALL_VMS[@]}"; do import_images "$vm"; done
+    local import_failed=0
+    for vm in "${K3S_ALL_VMS[@]}"; do import_images "$vm" || import_failed=1; done
+    if [[ "$import_failed" -eq 1 ]]; then
+        err ""
+        err "  ══ a REQUIRED image failed to import (see the FAILED line(s) above) ══"
+        err "  The reason is printed next to each — act on it:"
+        err "    • 'corrupt/truncated tar'  → rebuild: scripts/k3s.sh bundle --force"
+        err "    • 'NO DISK SPACE'          → free space / grow the VM disk, then re-run"
+        err "    • anything else            → that's the raw ctr error; rebuild first:"
+        err "                                 scripts/k3s.sh bundle --force"
+        err "  Then resume (idempotent):    scripts/k3s.sh install"
+        err "  ('FAILED (optional) postgres' alone is HARMLESS — Artifactory-only image.)"
+        return 1
+    fi
 
     info "   [6/6] kubeconfig + readiness..."
     write_kubeconfig
