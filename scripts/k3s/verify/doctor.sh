@@ -55,8 +55,18 @@ for vm in "${K3S_ALL_VMS[@]}" "$K3S_LB_VM"; do
 done
 
 sect "3. k3s nodes"
-nready="$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"{c++} END{print c+0}')"
+nready="$(kubectl get nodes --no-headers --request-timeout=10s 2>/dev/null | awk '$2=="Ready"{c++} END{print c+0}')"
 [[ "$nready" == 3 ]] && ok "3 nodes Ready" || bad "$nready/3 nodes Ready" "kubectl get nodes; kubectl describe node <name>"
+# A NotReady node is most often a lost shared-net DHCP lease: after the Mac
+# sleeps, socket_vmnet's lease lapses, the VM's shared NIC (lima0) falls back to
+# link-local 169.254.x, and flannel host-gw breaks → NotReady. Detect it and
+# print the one-command fix.
+if [[ "$nready" != 3 ]]; then
+    for vm in "${K3S_ALL_VMS[@]}"; do
+        limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null | grep -q "$LIMA_SHARED_SUBNET\\." \
+            || bad "$vm has no shared-net ($LIMA_SHARED_SUBNET.x) IP — lost DHCP lease (lima0 on link-local) → NotReady" "limactl stop $vm && limactl start $vm"
+    done
+fi
 
 sect "4. LB tier — VIP $K3S_VIP + HAProxy (on $K3S_LB_VM)"
 if limactl shell "$K3S_LB_VM" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP"; then ok "VIP held by $K3S_LB_VM (keepalived)"
