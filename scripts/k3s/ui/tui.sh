@@ -87,8 +87,8 @@ menu() {
 
   ${B}GET RUNNING${OFF}              ${B}CHECK / DIAGNOSE${OFF}         ${B}EXPLORE / BREAK${OFF}
    ${GN}1${OFF} preflight ${DIM}(deps)${OFF}      ${GN}5${OFF} doctor  ${DIM}(start here)${OFF}    ${GN}10${OFF} api tour
-   ${GN}2${OFF} install               ${GN}6${OFF} status                 ${GN}11${OFF} valkey tour
-   ${GN}3${OFF} bundle                ${GN}7${OFF} smoke   ${DIM}(15 checks)${OFF}    ${GN}12${OFF} chaos …
+   ${GN}2${OFF} bundle                ${GN}6${OFF} status                 ${GN}11${OFF} valkey tour
+   ${GN}3${OFF} install               ${GN}7${OFF} smoke   ${DIM}(15 checks)${OFF}    ${GN}12${OFF} chaos …
    ${GN}4${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}8${OFF} valkey validation
                             ${GN}9${OFF} lb ${DIM}(LB tier status)${OFF}
 
@@ -253,8 +253,8 @@ while true; do
     read -r choice || exit 0
     case "$choice" in
         1)  run "$K3S" preflight ;;
-        2)  confirm "Full install (builds VMs, ~15 min the first time) — proceed?" && run "$K3S" install ;;
-        3)  run "$K3S" bundle ;;
+        2)  run "$K3S" bundle ;;
+        3)  confirm "Full install (builds VMs, ~15 min the first time) — proceed?" && run "$K3S" install ;;
         4)  confirm "Write /etc/resolver/${BASE_DOMAIN:-debug-demo.local} (needs sudo) — proceed?" && run "$K3S" resolver ;;
         5)  run "$K3S" doctor ;;
         6)  run "$K3S" status ;;
