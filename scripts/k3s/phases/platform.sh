@@ -108,6 +108,8 @@ cmd_up() {
         --set controller.service.type=ClusterIP \
         --set controller.image.pullPolicy=IfNotPresent \
         --set controller.admissionWebhooks.patch.image.pullPolicy=IfNotPresent \
+        --set controller.image.digest="" \
+        --set controller.admissionWebhooks.patch.image.digest="" \
         --set controller.ingressClassResource.default=true \
         --set controller.watchIngressWithoutClass=true \
         --set controller.publishService.enabled=false \

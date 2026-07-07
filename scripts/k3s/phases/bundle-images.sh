@@ -128,8 +128,16 @@ for img in "${IMAGES[@]}"; do
         err "  (or point at your mirror) and re-run."
         exit 1
     fi
+    # Save by the TAG (strip any @sha256 digest). A digest-pinned pull leaves the
+    # image tagged <none> locally, so `docker save <ref@digest>` writes a tar with
+    # NO RepoTags; `k3s ctr images import` then registers only content with no
+    # usable image ref (kubelet can't find it → ImagePullBackOff). Re-tag the
+    # digest-pulled image to repo:tag first, then save that, so the tar carries
+    # RepoTags and import creates a NAMED image. (No-op for tag-pulled images.)
+    tagref="${img%@*}"
+    docker tag "$img" "$tagref" || { err "  docker tag failed for $img"; exit 1; }
     info "  [$n/$total] [save]    → $(basename "$tar")"
-    docker save "$img" -o "$tar" || { err "  docker save failed for $img"; exit 1; }
+    docker save "$tagref" -o "$tar" || { err "  docker save failed for $tagref"; exit 1; }
 done
 
 # --- 4. the app image (built here) ------------------------------------------
