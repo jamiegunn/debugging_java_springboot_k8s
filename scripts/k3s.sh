@@ -12,8 +12,9 @@
 #     install       full install: preflight → VMs → k3s → VIP/DNS → ingress → charts → LB → smoke
 #     resolver      write the Mac /etc/resolver so hostnames resolve (sudo)
 #
-#   Check
+#   Check / repair
 #     doctor        one-shot health check across EVERY layer (start here if broken)
+#     fix-net       recover the shared-net (socket_vmnet) lease when a VM/node is NotReady
 #     smoke         15-check end-to-end verification, all by hostname
 #     docs-verify   assert the /docs design claims against the live cluster
 #     status        VMs + VIP owner + nodes
@@ -47,6 +48,7 @@ case "$cmd" in
     resolver)   exec "$D/k3s/phases/net.sh" up ;;        # writes /etc/resolver (sudo)
     lb)         exec "$D/k3s/phases/lb.sh" "$@" ;;        # the LB tier: keepalived VIP + HAProxy
     doctor)     exec "$D/k3s/verify/doctor.sh" "$@" ;;
+    fix-net|fixnet) exec "$D/k3s/phases/fix-net.sh" "$@" ;;   # recover a lost shared-net DHCP lease
     smoke)      exec "$D/k3s/verify/smoke.sh" "$@" ;;
     docs-verify) exec "$D/k3s/verify/docs-verify.sh" "$@" ;;
     status)     exec "$D/k3s/verify/chaos.sh" status ;;

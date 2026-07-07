@@ -65,3 +65,36 @@ provision:
         apk add --no-cache keepalived dnsmasq curl iproute2 2>/dev/null || \
           echo "WARN: apk add failed (air-gapped without a local mirror?) — install keepalived/dnsmasq/curl by hand" >&2
       fi
+  # Shared-net lease WATCHDOG. The #1 laptop failure: the Mac sleeps, the
+  # socket_vmnet DHCP lease lapses, lima0 falls back to link-local 169.254.x, and
+  # the k3s node goes NotReady (flannel host-gw needs the 192.168.105.x address).
+  # This re-acquires the lease automatically within ~1 min of loss, so the node
+  # self-heals with no operator action. `scripts/k3s.sh fix-net` is the manual
+  # button if this ever can't recover. Idempotent no-op while the lease is held.
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -e
+      cat > /usr/local/sbin/fix-shared-net <<'SCRIPT'
+      #!/bin/sh
+      # Re-acquire the shared socket_vmnet (192.168.105.x) DHCP lease on lima0 if
+      # it was lost (e.g. after host sleep). No-op while the lease is present.
+      IFACE=lima0
+      SUBNET=192.168.105
+      ip link show "$IFACE" >/dev/null 2>&1 || exit 0
+      ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q "inet ${SUBNET}\." && exit 0
+      logger -t fix-shared-net "lima0 lost ${SUBNET}.x lease — reacquiring" 2>/dev/null || true
+      ip link set "$IFACE" up 2>/dev/null || true
+      ifdown "$IFACE" 2>/dev/null || true
+      ifup   "$IFACE" 2>/dev/null || true
+      # busybox udhcpc fallback: gets a lease and applies it via the default script
+      ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q "inet ${SUBNET}\." || \
+        udhcpc -i "$IFACE" -n -q -t 6 2>/dev/null || true
+      SCRIPT
+      chmod +x /usr/local/sbin/fix-shared-net
+      # run every minute via busybox crond
+      mkdir -p /etc/crontabs
+      grep -q '/usr/local/sbin/fix-shared-net' /etc/crontabs/root 2>/dev/null || \
+        echo '* * * * * /usr/local/sbin/fix-shared-net' >> /etc/crontabs/root
+      rc-update add crond default 2>/dev/null || true
+      rc-service crond start 2>/dev/null || true

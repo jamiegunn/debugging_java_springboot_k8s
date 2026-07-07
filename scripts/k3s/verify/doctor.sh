@@ -64,7 +64,7 @@ nready="$(kubectl get nodes --no-headers --request-timeout=10s 2>/dev/null | awk
 if [[ "$nready" != 3 ]]; then
     for vm in "${K3S_ALL_VMS[@]}"; do
         limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null | grep -q "$LIMA_SHARED_SUBNET\\." \
-            || bad "$vm has no shared-net ($LIMA_SHARED_SUBNET.x) IP — lost DHCP lease (lima0 on link-local) → NotReady" "limactl stop $vm && limactl start $vm"
+            || bad "$vm has no shared-net ($LIMA_SHARED_SUBNET.x) IP — lost DHCP lease (lima0 on link-local) → NotReady" "scripts/k3s.sh fix-net"
     done
 fi
 

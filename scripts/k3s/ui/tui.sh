@@ -168,10 +168,12 @@ vms_menu() {
    ${B}agent-2${OFF}       ${GN}7${OFF}      ${GN}8${OFF}      ${GN}9${OFF}
    ${B}lb     ${OFF}      ${GN}10${OFF}     ${GN}11${OFF}     ${GN}12${OFF}
 
+   ${GN}f${OFF} fix-net ${DIM}(auto-detect + recover lost shared-net lease → NotReady)${OFF}
    ${GN}a${OFF} restart BOTH agents    ${GN}L${OFF} list VMs    ${GN}b${OFF} back
 EOF
         printf '\n  %s> %s' "$B" "$OFF"; local c; read -r c || return
         case "$c" in
+            f|F) run "$K3S" fix-net ;;
             1)  vm_action start   "$S" ;;
             2)  confirm "stop $S (control-plane) — proceed?"    && vm_action stop    "$S" ;;
             3)  confirm "restart $S (control-plane) — proceed?" && vm_action restart "$S" ;;

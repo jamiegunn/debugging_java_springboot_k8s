@@ -140,7 +140,7 @@ import_images() {
 
 install_server() {
     local name="$K3S_SERVER_VM" ip iface
-    ip="$(wait_for_shared_ip "$name")" || { err "  $name never got a shared-net ($LIMA_SHARED_SUBNET.x) lease — socket_vmnet/DHCP issue. Fix: scripts/k3s.sh preflight, then limactl stop $name && limactl start $name"; return 1; }
+    ip="$(wait_for_shared_ip "$name")" || { err "  $name never got a shared-net ($LIMA_SHARED_SUBNET.x) lease — socket_vmnet/DHCP issue. Fix: scripts/k3s.sh fix-net   (or: scripts/k3s.sh preflight, then limactl stop $name && limactl start $name)"; return 1; }
     iface="$(shared_iface "$name")"
     info "  $name: installing k3s server (offline) at $ip..."
     # Fully offline: the binary is at /usr/local/bin/k3s and the core images
@@ -187,7 +187,7 @@ EOS
 
 install_agent() {
     local name="$1" ip iface
-    ip="$(wait_for_shared_ip "$name")" || { err "  $name never got a shared-net ($LIMA_SHARED_SUBNET.x) lease — socket_vmnet/DHCP issue. Fix: scripts/k3s.sh preflight, then limactl stop $name && limactl start $name"; return 1; }
+    ip="$(wait_for_shared_ip "$name")" || { err "  $name never got a shared-net ($LIMA_SHARED_SUBNET.x) lease — socket_vmnet/DHCP issue. Fix: scripts/k3s.sh fix-net   (or: scripts/k3s.sh preflight, then limactl stop $name && limactl start $name)"; return 1; }
     iface="$(shared_iface "$name")"
     info "  $name: installing k3s agent (offline), joining $SERVER_IP..."
     vsh "$name" "
@@ -251,10 +251,9 @@ cmd_up() {
     kc get nodes -o wide --request-timeout=10s 2>/dev/null || err "  apiserver not reachable — kc get nodes"
     if [[ "$ready" -lt 3 ]]; then
         err "  only $ready/3 nodes Ready after ~5m — NOT proceeding to net/LB/charts."
-        err "  Most common cause on a laptop: an agent lost its shared-net DHCP lease"
-        err "  (lima0 drops to 169.254.x → node NotReady → flannel host-gw broken). Check + recover:"
-        err "    limactl shell <agent> -- ip -4 -o addr show lima0 | grep $LIMA_SHARED_SUBNET"
-        err "    limactl stop <agent> && limactl start <agent>   # reacquires the .x lease"
+        err "  Most common cause on a laptop: a node lost its shared-net DHCP lease"
+        err "  (lima0 drops to 169.254.x → NotReady → flannel host-gw broken). Recover with:"
+        err "    scripts/k3s.sh fix-net        # detects + restarts the affected VM(s)"
         err "  then re-run: scripts/k3s.sh install   (idempotent)"
         return 1
     fi
