@@ -129,12 +129,17 @@ copy_bundle() {
 import_images() {
     local name="$1"
     info "  $name: importing image tars into containerd..."
+    # Surface the REAL ctr error + the tar size on failure (a truncated/short tar
+    # from a bad copy, or "no space", reads very differently from a format error).
+    # Don't swallow stderr — a silent "FAILED" is undebuggable.
     vsh "$name" '
         for t in '"$BUNDLE_DEST"'/images/*.tar; do
             [ -e "$t" ] || continue
-            /usr/local/bin/k3s ctr images import "$t" >/dev/null 2>&1 \
-              && echo "    imported $(basename "$t")" \
-              || echo "    FAILED   $(basename "$t")" >&2
+            if /usr/local/bin/k3s ctr images import "$t" >/dev/null 2>/tmp/ctr-import.err; then
+                echo "    imported $(basename "$t")"
+            else
+                echo "    FAILED   $(basename "$t") [$(du -h "$t" 2>/dev/null | cut -f1)]: $(tail -1 /tmp/ctr-import.err)" >&2
+            fi
         done'
 }
 
