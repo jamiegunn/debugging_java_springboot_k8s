@@ -122,3 +122,36 @@ k3s_vm_ip() {
     limactl shell "$1" -- ip -4 -o addr show 2>/dev/null \
         | awk -v n="$LIMA_SHARED_SUBNET" '$4 ~ ("^" n "\\.") {sub("/.*","",$4); print $4; exit}'
 }
+
+# Confirm each image ref exists in AT LEAST ONE workload (agent) node's
+# containerd — i.e. the air-gap tar was actually imported into the cluster. This
+# catches the real failure (a tar missing from the bundle, or a wholesale import
+# failure) where the image is absent everywhere. We deliberately do NOT require
+# it on every node: containerd garbage-collects images off nodes that aren't
+# running the pod, so a per-node presence check false-fails on a mature cluster
+# or an install re-run. The rarer "imported but on the wrong node" case is caught
+# downstream by each phase's rollout wait (which now dumps pod status + events).
+# Digests (@sha256:...) are stripped before matching (`ctr images ls` shows the
+# repo:tag ref). Prints "  MISSING from all agent nodes: <repo:tag>"; returns 1
+# if any image is absent from every agent.
+#   usage: verify_images_importable <ref> [ref...]
+verify_images_importable() {
+    local rc=0 want tag found listing
+    local -a lists=()
+    local vm
+    for vm in "${K3S_AGENT_VMS[@]}"; do
+        lists+=("$(limactl shell "$vm" -- sudo k3s ctr images ls -q 2>/dev/null)")
+    done
+    local dig
+    for want in "$@"; do
+        tag="${want%%@*}"                                   # repo:tag
+        dig=""; case "$want" in *@*) dig="${want#*@}";; esac # sha256:... (digest-pinned imgs are stored under this ref, sometimes WITHOUT the tag)
+        found=0
+        for listing in "${lists[@]}"; do
+            if printf '%s\n' "$listing" | grep -qF "$tag" \
+               || { [[ -n "$dig" ]] && printf '%s\n' "$listing" | grep -qF "$dig"; }; then found=1; break; fi
+        done
+        [[ $found -eq 1 ]] || { printf '  MISSING from all agent nodes: %s\n' "$tag" >&2; rc=1; }
+    done
+    return $rc
+}

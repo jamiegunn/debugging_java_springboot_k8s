@@ -48,8 +48,18 @@ install_metallb() {
     [[ -s "$METALLB_MANIFEST" ]] || { err "vendored MetalLB manifest missing: $METALLB_MANIFEST"; return 1; }
     [[ -s "$METALLB_POOL_MANIFEST" ]] || { err "MetalLB pool manifest missing: $METALLB_POOL_MANIFEST"; return 1; }
     kc apply -f "$METALLB_MANIFEST" >/dev/null 2>&1 || { err "  metallb manifest apply failed"; return 1; }
-    kc -n metallb-system rollout status deploy/controller --timeout=120s >/dev/null 2>&1 \
-        || { err "  metallb controller not Ready — kc -n metallb-system get pods"; return 1; }
+    if ! kc -n metallb-system rollout status deploy/controller --timeout=180s >/dev/null 2>&1; then
+        err "  metallb controller not Ready after 180s. Pod state:"
+        kc -n metallb-system get pods -o wide 2>&1 | sed 's/^/    /' >&2
+        # surface the most recent scheduling/pull events without needing a describe
+        kc -n metallb-system get events --field-selector involvedObject.kind=Pod \
+            --sort-by=.lastTimestamp 2>/dev/null | tail -6 | sed 's/^/    /' >&2
+        err "  If STATUS is ImagePullBackOff/ErrImageNeverPull → image not imported:"
+        err "     scripts/k3s/phases/cluster.sh import   then   scripts/k3s.sh install"
+        err "  (the image pre-check above should have caught that; if it passed, check the controller logs:"
+        err "     kc -n metallb-system logs -l component=controller )"
+        return 1
+    fi
     kc -n metallb-system rollout status ds/speaker --timeout=120s >/dev/null 2>&1 || true
     local i
     for i in $(seq 1 12); do
@@ -68,6 +78,22 @@ cmd_up() {
     kc create namespace ingress-nginx >/dev/null 2>&1 || true
 
     info "   [2/4] MetalLB (L2 LoadBalancer fulfiller, offline manifest)..."
+    # Pre-flight the air-gap images this phase needs (metallb + ingress) on every
+    # node BEFORE applying manifests — otherwise a missing import surfaces only as
+    # a 120s "controller not Ready" timeout downstream. Fail early with the fix.
+    info "         verifying platform images are imported into the cluster..."
+    # long-running images only (skip kube-webhook-certgen — a completed Job whose
+    # image containerd GCs, which would false-fail this check on an install re-run)
+    local platform_images=()
+    for _img in "${K3S_IMAGES[@]}"; do case "$_img" in *metallb*|*ingress-nginx/controller*) platform_images+=("$_img");; esac; done
+    if ! verify_images_importable "${platform_images[@]}"; then
+        err "  ^ required platform images are NOT imported into the cluster (air-gap import gap)."
+        err "  Re-import the tars into all nodes, then re-run install:"
+        err "     scripts/k3s/phases/cluster.sh import        # re-imports every image tar"
+        err "     scripts/k3s.sh install                       # idempotent; resumes the platform phase"
+        err "  If a tar is missing entirely, rebuild the bundle: scripts/k3s.sh bundle"
+        return 1
+    fi
     install_metallb || return 1
 
     info "   [3/4] ingress-nginx (hostPort DaemonSet, offline from vendored tgz)..."

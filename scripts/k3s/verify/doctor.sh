@@ -67,6 +67,26 @@ if [[ "$nready" != 3 ]]; then
             || bad "$vm has no shared-net ($LIMA_SHARED_SUBNET.x) IP — lost DHCP lease (lima0 on link-local) → NotReady" "scripts/k3s.sh fix-net"
     done
 fi
+# Air-gap image health — two GC-proof checks (a raw every-node presence check is
+# avoided: containerd GCs images off nodes not running them, so it would
+# false-fail on a healthy cluster). (a) each required image was imported into the
+# cluster at all; (b) no pod is currently stuck pulling — the live symptom of a
+# per-node import gap (e.g. "metallb controller not Ready").
+if [[ "$nready" == 3 ]]; then
+    img_check=()   # long-running pods only (certgen is a completed Job — GC'd)
+    for _i in "${K3S_IMAGES[@]}"; do case "$_i" in
+        *metallb*|*ingress-nginx/controller*|*oracle-free*|*ibm-messaging*|*valkey*) img_check+=("$_i");;
+    esac; done
+    img_missing="$(verify_images_importable "${img_check[@]}" 2>&1 1>/dev/null)"
+    if [[ -z "$img_missing" ]]; then ok "required images imported into the cluster (${#img_check[@]} checked)"
+    else
+        bad "air-gap images never imported (missing from all nodes)" "scripts/k3s/phases/cluster.sh import   then   scripts/k3s.sh install"
+        printf '%s\n' "$img_missing" | sed "s/^/     ${C_DIM}/; s/\$/${C_OFF}/" >&2
+    fi
+    pull_bad="$(kubectl get pods -A --no-headers --request-timeout=10s 2>/dev/null | awk '$4 ~ /ImagePullBackOff|ErrImageNeverPull|ErrImagePull|ImageInspectError/ {print "     "$1"/"$2" ("$4")"}')"
+    [[ -z "$pull_bad" ]] && ok "no pods stuck pulling images" \
+        || { bad "pods can't pull their image (per-node import gap)" "scripts/k3s/phases/cluster.sh import   then   scripts/k3s.sh install"; printf '%s\n' "$pull_bad" >&2; }
+fi
 
 sect "4. LB tier — VIP $K3S_VIP + HAProxy (on $K3S_LB_VM)"
 if limactl shell "$K3S_LB_VM" -- ip -4 -o addr show 2>/dev/null | grep -q "$K3S_VIP"; then ok "VIP held by $K3S_LB_VM (keepalived)"
