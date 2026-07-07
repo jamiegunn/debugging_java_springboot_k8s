@@ -42,13 +42,20 @@ install_mq() {
         --set image.pullPolicy=IfNotPresent >/dev/null 2>&1
 }
 install_valkey() {
-    info "  valkey (6-node cluster, hostname announce → $VALKEY_HOST, shared LB IP ${VALKEY_SHARED_LB_IP:-auto})..."
+    local split_msg=""
+    [[ -n "$K3S_VALKEY_SPLIT" ]] && split_msg=" (node-split: primaries→$K3S_VALKEY_PRIMARY_NODE, secondaries→$K3S_VALKEY_SECONDARY_NODE)"
+    info "  valkey (6-node cluster, hostname announce → $VALKEY_HOST, shared LB IP ${VALKEY_SHARED_LB_IP:-auto})${split_msg}..."
     # The chart already defaults loadBalancer.announceHostname to valkey.debug-demo.local.
     # Bootstrap Job welds the cluster; give it headroom on a cold cluster.
+    # Node-split (K3S_VALKEY_SPLIT) puts each shard's primary + secondary on
+    # DIFFERENT nodes so a node loss leaves a survivor per shard → app stays up.
     helm_kc upgrade --install valkey "$REPO_ROOT/charts/valkey" -n valkey --create-namespace \
         --set image.pullPolicy=IfNotPresent \
         --set loadBalancer.announceHostname="$VALKEY_HOST" \
         ${VALKEY_SHARED_LB_IP:+--set loadBalancer.sharedIP=$VALKEY_SHARED_LB_IP} \
+        ${K3S_VALKEY_SPLIT:+--set nodeSplit.enabled=true} \
+        ${K3S_VALKEY_SPLIT:+--set nodeSplit.primaryNode=$K3S_VALKEY_PRIMARY_NODE} \
+        ${K3S_VALKEY_SPLIT:+--set nodeSplit.secondaryNode=$K3S_VALKEY_SECONDARY_NODE} \
         --timeout 15m >/dev/null 2>&1
 }
 

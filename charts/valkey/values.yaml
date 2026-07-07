@@ -27,6 +27,19 @@ storage:
   size: 1Gi
   storageClassName: ""
 
+# Node-failure resilience. Pin all PRIMARY pods to one node and all SECONDARY
+# pods to another, so every shard has one member on each node — losing a node
+# leaves a surviving member of every shard and Valkey cluster failover promotes
+# it (the app keeps working). Without this, the scheduler can pile a whole shard
+# (primary AND its replica) onto one node, and a node loss takes that shard down
+# with no failover. NOTE: takes effect only on a FRESH install — local-path PVs
+# bind each pod to the node it first scheduled on, so re-running on a cluster
+# that's already placed won't move pods (uninstall + reinstall to re-place).
+nodeSplit:
+  enabled: false
+  primaryNode: ""     # kubernetes.io/hostname value for the PRIMARY StatefulSet
+  secondaryNode: ""   # kubernetes.io/hostname value for the SECONDARY StatefulSet
+
 # External access — one LoadBalancer Service per pod, port-separated, fronted
 # by the keepalived VIP on the k3s cluster. Per-shard addressability is
 # non-negotiable (a MOVED redirect must land on exactly ONE node), and here it

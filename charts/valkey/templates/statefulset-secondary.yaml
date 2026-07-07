@@ -16,6 +16,12 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      {{- if and .Values.nodeSplit.enabled .Values.nodeSplit.secondaryNode }}
+      # HA node-split: keep secondaries off the primaries' node so each shard
+      # spans both nodes (see values.yaml nodeSplit).
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.nodeSplit.secondaryNode }}
+      {{- end }}
       terminationGracePeriodSeconds: 30
       containers:
         - name: valkey

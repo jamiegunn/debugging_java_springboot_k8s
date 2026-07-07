@@ -26,6 +26,15 @@ K3S_ALL_VMS=("$K3S_SERVER_VM" "${K3S_AGENT_VMS[@]}")
 # they survive. (k3s node names are lima-<vm>.) Empty = let the scheduler choose.
 : "${K3S_STATEFUL_NODE:=lima-${K3S_VM_PREFIX}-agent-2}"
 
+# Valkey node-split for node-failure resilience: pin all PRIMARY pods to one
+# agent and all SECONDARY pods to the other, so every shard has a member on each
+# node — kill either agent and Valkey cluster failover keeps the app working.
+# Secondaries go with the stateful node (Oracle/MQ) by default; primaries to the
+# other agent. On by default; set K3S_VALKEY_SPLIT="" to let the scheduler choose.
+: "${K3S_VALKEY_SPLIT:=1}"
+: "${K3S_VALKEY_SECONDARY_NODE:=$K3S_STATEFUL_NODE}"
+: "${K3S_VALKEY_PRIMARY_NODE:=lima-${K3S_VM_PREFIX}-agent-1}"
+
 # The load-balancer tier: a SEPARATE VM (the F5/NetScaler stand-in) that runs
 # keepalived (owns the VIP) + HAProxy (pools to the k3s nodes). The VIP lives
 # here, NOT on the cluster nodes — so it's independent of cluster-node health.
