@@ -93,7 +93,8 @@ menu() {
                             ${GN}9${OFF} lb ${DIM}(LB tier status)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
-   ${GN}13${OFF} uninstall            ${GN}h${OFF} --help  ${GN}k${OFF} KUBECONFIG export  ${GN}i${OFF} import kubeconfig  ${GN}s${OFF} shell  ${GN}q${OFF} quit
+   ${GN}13${OFF} uninstall            ${GN}v${OFF} VMs ${DIM}(start/stop/restart)${OFF}  ${GN}h${OFF} --help  ${GN}k${OFF} KUBECONFIG export
+                            ${GN}i${OFF} import kubeconfig  ${GN}s${OFF} shell  ${GN}q${OFF} quit
 EOF
     printf '\n  %s> %s' "$B" "$OFF"
 }
@@ -130,6 +131,63 @@ EOF
                 local s; read -r s; [[ -n "$s" ]] && run "$K3S" chaos heal "$s" ;;
             b|B|"") return ;;
             *) continue ;;
+        esac
+        pause
+    done
+}
+
+# --- VM lifecycle submenu ---------------------------------------------------
+# Thin start/stop/restart over `limactl` for each Lima VM. Restarting an agent
+# is the fix when it goes NotReady after the Mac sleeps (its shared-net DHCP
+# lease lapsed → lima0 on link-local 169.254.x); after a start/restart we print
+# the VM's shared-net IP so you can confirm the .x lease came back.
+vm_action() {  # vm_action <start|stop|restart> <vm>
+    local act="$1" vm="$2"
+    case "$act" in
+        start)   run limactl start "$vm" ;;
+        stop)    run limactl stop  "$vm" ;;
+        restart) run limactl stop  "$vm"; run limactl start "$vm" ;;
+    esac
+    [[ "$act" == stop ]] && return
+    printf '\n  %sshared-net (%s.x) IP on %s:%s ' "$DIM" "${LIMA_SHARED_SUBNET:-192.168.105}" "$vm" "$OFF"
+    limactl shell "$vm" -- ip -4 -o addr show 2>/dev/null \
+        | awk -v n="${LIMA_SHARED_SUBNET:-192.168.105}" '$4 ~ ("^" n "\\."){sub("/.*","",$4); print $4; f=1} END{if(!f) print "(none yet — link-local; lease not acquired)"}'
+}
+vms_menu() {
+    local S="${K3S_SERVER_VM:-ddk3s-server}" A1="${K3S_AGENT_VMS[0]:-ddk3s-agent-1}" A2="${K3S_AGENT_VMS[1]:-ddk3s-agent-2}" L="${K3S_LB_VM:-ddk3s-lb}"
+    while true; do
+        header
+        cat <<EOF
+  ${B}VM LIFECYCLE${OFF} — start / stop / restart the Lima VMs (limactl)
+  ${DIM}Restart an agent to reacquire a lost shared-net lease (NotReady-after-sleep fix).${OFF}
+  ${DIM}Bring-up order: server → agents → lb.${OFF}
+
+               ${DIM}start   stop   restart${OFF}
+   ${B}server ${OFF}       ${GN}1${OFF}      ${GN}2${OFF}      ${GN}3${OFF}
+   ${B}agent-1${OFF}       ${GN}4${OFF}      ${GN}5${OFF}      ${GN}6${OFF}
+   ${B}agent-2${OFF}       ${GN}7${OFF}      ${GN}8${OFF}      ${GN}9${OFF}
+   ${B}lb     ${OFF}      ${GN}10${OFF}     ${GN}11${OFF}     ${GN}12${OFF}
+
+   ${GN}a${OFF} restart BOTH agents    ${GN}L${OFF} list VMs    ${GN}b${OFF} back
+EOF
+        printf '\n  %s> %s' "$B" "$OFF"; local c; read -r c || return
+        case "$c" in
+            1)  vm_action start   "$S" ;;
+            2)  confirm "stop $S (control-plane) — proceed?"    && vm_action stop    "$S" ;;
+            3)  confirm "restart $S (control-plane) — proceed?" && vm_action restart "$S" ;;
+            4)  vm_action start   "$A1" ;;
+            5)  confirm "stop $A1 (its pods reschedule) — proceed?"    && vm_action stop    "$A1" ;;
+            6)  vm_action restart "$A1" ;;
+            7)  vm_action start   "$A2" ;;
+            8)  confirm "stop $A2 (its pods reschedule) — proceed?"    && vm_action stop    "$A2" ;;
+            9)  vm_action restart "$A2" ;;
+            10) vm_action start   "$L" ;;
+            11) confirm "stop $L (VIP + external access go down) — proceed?"  && vm_action stop    "$L" ;;
+            12) confirm "restart $L (VIP drops briefly) — proceed?"           && vm_action restart "$L" ;;
+            a|A) confirm "restart BOTH agents ($A1, $A2)?" && { vm_action restart "$A1"; vm_action restart "$A2"; } ;;
+            L)   run limactl list ;;
+            b|B|"") return ;;
+            *)   continue ;;
         esac
         pause
     done
@@ -206,6 +264,7 @@ while true; do
         11) run "$K3S" valkey ;;
         12) chaos_menu; continue ;;
         13) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
+        v|V) vms_menu; continue ;;
         d|D) "$REPO_ROOT/jdebug"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;

@@ -10,3 +10,4 @@ dumps/
 .env
 .env.local
 scripts/.cache/
+.claude/
