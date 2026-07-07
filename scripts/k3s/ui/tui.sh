@@ -91,6 +91,7 @@ menu() {
    ${GN}3${OFF} install               ${GN}7${OFF} smoke   ${DIM}(15 checks)${OFF}    ${GN}12${OFF} chaos …
    ${GN}4${OFF} resolver ${DIM}(sudo)${OFF}       ${GN}8${OFF} valkey validation
                             ${GN}9${OFF} lb ${DIM}(LB tier status)${OFF}
+                            ${GN}f${OFF} fix-net ${DIM}(recover lost shared-net lease → NotReady)${OFF}
 
   ${B}TEAR DOWN${OFF}                ${B}UTILITIES${OFF}
    ${GN}13${OFF} uninstall            ${GN}v${OFF} VMs ${DIM}(start/stop/restart)${OFF}  ${GN}h${OFF} --help  ${GN}k${OFF} KUBECONFIG export
@@ -267,6 +268,7 @@ while true; do
         12) chaos_menu; continue ;;
         13) confirm "Uninstall: delete the VMs, /etc/resolver entry, and kubeconfig — proceed?" && run "$K3S" uninstall ;;
         v|V) vms_menu; continue ;;
+        f|F) run "$K3S" fix-net ;;
         d|D) "$REPO_ROOT/jdebug"; continue ;;
         h|H) help_for ;;
         k|K) kube_export ;;
