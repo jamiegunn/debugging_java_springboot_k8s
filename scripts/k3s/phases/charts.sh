@@ -113,7 +113,11 @@ cmd_up() {
 
     info "   [3/3] app..."
     install_app
-    wait_ready debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 300
+    # 600s (was 300): a cold cluster boots the JVM + runs first-boot Flyway
+    # migrations under CPU contention, which can exceed 5 min. The wait is
+    # informational (install continues either way), but the longer window avoids
+    # a false-alarm timeout when the app is simply still coming up.
+    wait_ready debug-demo 'app.kubernetes.io/name=debug-demo-app' 1 600
 
     echo
     info "charts installed. Validate: scripts/k3s/phases/charts.sh status  then  scripts/k3s/verify/smoke.sh"
