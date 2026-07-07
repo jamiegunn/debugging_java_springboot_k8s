@@ -52,7 +52,7 @@ status_line() {
         total=$((total+1))
         printf '%s\n' "$list" | awk -v n="$vm" '$1==n && $2=="Running"{f=1} END{exit !f}' && up=$((up+1))
     done
-    kc="${RD}✗ no kubeconfig${OFF}"; [[ -s "$KCFG" ]] && kc="${GN}✓ kubeconfig${OFF}"
+    kc="${YL}◦ kubeconfig: not installed yet${OFF}"; [[ -s "$KCFG" ]] && kc="${GN}✓ kubeconfig ready${OFF}"
     # real check: is the VIP actually answering? (not just the configured address)
     if ping -c1 -t1 "$K3S_VIP" >/dev/null 2>&1; then vip="${GN}VIP ${K3S_VIP} up${OFF}"
     else vip="${RD}VIP ${K3S_VIP} down${OFF}"; fi
@@ -65,10 +65,11 @@ header() {
     printf '%s╔══════════════════════════════════════════════════════════════╗%s\n' "$B" "$OFF"
     printf '%s║  debug-demo · k3s control                                    ║%s\n' "$B" "$OFF"
     printf '%s╚══════════════════════════════════════════════════════════════╝%s\n' "$B" "$OFF"
-    printf '%s  • You don'\''t need to set KUBECONFIG — the scripts auto-target%s\n' "$DIM" "$OFF"
-    printf '%s    dumps/k3s.kubeconfig. For your OWN kubectl, either:%s\n' "$DIM" "$OFF"
-    printf '%s        export KUBECONFIG=%s%s\n' "$CY" "$KCFG" "$OFF"
-    printf '%s    or import it into ~/.kube/config as context '\''%s'\'' → menu item %si%s\n' "$DIM" "$KCTX" "$B" "$OFF"
+    printf '%s  • kubectl: this TUI and ALL toolkit scripts auto-use%s\n' "$DIM" "$OFF"
+    printf '%s    dumps/k3s.kubeconfig — nothing to set here. To run your OWN%s\n' "$DIM" "$OFF"
+    printf '%s    kubectl/helm/k9s OUTSIDE the toolkit, do one of:%s\n' "$DIM" "$OFF"
+    printf '%s        export KUBECONFIG=%s%s   %s(this shell)%s\n' "$CY" "$KCFG" "$OFF" "$DIM" "$OFF"
+    printf '%s        import as context '\''%s'\'' → menu item %si%s%s   (every shell)%s\n' "$DIM" "$KCTX" "$B" "$OFF$DIM" "" "$OFF"
     printf '%s  • Valkey password for your local valkey-cli / redis-cli:%s\n' "$DIM" "$OFF"
     printf '%s        %s%s\n' "$CY" "$PASS_CMD" "$OFF"
     printf '%s  • Any subcommand takes --help for the underlying script'\''s options,%s\n' "$DIM" "$OFF"
