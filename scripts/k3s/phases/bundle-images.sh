@@ -79,8 +79,12 @@ tar_name() {
     echo "${ref}" | tr '/:' '__'    # registry/path:tag → registry_path_tag
 }
 
-# IBM MQ ships amd64 only; pull that platform explicitly (Rosetta runs it).
-platform_for() { case "$1" in icr.io/ibm-messaging/mq:*) echo "--platform=linux/amd64" ;; *) echo "" ;; esac; }
+# Pull SINGLE-platform so `docker save` produces a single-arch archive. With
+# Docker's containerd image store a multi-arch pull saves a manifest LIST whose
+# other-platform blobs aren't all present, and `k3s ctr images import` then fails
+# "content digest ...: not found". Everything gets the cluster arch; IBM MQ ships
+# amd64 only (Rosetta runs it), so it stays amd64 regardless.
+platform_for() { case "$1" in icr.io/ibm-messaging/mq:*) echo "--platform=linux/amd64" ;; *) echo "--platform=linux/${K3S_ARCH}" ;; esac; }
 
 # --- 1. k3s binary ----------------------------------------------------------
 info "[1/4] k3s ${K3S_VERSION} binary (${K3S_ARCH})..."

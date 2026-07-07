@@ -143,14 +143,18 @@ import_images() {
                 echo "    imported $b"; continue
             fi
             # auto-recover: a Docker containerd-store `docker save` is a MULTI-arch
-            # archive; if ctr could not select the default platform, force all.
-            if /usr/local/bin/k3s ctr images import --all-platforms "$t" >/dev/null 2>/tmp/ctr-import.err; then
-                echo "    imported $b (all-platforms retry)"; continue
+            # manifest whose OTHER-platform blobs are not in the tar, so a default
+            # or --all-platforms import fails "content digest ...: not found".
+            # Import ONLY this node`s platform, whose blobs ARE present.
+            varch=$(uname -m); case "$varch" in aarch64) plat=linux/arm64 ;; x86_64) plat=linux/amd64 ;; *) plat=linux/$varch ;; esac
+            if /usr/local/bin/k3s ctr images import --platform="$plat" "$t" >/dev/null 2>/tmp/ctr-import.err; then
+                echo "    imported $b ($plat)"; continue
             fi
             sz=$(du -h "$t" 2>/dev/null | cut -f1)
             errln=$(tail -1 /tmp/ctr-import.err 2>/dev/null)
             if ! tar -tf "$t" >/dev/null 2>&1; then reason="corrupt/truncated tar (rebuild the bundle)"
             elif echo "$errln" | grep -qi "no space"; then reason="NO DISK SPACE on this node"
+            elif echo "$errln" | grep -qi "not found"; then reason="multi-arch archive missing $plat blobs — rebuild single-platform: scripts/k3s.sh bundle --force"
             else reason="$errln"; fi
             case "$b" in
                 postgres_*|*artifactory*) echo "    FAILED (optional) $b [$sz]: $reason" >&2 ;;
