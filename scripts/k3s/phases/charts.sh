@@ -84,13 +84,20 @@ install_app() {
 }
 
 wait_ready() {
-    local ns="$1" label="$2" want="$3" timeout="${4:-600}" i
+    local ns="$1" label="$2" want="$3" timeout="${4:-600}" i r
     for ((i=0; i<timeout; i+=8)); do
-        local r; r="$(kc -n "$ns" get pods -l "$label" -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | tr ' ' '\n' | grep -cx true)"
+        r="$(kc -n "$ns" get pods -l "$label" -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | tr ' ' '\n' | grep -cx true)"
         [[ "$r" -ge "$want" ]] && { info "    $ns ($label): $r/$want Ready"; return 0; }
+        # heartbeat every ~32s so a slow JVM boot / startupProbe doesn't look hung
+        (( i > 0 && i % 32 == 0 )) && info "    $ns ($label): $r/$want Ready — still waiting (${i}s/${timeout}s)…"
         sleep 8
     done
-    err "    $ns ($label): timed out (<$want Ready) — kc -n $ns get pods"
+    # self-diagnose on timeout: show pod state + recent events instead of a bare msg
+    err "    $ns ($label): timed out (<$want Ready). Current state:"
+    kc -n "$ns" get pods -l "$label" -o wide 2>&1 | sed 's/^/      /' >&2
+    kc -n "$ns" get events --field-selector involvedObject.kind=Pod --sort-by=.lastTimestamp 2>/dev/null | tail -6 | sed 's/^/      /' >&2
+    err "    If STATUS=Running but 0/1: still booting or a backend (db/redis/jms) is"
+    err "    unreachable — check: kc -n $ns logs -l $label --tail=50  and  /actuator/health"
     return 1
 }
 
