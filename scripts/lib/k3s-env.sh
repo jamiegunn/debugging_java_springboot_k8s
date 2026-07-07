@@ -151,16 +151,21 @@ verify_images_importable() {
     for vm in "${K3S_AGENT_VMS[@]}"; do
         lists+=("$(limactl shell "$vm" -- sudo k3s ctr images ls -q 2>/dev/null)")
     done
-    local dig
+    local dig repo nod
     for want in "$@"; do
-        tag="${want%%@*}"                                   # repo:tag
-        dig=""; case "$want" in *@*) dig="${want#*@}";; esac # sha256:... (digest-pinned imgs are stored under this ref, sometimes WITHOUT the tag)
+        nod="${want%%@*}"                                    # repo[:tag]
+        repo="${nod%:*}"                                     # repo path (strip :tag; a registry :port survives — it's before the last /)
+        dig=""; case "$want" in *@*) dig="${want#*@}";; esac # sha256:... (the manifest-LIST/index digest)
         found=0
         for listing in "${lists[@]}"; do
-            if printf '%s\n' "$listing" | grep -qF "$tag" \
+            # Match on the REPO PATH — it's always in the stored ref, whether the
+            # image kept its tag, is stored by digest only, or (after a --platform
+            # import) under a sub-manifest digest that differs from the index one.
+            # Fall back to the index digest for good measure.
+            if printf '%s\n' "$listing" | grep -qF "$repo" \
                || { [[ -n "$dig" ]] && printf '%s\n' "$listing" | grep -qF "$dig"; }; then found=1; break; fi
         done
-        [[ $found -eq 1 ]] || { printf '  MISSING from all agent nodes: %s\n' "$tag" >&2; rc=1; }
+        [[ $found -eq 1 ]] || { printf '  MISSING from all agent nodes: %s\n' "$nod" >&2; rc=1; }
     done
     return $rc
 }
